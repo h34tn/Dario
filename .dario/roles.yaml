@@ -1,0 +1,40 @@
+# 角色表：每个角色的候选 AI 及顺序。
+# 担当者 = 用 `dario role` 临时指定的那家；没有指定时取候选里第一个可用的。
+# 这里只能按名字引用 AI，不能写命令；AI 的命令在本机的 ~/.dario/agents.yaml 里配置。
+#
+# 分工原则：主脑优先 Claude（备选 Codex）；写代码与执行优先 Codex。
+
+roles:
+  lead:
+    alias: [主控]
+    description: 读任务、判断涉及哪几层、出计划、最后汇总。
+    candidates: [claude, codex]
+    access: read-only
+  coder:
+    alias: [实现]
+    description: src/ 与 tests/ 的 TypeScript 改动，以及随改动同步的 SPEC.md、README.md。
+    candidates: [codex, claude, codebuddy]
+    access: write
+  # 测试由 AI 包揽：写测试、跑测试、判断结果，怎么测由它根据项目决定。
+  # claude-test、codebuddy-test 是本机 ~/.dario/agents.yaml 里放行了命令执行权限的专用条目，
+  # 没有配置它们的机器上这个角色不可用。Codex 的沙箱不能启动子进程，跑不了完整测试，不作候选。
+  tester:
+    alias: [测试]
+    description: 包揽测试：按 SPEC.md 的契约补测试、运行全量验证、判断结果并把问题修到通过。
+    candidates: [claude-test, codebuddy-test]
+    access: write
+    timeout_minutes: 45
+  reviewer:
+    alias: [审查]
+    description: 只读审查改动、评估方案，给出通过或不通过的结论。
+    candidates: [claude, codex]
+    access: read-only
+    must_differ_from: coder
+  bulk:
+    alias: [杂活]
+    description: 量大、低风险、不写业务代码的工作，如批量检查、日志归纳、样本整理、文档初稿。
+    candidates: [codebuddy, deepseek]
+    access: write
+
+# auto：某家不可用时自动换下一家；manual：只报告，等人换
+fallback: auto

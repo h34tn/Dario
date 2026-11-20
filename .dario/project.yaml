@@ -1,0 +1,41 @@
+# 项目设置
+
+# 承担"主控"和"审查"两个职能的角色
+lead_role: lead
+review_role: reviewer
+
+# 允许改动的目录与文件（相对项目根目录）。
+# 不在其中的：package.json、package-lock.json、各 tsconfig、vitest.config.ts、
+# .gitattributes、.gitignore、.dario/ 本身——这些改动要由人来做。
+write_roots:
+  - src
+  - tests
+  - SPEC.md
+  - README.md
+
+# 审查不通过时最多返工几轮
+max_rework_rounds: 2
+
+# 单步时限（分钟）。角色或 AI 上另有设置时以它们为准。
+default_timeout_minutes: 30
+
+# 一份计划最多几步
+max_plan_steps: 8
+
+# 附在每次任务说明前面的固定文字。
+# 只放指针和 Dario 调用方式带来的限制；约定的正文在 SPEC.md。
+preamble: |
+  - 本仓库是 Dario 自身：一个按角色调用各家 AI 编码工具的命令行程序（TypeScript，ES 模块，Node 22+）。约定的唯一权威源是 SPEC.md，它按已实现的行为书写；用法在 README.md。下面只是指针，不替代原文。
+  - 动手前先读 SPEC.md 第 1 节（定位与原则）、第 2 节（分层）、第 14 节（目录结构），再读与任务相关的章节。
+  - 全程使用中文。代码注释、测试名、面向使用者的文字用中文，风格与相邻文件一致。
+  - 不得违反 SPEC.md 第 1 节的原则与第 12 节的安全约束，尤其是：Dario 自己不调用模型；只有 Dario 启动 AI 进程；项目级配置不能定义命令；不使用"跳过全部权限"的参数。
+  - 遵守第 2 节的分层：src/core 不引用 src/agents、src/channels、src/cli、src/ui；src/ui 不引用 src/agents、src/channels；src/cli 只能用 await import 加载 src/ui。这些由测试检查。
+  - 行为有变化时，同一步里更新 SPEC.md 的对应章节；用法有变化时同时更新 README.md。SPEC.md 只写现状，不写改动经过。
+  - 新增或改变行为要带测试。测试用假 AI（tests/fake-agent 与 tests/helpers.ts 里的 Sandbox），不调用真实 AI、不消耗额度。
+  - 不安装或升级依赖，不改 package.json、package-lock.json、tsconfig*.json、vitest.config.ts、.dario/。确实需要时在结果里写明要改什么、为什么，由人处理。
+  - 不运行 npm run build：全局的 dario 命令就指向本目录的 dist/，任务运行中重建会改掉正在运行的 Dario 自己的文件。验证用 npx tsc --noEmit 与 npx vitest run。
+  - 全量验证由"测试"角色负责，其他角色不必跑全量：改完后跑类型检查和与改动直接相关的测试即可。Codex 的沙箱不能启动子进程，在沙箱里用 npx vitest run --pool=threads 加测试文件路径，只跑相关的文件。
+  - 担当"测试"角色时，测试由你包揽：怎么测由你决定，但结论必须基于你实际执行的结果。全量验证至少包括 npx tsc --noEmit 与 npx vitest run，在结果里贴出两条命令输出的最后几行。测试失败时先判断是测试写错了还是实现有缺陷，把它修到通过，并在结果里逐条说明改了什么、为什么；修不了的如实写明，不要削弱或删除测试来换取通过。
+  - 如果 vitest 报"failed to find the current suite"且所有文件都是 0 个测试，原因是工作目录的盘符是小写。先 cd 到盘符大写的同一目录（例如 cd "D:/Projects/Dario"）再运行。
+  - 不执行 git add、git commit、git push，不切换分支。
+  - 能客观验证的自己验证完再汇报，贴命令输出作证据；跑不通、没法跑的如实列为"未验证"，不写"应该没问题"。
