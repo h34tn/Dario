@@ -1,0 +1,2 @@
+# 所有文本文件在仓库和工作区里都用 LF，不受各人 core.autocrlf 设置的影响
+* text=auto eol=lf
