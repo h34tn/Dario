@@ -57,6 +57,37 @@ dario -p --to 审查 --output-format json "检查这次改动" < 任务说明.tx
 
 退出码：0 完成 · 1 任务失败 · 2 用法或配置错误 · 3 没有可用的 AI · 4 计划等待确认 · 5 取消或超时。
 
+## 终端界面
+
+在终端里运行时，Dario 会显示实时进度：现在是哪一步、哪个角色、哪家 AI、用了多久，以及这家 AI 此刻在读哪个文件、执行什么命令。输出被管道或文件接走时自动变成纯文本，给脚本用的输出格式不受影响。
+
+不带任务直接运行 `dario` 进入完整的交互界面：
+
+```
+rise · 主控 claude · 实现 codex · 审查 claude
+> 给背包窗口加一个按品质排序的按钮
+  / 指令   Esc 中断当前任务   Ctrl+C 退出
+```
+
+- 直接输入文字是把任务交给主控；`/to 实现 …` 直接交给某个角色。
+- 输入 `/` 弹出指令列表，Tab 补全。`/help` 查看全部指令。
+- 任务运行时可以继续输入，新任务会排队。
+- 后一个任务自动带上前一个任务的结论；`/new` 清空，从头开始。
+- `/diff` 查看上一个任务改了什么。
+- Esc 中断当前任务；Ctrl+C 连按两次退出。输入框里有内容时，这两个键先清空输入。
+- 上下键翻历史输入；粘贴多行文本会折叠成"已粘贴 N 行"，作为一次输入提交。
+
+几个开关：
+
+```
+dario --plain                  # 不用完整界面，逐行交互
+dario --plain --to 审查 "…"    # 单次命令也不要动态进度
+dario --to 审查 "…" --verbose  # 纯文本输出时，逐行打印 AI 的每个动作
+dario input-test               # 检查中文输入法和粘贴在你的终端里是否正常
+```
+
+环境变量 `DARIO_PLAIN=1` 等同于始终带 `--plain`，`NO_COLOR=1` 关闭颜色。
+
 ## 配置
 
 | 位置 | 文件 | 说明 |
@@ -113,6 +144,7 @@ prompt: arg                        # stdin（默认）或 arg（作为最后一�
 output: stdout                     # stdout（默认）或 file（工具把答复写到 {result_file}）
 streams: false
 env_pass: [DEEPSEEK_*]
+progress: lines                    # 可选：把工具运行中输出的每一行显示在界面上
 ```
 
 `~/.dario/agents.yaml`：
@@ -147,8 +179,17 @@ export default {
     const data = JSON.parse(last);
     return { text: data.answer ?? '', isError: data.ok === false };
   },
+  // 可选：把运行中输出的一行翻译成界面上显示的活动。只用于显示，出错的行会被忽略。
+  progress(line) {
+    const event = JSON.parse(line);
+    if (event.type === 'read') return [{ kind: 'read', target: event.path }];
+    if (event.type === 'shell') return [{ kind: 'run', target: event.command }];
+    if (event.type === 'message') return [{ kind: 'say', text: event.text }];
+  },
 };
 ```
+
+活动的种类：`read`、`search`、`run`、`edit`、`tool`（这五种带 `target`）、`say`（带 `text`）、`think`。
 
 接口的类型定义和辅助函数（`parseJsonLines`、`parseStreamJsonResult`、`looksUnavailable`）从 `dario/plugin` 导出。
 
@@ -201,6 +242,8 @@ git cherry-pick FETCH_HEAD      # 或按你的习惯整理后再提交
 - **想看 AI 实际收到了什么、输出了什么**：`~/.dario/state/jobs/<任务号>/` 里有每一步的任务说明、标准输出和标准错误。
 - **想看 Dario 启动了什么命令**：`~/.dario/state/audit.log`。
 - **AI 说没有权限执行某条命令**：见上面的"让 AI 能跑更多命令"。
+- **界面显示错乱、符号变成方框、输入法不正常**：先用 `dario --plain`（或 `DARIO_PLAIN=1`）照常干活；`dario input-test` 可以确认输入是否被正确接收。
+- **拖动窗口后留下一两行残影**：已知现象，不影响任务；清屏或继续使用即可。
 
 ## 开发
 
