@@ -1,0 +1,171 @@
+import type { Access, FailureKind } from '../plugin.js';
+
+export type { Access, FailureKind };
+
+export type JobStatus =
+  | 'queued'
+  | 'planning'
+  | 'awaiting_approval'
+  | 'running'
+  | 'reviewing'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'timeout'
+  | 'interrupted'
+  | 'out_of_scope';
+
+/** 有进程正在推进的状态。 */
+export const ACTIVE_STATUSES: readonly JobStatus[] = ['queued', 'planning', 'running', 'reviewing'];
+
+export const STATUS_LABEL: Record<JobStatus, string> = {
+  queued: '排队',
+  planning: '计划中',
+  awaiting_approval: '等待确认',
+  running: '执行中',
+  reviewing: '审查中',
+  done: '完成',
+  failed: '失败',
+  cancelled: '已取消',
+  timeout: '超时',
+  interrupted: '中断',
+  out_of_scope: '越界',
+};
+
+export type Strategy = 'in-place' | 'isolated';
+
+export interface Origin {
+  /** 渠道标识，如 terminal、feishu。 */
+  channel: string;
+  conversation?: string;
+  threadKey?: string;
+  messageId?: string;
+  senderId: string;
+  senderName?: string;
+}
+
+export interface Attempt {
+  agent: string;
+  outcome: 'ok' | FailureKind | 'skipped';
+  reason?: string;
+  durationMs?: number;
+}
+
+export type StepKind = 'plan' | 'step' | 'review' | 'rework' | 'summary';
+
+export type StepOutcome = 'ok' | FailureKind | 'all_unavailable';
+
+export interface StepRecord {
+  index: number;
+  kind: StepKind;
+  role: string;
+  access: Access;
+  /** 实际完成这一步的 AI；全部不可用时为空。 */
+  agent?: string;
+  outcome: StepOutcome;
+  reason?: string;
+  attempts: Attempt[];
+  durationMs: number;
+  text: string;
+  changedFiles: string[];
+  costUsd?: number;
+  /** 交给该角色的任务说明（不含 Dario 附加的前言）。 */
+  task?: string;
+}
+
+export interface PlanStep {
+  role: string;
+  task: string;
+  writes: boolean;
+  acceptance?: string;
+}
+
+export interface Plan {
+  summary: string;
+  /** 任务只是提问、不需要分派时，主控直接给出的答案。 */
+  answer?: string | null;
+  steps: PlanStep[];
+}
+
+export type FailureCode =
+  | 'all_unavailable'
+  | 'task_failed'
+  | 'plan_invalid'
+  | 'review_rejected'
+  | 'workspace'
+  | 'out_of_scope';
+
+export interface JobResult {
+  conclusion: string;
+  changedFiles: string[];
+  fallbackHappened: boolean;
+  warnings: string[];
+  /** 隔离执行时产出所在的本地分支。 */
+  branch?: string;
+  /** 未完成或失败部分的说明。 */
+  unfinished?: string;
+}
+
+export interface Job {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  status: JobStatus;
+  mode: 'direct' | 'lead';
+  task: string;
+  /** 直派时指定的角色。 */
+  role?: string;
+  projectRoot: string;
+  strategy: Strategy;
+  origin: Origin;
+  /** 同一话题上一个任务的结论摘要。 */
+  context?: string;
+  plan?: Plan;
+  /** 计划里下一个要执行的步骤下标。 */
+  cursor: number;
+  steps: StepRecord[];
+  reworkRounds: number;
+  changedFiles: string[];
+  /** 最近一次改动之后是否已经审查过。 */
+  reviewedSinceChange: boolean;
+  lastWriter?: { role: string; agent: string; task: string };
+  /** 只读角色改动了文件。 */
+  readOnlyViolation?: boolean;
+  /** 目录不是 git 仓库，无法检测改动，但有可写步骤执行过。 */
+  unknownChanges?: boolean;
+  /** 隔离执行时的任务分支。 */
+  branch?: string;
+  failureCode?: FailureCode;
+  warnings: string[];
+  result?: JobResult;
+  /** 正在推进该任务的 Dario 进程。 */
+  ownerPid?: number;
+  /** 正在运行的 AI 子进程。 */
+  activePid?: number;
+  cancelRequested?: boolean;
+}
+
+export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished';
+
+export interface ProgressEvent {
+  jobId: string;
+  kind: ProgressKind;
+  text: string;
+}
+
+/** 无头方式的退出码，与规格第 4 节一致。 */
+export function exitCodeForJob(job: Job): number {
+  switch (job.status) {
+    case 'done':
+      return 0;
+    case 'awaiting_approval':
+      return 4;
+    case 'cancelled':
+    case 'timeout':
+      return 5;
+    case 'failed':
+      return job.failureCode === 'all_unavailable' ? 3 : 1;
+    default:
+      return 1;
+  }
+}

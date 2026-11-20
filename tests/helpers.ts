@@ -1,0 +1,238 @@
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { stringify } from 'yaml';
+import { runCli } from '../src/cli/main.js';
+
+const FAKE_AGENT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fake-agent', 'fake-agent.mjs');
+
+export const DEFAULT_TEST_ROLES = `
+roles:
+  lead:
+    alias: [主控]
+    candidates: [a1]
+    access: read-only
+  coder:
+    alias: [实现]
+    candidates: [a2, a3]
+    access: write
+  reviewer:
+    alias: [审查]
+    candidates: [a3, a2]
+    access: read-only
+    must_differ_from: coder
+fallback: auto
+`;
+
+/** 假 AI 的一条回应，字段含义见 fake-agent.mjs。 */
+export interface FakeResponse {
+  text?: string;
+  exit?: number;
+  stderr?: string;
+  delayMs?: number;
+  hang?: boolean;
+  silent?: boolean;
+  files?: Array<{ path: string; content: string | null }>;
+  spawnChild?: boolean;
+  echoPrompt?: boolean;
+}
+
+export interface FakeCall {
+  name: string;
+  access: string;
+  call: number;
+  argv: string[];
+  prompt: string;
+  cwd: string;
+  envNames: string[];
+  depth?: string;
+}
+
+export interface CliResult {
+  code: number;
+  out: string;
+  err: string;
+}
+
+export interface SandboxOptions {
+  roles?: string;
+  projectYaml?: string;
+  /** 把项目目录初始化成 git 仓库（检测改动需要）。 */
+  git?: boolean;
+  /** 假 AI 的名字，默认 a1、a2、a3。 */
+  agents?: string[];
+  /** 假 AI 是否声明为"启动后很快有输出"。 */
+  streams?: boolean;
+  /** 追加到 agents.yaml 顶层的设置。 */
+  agentsExtra?: Record<string, unknown>;
+}
+
+export function sh(cwd: string, command: string, args: string[]): string {
+  const r = spawnSync(command, args, { cwd, encoding: 'utf8', windowsHide: true });
+  if (r.status !== 0) throw new Error(`${command} ${args.join(' ')} 失败：${r.stderr}`);
+  return r.stdout;
+}
+
+export function gitInit(dir: string): void {
+  sh(dir, 'git', ['init', '-q', '-b', 'main']);
+  sh(dir, 'git', ['config', 'user.name', 'tester']);
+  sh(dir, 'git', ['config', 'user.email', 'tester@example.com']);
+  sh(dir, 'git', ['config', 'commit.gpgsign', 'false']);
+}
+
+/** 一套互相隔离的临时环境：本机配置目录、项目目录、假 AI 与它们的剧本。 */
+export class Sandbox {
+  readonly dir: string;
+  readonly home: string;
+  readonly project: string;
+  readonly scenarioFile: string;
+  readonly agents: string[];
+  /** 额外传入命令行的环境变量。 */
+  extraEnv: Record<string, string> = {};
+
+  constructor(opts: SandboxOptions = {}) {
+    this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dario-test-'));
+    this.home = path.join(this.dir, 'home');
+    this.project = path.join(this.dir, 'project');
+    this.scenarioFile = path.join(this.dir, 'scenario.json');
+    this.agents = opts.agents ?? ['a1', 'a2', 'a3'];
+    fs.mkdirSync(path.join(this.home, 'plugins'), { recursive: true });
+    fs.mkdirSync(path.join(this.project, '.dario'), { recursive: true });
+
+    for (const name of this.agents) this.writeFakePlugin(name, opts.streams ?? false);
+    fs.writeFileSync(
+      path.join(this.home, 'agents.yaml'),
+      stringify({
+        plugins: this.agents.map((n) => `./plugins/${n}.yaml`),
+        cooldown_minutes: 10,
+        startup_timeout_seconds: 2,
+        ...(opts.agentsExtra ?? {}),
+      }),
+    );
+    this.writeRoles(opts.roles ?? DEFAULT_TEST_ROLES);
+    if (opts.projectYaml) fs.writeFileSync(path.join(this.project, '.dario', 'project.yaml'), opts.projectYaml);
+    this.setScenario({});
+    if (opts.git) {
+      gitInit(this.project);
+      fs.writeFileSync(path.join(this.project, 'README.md'), '# 测试项目\n');
+      sh(this.project, 'git', ['add', '-A']);
+      sh(this.project, 'git', ['commit', '-q', '-m', 'chore: 初始化']);
+    }
+  }
+
+  writeFakePlugin(name: string, streams: boolean, command: string = process.execPath, prefix: string[] = [FAKE_AGENT]): void {
+    const common = [...prefix, '--name', name, '--scenario', this.scenarioFile];
+    fs.writeFileSync(
+      path.join(this.home, 'plugins', `${name}.yaml`),
+      stringify({
+        id: name,
+        display_name: `假 AI ${name}`,
+        command,
+        version_args: [...prefix, '--name', name, '--version'],
+        args: { read_only: [...common, '--access', 'read-only'], write: [...common, '--access', 'write'] },
+        streams,
+      }),
+    );
+  }
+
+  writeRoles(yaml: string): void {
+    fs.writeFileSync(path.join(this.project, '.dario', 'roles.yaml'), yaml);
+  }
+
+  /** 设置剧本并清空调用计数与记录。 */
+  setScenario(scenario: Record<string, FakeResponse[]>): void {
+    fs.writeFileSync(this.scenarioFile, JSON.stringify(scenario));
+    for (const suffix of ['.count.json', '.log.jsonl', '.child.pid']) fs.rmSync(this.scenarioFile + suffix, { force: true });
+  }
+
+  calls(): FakeCall[] {
+    try {
+      return fs
+        .readFileSync(`${this.scenarioFile}.log.jsonl`, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as FakeCall);
+    } catch {
+      return [];
+    }
+  }
+
+  env(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env, DARIO_HOME: this.home, ...this.extraEnv };
+    delete env.DARIO_DEPTH;
+    delete env.DARIO_ALLOW_NESTED;
+    for (const [k, v] of Object.entries(this.extraEnv)) if (v === '') delete env[k];
+    return env;
+  }
+
+  async cli(
+    args: string[],
+    opts: { stdin?: string; cwd?: string; env?: Record<string, string>; interruptWhen?: () => boolean } = {},
+  ): Promise<CliResult> {
+    const out: string[] = [];
+    const err: string[] = [];
+    let onInterrupt: (() => void) | undefined;
+    // 模拟用户按 Ctrl+C：条件满足时触发一次已登记的中断处理
+    const timer = opts.interruptWhen
+      ? setInterval(() => {
+          if (onInterrupt && opts.interruptWhen!()) {
+            const fire = onInterrupt;
+            onInterrupt = undefined;
+            fire();
+          }
+        }, 50)
+      : undefined;
+    const code = await runCli(args, {
+      stdout: (t) => out.push(t),
+      stderr: (t) => err.push(t),
+      env: { ...this.env(), ...(opts.env ?? {}) },
+      cwd: opts.cwd ?? this.project,
+      isTTY: false,
+      readStdin: async () => opts.stdin ?? '',
+      onInterrupt: (handler) => {
+        onInterrupt = handler;
+        return () => {
+          onInterrupt = undefined;
+        };
+      },
+    }).finally(() => {
+      if (timer) clearInterval(timer);
+    });
+    return { code, out: out.join('\n'), err: err.join('\n') };
+  }
+
+  /** 运行任务并解析 JSON 输出。 */
+  async runJson(args: string[], opts: { stdin?: string } = {}): Promise<{ code: number; json: any; err: string }> {
+    const r = await this.cli([...args, '--output-format', 'json'], opts);
+    let json: any;
+    try {
+      json = JSON.parse(r.out);
+    } catch {
+      throw new Error(`输出不是 JSON（退出码 ${r.code}）：\n${r.out}\n${r.err}`);
+    }
+    return { code: r.code, json, err: r.err };
+  }
+
+  cleanup(): void {
+    fs.rmSync(this.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}
+
+export function plan(steps: Array<{ role: string; task: string; writes?: boolean }>, summary = '测试计划'): string {
+  return `思路略。\n\n\`\`\`json\n${JSON.stringify({ summary, answer: null, steps: steps.map((s) => ({ writes: false, ...s })) })}\n\`\`\``;
+}
+
+export function verdict(pass: boolean, issues: string[] = []): string {
+  return `审查意见略。\n\n\`\`\`json\n${JSON.stringify({ verdict: pass ? 'pass' : 'fail', issues })}\n\`\`\``;
+}
+
+export function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
