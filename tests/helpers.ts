@@ -28,6 +28,7 @@ fallback: auto
 
 /** 假 AI 的一条回应，字段含义见 fake-agent.mjs。 */
 export interface FakeResponse {
+  stream?: Array<{ line: string; delayMs?: number }>;
   text?: string;
   exit?: number;
   stderr?: string;
@@ -65,6 +66,7 @@ export interface SandboxOptions {
   agents?: string[];
   /** 假 AI 是否声明为"启动后很快有输出"。 */
   streams?: boolean;
+  progressLines?: boolean;
   /** 追加到 agents.yaml 顶层的设置。 */
   agentsExtra?: Record<string, unknown>;
 }
@@ -101,7 +103,7 @@ export class Sandbox {
     fs.mkdirSync(path.join(this.home, 'plugins'), { recursive: true });
     fs.mkdirSync(path.join(this.project, '.dario'), { recursive: true });
 
-    for (const name of this.agents) this.writeFakePlugin(name, opts.streams ?? false);
+    for (const name of this.agents) this.writeFakePlugin(name, opts.streams ?? false, undefined, undefined, opts.progressLines);
     fs.writeFileSync(
       path.join(this.home, 'agents.yaml'),
       stringify({
@@ -122,7 +124,7 @@ export class Sandbox {
     }
   }
 
-  writeFakePlugin(name: string, streams: boolean, command: string = process.execPath, prefix: string[] = [FAKE_AGENT]): void {
+  writeFakePlugin(name: string, streams: boolean, command: string = process.execPath, prefix: string[] = [FAKE_AGENT], progressLines = false): void {
     const common = [...prefix, '--name', name, '--scenario', this.scenarioFile];
     fs.writeFileSync(
       path.join(this.home, 'plugins', `${name}.yaml`),
@@ -133,6 +135,7 @@ export class Sandbox {
         version_args: [...prefix, '--name', name, '--version'],
         args: { read_only: [...common, '--access', 'read-only'], write: [...common, '--access', 'write'] },
         streams,
+        ...(progressLines && { progress: 'lines' }),
       }),
     );
   }

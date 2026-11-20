@@ -15,7 +15,8 @@ import {
 } from '../core/defaults.js';
 import { describePlan } from '../core/orchestrator.js';
 import { formatJob, formatRoles, formatSteps, jobToJson } from '../core/report.js';
-import { exitCodeForJob, STATUS_LABEL } from '../core/types.js';
+import type { Engine } from '../core/engine.js';
+import { exitCodeForJob, STATUS_LABEL, type Job, type ProgressEvent } from '../core/types.js';
 import { ConfigError, DarioError, ellipsis, formatLocalTime } from '../core/util.js';
 import { runRepl } from './repl.js';
 
@@ -26,6 +27,10 @@ export interface CliIO {
   cwd: string;
   /** 标准输入是否连着终端。 */
   isTTY: boolean;
+  stderrIsTTY?: boolean;
+  columns?: number;
+  /** 真实命令行入口使用的终端流。 */
+  streams?: { stdin: NodeJS.ReadStream; stderr: NodeJS.WriteStream; stdout?: NodeJS.WriteStream };
   readStdin: () => Promise<string>;
   /** 在终端上提问（交互方式确认计划用）。 */
   ask?: (question: string) => Promise<string>;
@@ -55,11 +60,14 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
   dario init                       在当前目录生成 .dario/ 配置
   dario check                      校验配置，确认各家命令存在
   dario serve                      常驻运行，启动已启用的渠道
+  dario input-test                 检查终端输入（中文输入法、粘贴）是否正常
 
 选项：
   --to <角色>              指定角色（角色 id 或别名）
   -p, --print              无头方式
   --output-format <格式>   text（默认）或 json
+  --verbose                在纯文本输出里逐条显示 AI 的活动
+  --plain                  不使用动态界面，按纯文本输出
   -y, --yes                含改文件步骤的计划免确认
   --project <目录>         指定项目根目录
   -h, --help               显示本帮助
@@ -67,9 +75,11 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
 
 退出码：0 完成 · 1 任务失败 · 2 用法或配置错误 · 3 没有可用的 AI · 4 计划等待确认 · 5 取消或超时`;
 
-const SUBCOMMANDS = new Set(['roles', 'role', 'agents', 'health', 'jobs', 'job', 'approve', 'cancel', 'init', 'check', 'serve', 'help']);
+const SUBCOMMANDS = new Set(['roles', 'role', 'agents', 'health', 'jobs', 'job', 'approve', 'cancel', 'init', 'check', 'serve', 'input-test', 'help']);
 
 interface Parsed {
+  plain: boolean;
+  verbose: boolean;
   positionals: string[];
   to?: string;
   print: boolean;
@@ -83,7 +93,7 @@ interface Parsed {
 }
 
 function parseArgs(argv: string[]): Parsed {
-  const p: Parsed = { positionals: [], print: false, format: 'text', yes: false, save: false, reset: false, help: false, version: false };
+  const p: Parsed = { positionals: [], plain: false, print: false, verbose: false, format: 'text', yes: false, save: false, reset: false, help: false, version: false };
   const need = (i: number, flag: string): string => {
     const v = argv[i];
     if (v === undefined) throw new ConfigError(`${flag} 后面缺少取值。`);
@@ -98,6 +108,8 @@ function parseArgs(argv: string[]): Parsed {
     if (a === '--to') p.to = need(++i, '--to');
     else if (a.startsWith('--to=')) p.to = a.slice(5);
     else if (a === '-p' || a === '--print') p.print = true;
+    else if (a === '--verbose') p.verbose = true;
+    else if (a === '--plain') p.plain = true;
     else if (a === '--output-format') {
       const v = need(++i, '--output-format');
       if (v !== 'text' && v !== 'json') throw new ConfigError('--output-format 只能是 text 或 json。');
@@ -212,12 +224,39 @@ async function runTask(io: CliIO, p: Parsed): Promise<number> {
   const { engine } = app;
   if (!task) {
     if (!interactive) throw new ConfigError('没有任务描述。用法：dario "任务描述"，或通过标准输入传入。');
-    return runRepl(engine, io.stdout);
+    const streams = io.streams;
+    const stdout = streams?.stdout;
+    if (!p.plain && io.env.DARIO_PLAIN !== '1' && streams && stdout?.isTTY &&
+        (stdout.columns === undefined || stdout.columns >= 40)) {
+      let ui;
+      try {
+        ui = await import('../ui/repl.js');
+      } catch (error) {
+        io.stderr(`界面不可用（${(error as Error).message}），改用逐行交互。`);
+      }
+      if (ui) {
+        try {
+          const kind = await ui.runReplUi({ engine, stdin: streams.stdin, stdout, env: io.env, printLine: io.stdout });
+          if (kind === 'exit') return 0;
+        } catch (error) {
+          if (!(error instanceof ui.UiUnavailableError)) throw error;
+          io.stderr(`界面不可用（${error.message}），改用逐行交互。`);
+        }
+      }
+    }
+    return runRepl(engine, io.stdout, streams && stdout ? { input: streams.stdin, output: stdout } : undefined);
   }
 
-  engine.onProgress((e) => io.stderr(e.kind === 'plan' ? `[${e.jobId}] 计划：\n${e.text}` : `[${e.jobId}] ${e.text}`));
-  const ask = io.ask;
   const created = engine.create({ task, role: p.to, origin: { channel: 'terminal', senderId: os.userInfo().username } });
+  return executeJob(engine, created, p, io, false);
+}
+
+async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, resume: boolean): Promise<number> {
+  const { colorEnabled, pickOutputMode } = await import('../ui/mode.js');
+  const mode = pickOutputMode({ plainFlag: p.plain, format: p.format, stderrIsTTY: !!io.stderrIsTTY,
+    hasStreams: !!io.streams, columns: io.columns, env: io.env });
+  const ask = io.ask;
+  const progress = (event: ProgressEvent) => printProgress(event, p, io, !resume);
   const stopWatching = io.onInterrupt?.(() => {
     io.stderr(`
 [${created.id}] 收到中断，正在终止…`);
@@ -227,24 +266,59 @@ async function runTask(io: CliIO, p: Parsed): Promise<number> {
       // 任务已经结束
     }
   });
-  let job;
+  let job: Job | undefined;
+  let unsubscribe: (() => void) | undefined;
   try {
-    job = await engine.advance(created, {
-      autoApprove: p.yes,
-      confirm:
-        interactive && ask
-          ? async () => {
-              const answer = (await ask('这份计划会改动文件，执行吗？(y/N) ')).trim().toLowerCase();
-              return answer === 'y' || answer === 'yes' || answer === '确认';
+    if (mode === 'live' && io.streams) {
+      let ui;
+      try {
+        ui = await import('../ui/run.js');
+      } catch (error) {
+        io.stderr(`界面不可用（${(error as Error).message}），改用纯文本输出。`);
+      }
+      if (ui) {
+        try {
+          let displayFailed = false;
+          job = await ui.runLive({ engine, job: created, resume, autoApprove: p.yes, env: io.env,
+            ...io.streams, printPlain: progress, askPlain: ask, notice: line => {
+              displayFailed = true;
+              io.stderr(line);
+            } });
+          if (!displayFailed && job.status !== 'awaiting_approval') {
+            const conclusion = job.result?.conclusion?.trim() ?? '';
+            if (conclusion && io.streams.stdout?.isTTY) {
+              const { formatConclusion } = await import('../ui/markdown.js');
+              io.stdout(formatConclusion(conclusion, !io.env.NO_COLOR));
+            } else {
+              io.stdout(conclusion);
             }
+            io.stderr(ui.formatLiveSummary(job, colorEnabled({ stderrIsTTY: !!io.stderrIsTTY, env: io.env })));
+            return exitCodeForJob(job);
+          }
+        } catch (error) {
+          if (!(error instanceof ui.UiUnavailableError)) throw error;
+          io.stderr(`界面不可用（${error.message}），改用纯文本输出。`);
+        }
+      }
+    }
+    if (!job) {
+      unsubscribe = engine.onProgress(progress);
+      job = resume ? await engine.approve(created.id) : await engine.advance(created, {
+        autoApprove: p.yes,
+        confirm: io.isTTY && !p.print && ask
+          ? async () => ['y', 'yes', '确认'].includes((await ask('这份计划会改动文件，执行吗？(y/N) ')).trim().toLowerCase())
           : undefined,
-    });
+      });
+    }
   } finally {
+    unsubscribe?.();
     stopWatching?.();
   }
 
   if (p.format === 'json') {
     io.stdout(JSON.stringify(jobToJson(job), null, 2));
+  } else if (resume) {
+    io.stdout(formatJob(job));
   } else if (job.status === 'awaiting_approval') {
     io.stdout(job.plan ? describePlan(job.plan, engine.roles) : '');
     io.stderr(`\n[${job.id}] 这份计划会改动文件，尚未执行。运行 dario approve ${job.id} 开始执行，或加 --yes 免确认。`);
@@ -260,6 +334,14 @@ async function runTask(io: CliIO, p: Parsed): Promise<number> {
     io.stderr(notes.join('\n'));
   }
   return exitCodeForJob(job);
+}
+
+function printProgress(e: ProgressEvent, p: Parsed, io: CliIO, labelPlan = false): void {
+  if (e.kind === 'activity') {
+    if (p.verbose && p.format === 'text') io.stderr(`[${e.jobId}]     ${e.text}`);
+    return;
+  }
+  io.stderr(labelPlan && e.kind === 'plan' ? `[${e.jobId}] 计划：\n${e.text}` : `[${e.jobId}] ${e.text}`);
 }
 
 async function dispatch(argv: string[], io: CliIO): Promise<number> {
@@ -280,6 +362,14 @@ async function dispatch(argv: string[], io: CliIO): Promise<number> {
   if (sub === 'init') return cmdInit(io, p);
   if (sub === 'check') return cmdCheck(io, p);
   if (sub === 'serve') return cmdServe(io);
+  if (sub === 'input-test') {
+    if (!io.streams?.stdout) {
+      io.stderr('输入检查需要在终端里直接运行。');
+      return 2;
+    }
+    const { runInputTest } = await import('../ui/input-test.js');
+    return runInputTest({ stdin: io.streams.stdin, stdout: io.streams.stdout, env: io.env });
+  }
 
   const { engine } = await createApp({ cwd: io.cwd, env: io.env, projectRoot: p.project });
   switch (sub) {
@@ -340,25 +430,7 @@ async function dispatch(argv: string[], io: CliIO): Promise<number> {
       }
       // 任务属于哪个项目，就在哪个项目的配置下继续
       const target = await createApp({ cwd: pending.projectRoot, env: io.env, projectRoot: pending.projectRoot });
-      target.engine.onProgress((e) => io.stderr(`[${e.jobId}] ${e.text}`));
-      const stopWatching = io.onInterrupt?.(() => {
-        io.stderr(`
-[${pending.id}] 收到中断，正在终止…`);
-        try {
-          target.engine.cancel(pending.id);
-        } catch {
-          // 任务已经结束
-        }
-      });
-      let job;
-      try {
-        job = await target.engine.approve(pending.id);
-      } finally {
-        stopWatching?.();
-      }
-      if (p.format === 'json') io.stdout(JSON.stringify(jobToJson(job), null, 2));
-      else io.stdout(formatJob(job));
-      return exitCodeForJob(job);
+      return executeJob(target.engine, pending, p, io, true);
     }
     case 'cancel': {
       if (!args[0]) throw new ConfigError('用法：dario cancel <任务号>');
@@ -406,6 +478,9 @@ if (invokedDirectly) {
     env: process.env,
     cwd: process.cwd(),
     isTTY: process.stdin.isTTY === true,
+    stderrIsTTY: process.stderr.isTTY === true,
+    columns: process.stderr.columns,
+    streams: { stdin: process.stdin, stderr: process.stderr, stdout: process.stdout },
     readStdin: () => readAll(process.stdin),
     onInterrupt: (handler) => {
       const onSignal = (): void => handler();

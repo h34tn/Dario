@@ -1,4 +1,4 @@
-import { defineAgent, parseJsonLines, parseStreamJsonResult, PLUGIN_API_VERSION, type AgentPlugin, type InvokeRequest } from '../plugin.js';
+import { codexActivities, defineAgent, parseJsonLines, parseStreamJsonResult, PLUGIN_API_VERSION, streamJsonActivities, type AgentPlugin, type InvokeRequest } from '../plugin.js';
 
 function extraArgs(req: InvokeRequest): string[] {
   const extra = req.options.extra_args;
@@ -22,6 +22,7 @@ function claudeStyleArgs(req: InvokeRequest): string[] {
 export const claudePlugin: AgentPlugin = defineAgent({
   apiVersion: PLUGIN_API_VERSION,
   id: 'claude',
+  progress: streamJsonActivities,
   displayName: 'Claude Code',
   defaultCommand: 'claude',
   streams: true,
@@ -34,6 +35,7 @@ export const claudePlugin: AgentPlugin = defineAgent({
 export const codebuddyPlugin: AgentPlugin = defineAgent({
   apiVersion: PLUGIN_API_VERSION,
   id: 'codebuddy',
+  progress: streamJsonActivities,
   displayName: 'CodeBuddy',
   defaultCommand: 'codebuddy',
   streams: true,
@@ -46,6 +48,7 @@ export const codebuddyPlugin: AgentPlugin = defineAgent({
 export const codexPlugin: AgentPlugin = defineAgent({
   apiVersion: PLUGIN_API_VERSION,
   id: 'codex',
+  progress: codexActivities,
   displayName: 'Codex',
   defaultCommand: 'codex',
   streams: true,

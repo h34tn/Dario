@@ -34,6 +34,7 @@ export async function runRepl(
   };
 
   const off = engine.onProgress((e) => {
+    if (e.kind === 'activity') return;
     if (e.kind === 'plan') out(`[${e.jobId}] 计划：\n${e.text}`);
     else out(`[${e.jobId}] ${e.text}`);
   });

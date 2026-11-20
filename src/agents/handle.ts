@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentInstanceConfig } from '../core/config.js';
 import type { AgentDetect, AgentPort, AgentRunRequest, AgentRunResult } from '../core/ports.js';
-import { looksUnavailable, type AgentOutput, type AgentPlugin, type Classification, type RawResult } from '../plugin.js';
+import { realPath } from '../core/util.js';
+import { looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type RawResult } from '../plugin.js';
 import { buildEnv, runProcess, SYSTEM_ENV, which } from './spawn.js';
 
 export interface HandleSettings {
@@ -19,6 +20,37 @@ function firstLine(text: string): string {
       .map((l) => l.trim())
       .find(Boolean) ?? ''
   );
+}
+
+function displayText(value: string): string {
+  const text = value.trim().replace(/\s+/gu, ' ');
+  if (text.length <= 200) return text;
+  const chars = Array.from(text);
+  return chars.length > 200 ? chars.slice(0, 200).join('') + '…' : text;
+}
+
+function normalizeActivity(activity: Activity, cwd: string): Activity | undefined {
+  if (activity.kind === 'think') return activity;
+  if (activity.kind === 'say') {
+    const text = displayText(firstLine(activity.text));
+    return text ? { kind: 'say', text } : undefined;
+  }
+  let target = activity.target.trim();
+  if (activity.kind === 'read' || activity.kind === 'edit') {
+    if (path.isAbsolute(target)) {
+      // AI 报回来的路径和 cwd 可能一个是短文件名（如 PROGRA~1）、一个是长文件名，两种写法都试
+      for (const base of new Set([cwd, realPath(cwd)])) {
+        const relative = path.relative(base, target);
+        if (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep)) {
+          target = relative || '.';
+          break;
+        }
+      }
+    }
+    target = target.replaceAll('\\', '/');
+  }
+  target = displayText(target);
+  return target ? { kind: activity.kind, target } : undefined;
 }
 
 /** 从报错文字里挑出最能说明"为什么不可用"的那一行。 */
@@ -144,6 +176,13 @@ export class AgentHandle implements AgentPort {
       timeoutMs: req.timeoutMs,
       startupTimeoutMs: this.plugin.streams ? this.settings.startupTimeoutSeconds * 1000 : undefined,
       onSpawn: (pid) => req.onPid?.(pid),
+      onStdoutLine: this.plugin.progress && req.onActivity ? (line) => {
+        // 进程层隔离逐行回调的异常，下一行仍会正常处理。
+        for (const activity of this.plugin.progress!(line) ?? []) {
+          const normalized = normalizeActivity(activity, req.cwd);
+          if (normalized) req.onActivity!(normalized);
+        }
+      } : undefined,
     });
     req.onPid?.(undefined);
 

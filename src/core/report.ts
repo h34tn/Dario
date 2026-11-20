@@ -1,8 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Activity } from '../plugin.js';
 import type { RoleView } from './roles.js';
 import { exitCodeForJob, STATUS_LABEL, type Job } from './types.js';
 import { formatDuration } from './util.js';
+
+export function formatActivity(activity: Activity): string {
+  if (activity.kind === 'say') return activity.text;
+  if (activity.kind === 'think') return '思考中';
+  const label = { read: '读', search: '搜', run: '执行', edit: '改', tool: '工具' };
+  return `${label[activity.kind]} ${activity.target}`;
+}
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[已遮盖的私钥]'],

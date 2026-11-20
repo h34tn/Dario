@@ -114,6 +114,7 @@ export interface ProcessRequest {
   /** 启动后这么久没有任何输出就终止。不填则不检查。 */
   startupTimeoutMs?: number;
   onSpawn?: (pid: number) => void;
+  onStdoutLine?: (line: string) => void;
 }
 
 export interface ProcessOutcome {
@@ -133,6 +134,14 @@ export function runProcess(req: ProcessRequest): Promise<ProcessOutcome> {
   return new Promise((resolve) => {
     const started = Date.now();
     let stdout = '';
+    let pending = '';
+    const sendLine = (line: string): void => {
+      try {
+        req.onStdoutLine?.(line.endsWith('\r') ? line.slice(0, -1) : line);
+      } catch {
+        // 显示出错仍继续收集原始输出。
+      }
+    };
     let stderr = '';
     let timedOut = false;
     let startupTimedOut = false;
@@ -145,6 +154,7 @@ export function runProcess(req: ProcessRequest): Promise<ProcessOutcome> {
     const finish = (exitCode: number | null): void => {
       if (settled) return;
       settled = true;
+      if (pending) sendLine(pending);
       if (overall) clearTimeout(overall);
       if (startup) clearTimeout(startup);
       resolve({ exitCode, stdout, stderr, spawnError, timedOut, startupTimedOut, durationMs: Date.now() - started });
@@ -181,6 +191,12 @@ export function runProcess(req: ProcessRequest): Promise<ProcessOutcome> {
     child.stdout?.on('data', (chunk: string) => {
       gotOutput = true;
       stdout = append(stdout, chunk);
+      if (req.onStdoutLine) {
+        const lines = chunk.split('\n');
+        lines[0] = pending + lines[0];
+        pending = lines.pop()!;
+        for (const line of lines) sendLine(line);
+      }
     });
     child.stderr?.on('data', (chunk: string) => {
       gotOutput = true;

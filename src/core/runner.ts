@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ProjectConfig } from './config.js';
 import type { AgentCatalog } from './ports.js';
+import { formatActivity } from './report.js';
 import type { RoleBook } from './roles.js';
 import type { StateStore } from './state.js';
 import type { Access, Attempt, Job, ProgressEvent, StepKind, StepRecord } from './types.js';
@@ -46,7 +47,8 @@ export class StepRunner {
     const skippedBefore = (agent: string): Attempt[] => skipped.filter((s) => sequence.indexOf(s.agent) < sequence.indexOf(agent));
     const attempts: Attempt[] = usable.length === 0 ? [...skipped] : skippedBefore(usable[0]!);
     const base = { index, kind: req.kind, role: req.roleId, access, changedFiles: [] as string[], task: req.task };
-    const head = `${KIND_LABEL[req.kind]}（${roles.label(req.roleId)}）`;
+    const roleLabel = roles.label(req.roleId);
+    const head = `${KIND_LABEL[req.kind]}（${roleLabel}）`;
 
     if (usable.length === 0) {
       const detail = attempts.map((a) => `${a.agent}：${a.reason ?? '不可用'}`).join('；');
@@ -63,6 +65,7 @@ export class StepRunner {
     const workDir = state.jobDir(req.job.id);
     for (let i = 0; i < usable.length; i++) {
       const agent = usable[i]!;
+      const step = { index, kind: req.kind, role: req.roleId, roleLabel, agent };
       const port = catalog.get(agent)!;
       const timeoutMinutes = port.timeoutMinutes ?? role.timeoutMinutes ?? project.settings.defaultTimeoutMinutes;
       const label = `${String(index).padStart(2, '0')}-${req.kind}-${agent}`;
@@ -73,9 +76,10 @@ export class StepRunner {
       }
       if (i === 0 && attempts.length > 0) {
         const why = attempts.map((a) => `${a.agent} ${a.reason ?? '不可用'}`).join('；');
-        emit({ jobId: req.job.id, kind: 'fallback', text: `${why}，改用 ${agent}` });
+        const fallback = { from: attempts.map((a) => a.agent).join('、'), reason: attempts.map((a) => a.reason ?? '不可用').join('；'), to: agent };
+        emit({ jobId: req.job.id, kind: 'fallback', step, fallback, text: `${why}，改用 ${agent}` });
       }
-      emit({ jobId: req.job.id, kind: i === 0 ? 'step_start' : 'fallback', text: `${head}：交给 ${agent}` });
+      emit({ jobId: req.job.id, kind: i === 0 ? 'step_start' : 'fallback', step, text: `${head}：交给 ${agent}` });
 
       const res = await port.run({
         access,
@@ -84,6 +88,7 @@ export class StepRunner {
         timeoutMs: timeoutMinutes * 60000,
         workDir,
         label,
+        onActivity: (activity) => emit({ jobId: req.job.id, kind: 'activity', step, activity, text: formatActivity(activity) }),
         onPid: (pid) => {
           req.job.activePid = pid;
           state.saveJob(req.job);
@@ -97,7 +102,7 @@ export class StepRunner {
         state.markUnavailable(agent, reason, this.deps.cooldownMinutes);
         const next = usable[i + 1];
         if (roles.fallback === 'auto' && next) {
-          emit({ jobId: req.job.id, kind: 'fallback', text: `${agent} 不可用（${reason}），换成 ${next}` });
+          emit({ jobId: req.job.id, kind: 'fallback', step, fallback: { from: agent, reason, to: next }, text: `${agent} 不可用（${reason}），换成 ${next}` });
           continue;
         }
         const why =
@@ -120,6 +125,7 @@ export class StepRunner {
       emit({
         jobId: req.job.id,
         kind: 'step_end',
+        step: { ...step, outcome: record.outcome, durationMs: record.durationMs },
         text: `${head}：${agent} ${res.outcome === 'ok' ? '完成' : res.outcome === 'timeout' ? '超时' : '未完成'}`,
       });
       return record;

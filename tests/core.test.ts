@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isAlive, Sandbox } from './helpers.js';
+import { createApp } from '../src/compose.js';
 
 let sb: Sandbox;
 afterEach(() => sb?.cleanup());
@@ -345,15 +346,36 @@ describe('命令行', () => {
   });
 });
 
+describe('输出方式', () => {
+  it('帮助列出纯文本选项，显式指定时单次任务的两个输出逐字相同', async () => {
+    async function run(args: string[]) {
+      const box = new Sandbox();
+      try {
+        const { engine } = await createApp({ cwd: box.project, env: box.env() });
+        // 占用目录锁，让两个独立任务都能得到相同的任务号与确定的结论。
+        engine.state.acquireDirLock(box.project, 'J9999');
+        expect((await box.cli(['--help'])).out).toContain('--plain');
+        return await box.cli([...args, '测试']);
+      } finally {
+        box.cleanup();
+      }
+    }
+    const normal = await run([]);
+    expect(normal.out).toContain('J9999');
+    expect(await run(['--plain'])).toEqual(normal);
+  });
+
+});
+
 describe('分层', () => {
-  it('核心不引用渠道和具体适配器', () => {
+  it('核心不引用渠道、界面和具体适配器', () => {
     const coreDir = path.join(__dirname, '..', 'src', 'core');
     const offenders: string[] = [];
     for (const file of fs.readdirSync(coreDir)) {
       const text = fs.readFileSync(path.join(coreDir, file), 'utf8');
       for (const m of text.matchAll(/from\s+'([^']+)'/g)) {
         const spec = m[1]!;
-        if (spec.includes('/channels/') || spec.includes('/agents/') || spec.includes('/cli/') || spec.includes('compose')) {
+        if (spec.includes('/channels/') || spec.includes('/agents/') || spec.includes('/cli/') || spec.includes('/ui/') || spec.includes('compose')) {
           offenders.push(`${file} → ${spec}`);
         }
       }

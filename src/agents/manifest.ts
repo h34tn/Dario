@@ -30,6 +30,7 @@ const manifestSchema = z
     prompt: z.enum(['stdin', 'arg']).default('stdin'),
     output: z.enum(['stdout', 'file']).default('stdout'),
     streams: z.boolean().default(false),
+    progress: z.literal('lines').optional(),
     env_pass: z.array(z.string()).default([]),
     unavailable_patterns: z.array(z.string()).default([]),
   })
@@ -65,6 +66,12 @@ export function pluginFromManifest(text: string, file: string): AgentPlugin {
     defaultCommand: m.command,
     versionArgs: m.version_args,
     streams: m.streams,
+    ...(m.progress && {
+      progress(line: string) {
+        const text = line.trim();
+        return text ? [{ kind: 'say' as const, text }] : undefined;
+      },
+    }),
     envPass: m.env_pass,
     build(req) {
       const base = req.access === 'write' ? m.args.write : m.args.read_only;

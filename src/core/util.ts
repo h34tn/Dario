@@ -30,7 +30,7 @@ export function shortHash(text: string): string {
 }
 
 /**
- * 路径的真实形式：解开符号链接，并把 Windows 的短文件名（如 LUOHEN~1）展开成长文件名。
+ * 路径的真实形式：解开符号链接，并把 Windows 的短文件名（如 PROGRA~1）展开成长文件名。
  * 路径不存在时退回到绝对化的结果。
  */
 export function realPath(p: string): string {

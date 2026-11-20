@@ -1,4 +1,4 @@
-import type { Access, FailureKind } from '../plugin.js';
+import type { Access, Activity, FailureKind } from '../plugin.js';
 
 export type { Access, FailureKind };
 
@@ -145,12 +145,26 @@ export interface Job {
   cancelRequested?: boolean;
 }
 
-export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished';
+export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity';
+
+export interface ProgressStepInfo {
+  index: number;
+  kind: StepKind;
+  role: string;
+  roleLabel: string;
+  agent?: string;
+  outcome?: StepOutcome;
+  durationMs?: number;
+}
 
 export interface ProgressEvent {
   jobId: string;
   kind: ProgressKind;
   text: string;
+  step?: ProgressStepInfo;
+  /** 换人时，多个被放弃的 AI 用顿号连接。 */
+  fallback?: { from: string; reason: string; to: string };
+  activity?: Activity;
 }
 
 /** 无头方式的退出码，与规格第 4 节一致。 */

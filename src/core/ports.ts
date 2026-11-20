@@ -2,7 +2,7 @@
  * 核心对外的两个接口：AI 目录与渠道。核心只依赖这里的类型，
  * 具体的适配器和渠道在核心之外实现并注入。
  */
-import type { Access, FailureKind } from '../plugin.js';
+import type { Access, Activity, FailureKind } from '../plugin.js';
 
 export interface AgentDetect {
   installed: boolean;
@@ -21,6 +21,7 @@ export interface AgentRunRequest {
   label: string;
   /** AI 子进程启动和结束时回调，结束时传 undefined。 */
   onPid?: (pid: number | undefined) => void;
+  onActivity?: (activity: Activity) => void;
 }
 
 export interface AgentRunResult {

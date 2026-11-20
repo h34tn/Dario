@@ -7,6 +7,7 @@
  * 剧本：{ "<name>": [ <回应>, ... ] }，同一个名字每被调用一次取下一条，用完后重复最后一条。
  * 回应的字段：
  *   text        输出到标准输出的答复
+ *   stream      [{ line, delayMs? }]，写完文件后依次等待并输出各行，缺省等待 0 毫秒
  *   exit        退出码，默认 0
  *   stderr      输出到标准错误的内容
  *   delayMs     回应前等待
@@ -80,6 +81,12 @@ for (const f of response.files ?? []) {
   }
 }
 if (response.delayMs) await new Promise((r) => setTimeout(r, response.delayMs));
+if (!response.silent) {
+  for (const { line, delayMs } of response.stream ?? []) {
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+    process.stdout.write(line + '\n');
+  }
+}
 if (response.hang) {
   if (!response.silent) process.stdout.write('开始工作…\n');
   await new Promise(() => setInterval(() => {}, 1000));

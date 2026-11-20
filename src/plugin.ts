@@ -8,6 +8,14 @@
 export const PLUGIN_API_VERSION = 1 as const;
 
 export type Access = 'read-only' | 'write';
+export type Activity =
+  | { kind: 'read'; target: string }
+  | { kind: 'search'; target: string }
+  | { kind: 'run'; target: string }
+  | { kind: 'edit'; target: string }
+  | { kind: 'tool'; target: string }
+  | { kind: 'say'; text: string }
+  | { kind: 'think' };
 export type FailureKind = 'unavailable' | 'task_failed' | 'timeout';
 
 export interface InvokeRequest {
@@ -74,12 +82,117 @@ export interface AgentPlugin {
   defaultAllowedTools?: { readOnly: string[]; write: string[] };
   build(req: InvokeRequest): Invocation;
   parse(raw: RawResult): AgentOutput;
+  /** 把一行标准输出翻译成零到多条活动。只用于显示，不参与任何判断。可选。 */
+  progress?(line: string): Activity[] | undefined;
   /** 可选：自行判断失败类别。返回 undefined 时使用 Dario 的默认判断。 */
   classify?(raw: RawResult, output: AgentOutput): Classification | undefined;
 }
 
 export function defineAgent(plugin: AgentPlugin): AgentPlugin {
   return plugin;
+}
+
+function object(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function jsonRecord(line: string): Record<string, unknown> | undefined {
+  try {
+    return object(JSON.parse(line));
+  } catch {
+    return undefined;
+  }
+}
+
+function toolActivity(name: string, input: Record<string, unknown>): Activity {
+  let kind: 'read' | 'edit' | 'run' | 'search';
+  let target: unknown;
+  switch (name) {
+    case 'Read':
+      kind = 'read';
+      target = input.file_path;
+      break;
+    case 'Grep':
+    case 'Glob':
+      kind = 'search';
+      target = input.pattern;
+      break;
+    case 'Bash':
+    case 'PowerShell':
+      kind = 'run';
+      target = input.command;
+      break;
+    case 'Edit':
+    case 'Write':
+    case 'NotebookEdit':
+      kind = 'edit';
+      target = typeof input.file_path === 'string' ? input.file_path : input.notebook_path;
+      break;
+    default:
+      return { kind: 'tool', target: name };
+  }
+  return typeof target === 'string' ? { kind, target } : { kind: 'tool', target: name };
+}
+
+/** 提取 Claude Code 和 CodeBuddy 的助手活动，保留内容块的顺序。 */
+export function streamJsonActivities(line: string): Activity[] {
+  const record = jsonRecord(line);
+  if (record?.type !== 'assistant') return [];
+  const blocks = object(record.message)?.content;
+  if (!Array.isArray(blocks)) return [];
+  const activities: Activity[] = [];
+  for (const value of blocks) {
+    const block = object(value);
+    if (block?.type === 'thinking') activities.push({ kind: 'think' });
+    else if (block?.type === 'text' && typeof block.text === 'string') activities.push({ kind: 'say', text: block.text });
+    else if (block?.type === 'tool_use' && typeof block.name === 'string') {
+      activities.push(toolActivity(block.name, object(block.input) ?? {}));
+    }
+  }
+  return activities;
+}
+
+/** 去掉已知外壳的启动参数，未识别的命令完整保留。 */
+function innerCommand(command: string): string {
+  const parts = /^(?:"([^"]+)"|'([^']+)'|([^\s'"]+))\s+(.+)$/s.exec(command);
+  if (!parts) return command;
+  const program = (parts[1] ?? parts[2] ?? parts[3]!).split(/[\\/]/).at(-1)!.toLowerCase();
+  const args = parts[4]!;
+  let inner;
+  if (/^(powershell|pwsh)(\.exe)?$/.test(program)) {
+    inner = /^(?:-(?!command\b)[\w-]+\s+)*-command\s+(["'])(.*)\1$/is.exec(args);
+  } else if (program === 'bash' || program === 'sh') {
+    inner = /^-(?:lc|c)\s+(["'])(.*)\1$/s.exec(args);
+  } else if (/^cmd(\.exe)?$/.test(program)) {
+    inner = /^(?:\/[ds]\s+)*\/c\s+(["'])(.*)\1$/is.exec(args);
+  }
+  return inner?.[2] ?? command;
+}
+
+/** 提取 Codex 的活动，工具只在开始时报告一次。 */
+export function codexActivities(line: string): Activity[] {
+  const record = jsonRecord(line);
+  if (record?.type !== 'item.started' && record?.type !== 'item.completed') return [];
+  const item = object(record.item);
+  if (!item) return [];
+  if (item.type === 'reasoning') return [{ kind: 'think' }];
+  if (record.type === 'item.completed') {
+    return item.type === 'agent_message' && typeof item.text === 'string' ? [{ kind: 'say', text: item.text }] : [];
+  }
+  if (item.type === 'command_execution' && typeof item.command === 'string') {
+    // 外壳的包装对读的人没有信息量，纯文本和动态界面都只显示内层命令；原始命令在任务目录的原始输出里
+    return [{ kind: 'run', target: innerCommand(item.command) }];
+  }
+  if (item.type === 'mcp_tool_call' && typeof item.server === 'string' && typeof item.tool === 'string') {
+    return [{ kind: 'tool', target: `${item.server}.${item.tool}` }];
+  }
+  if (item.type === 'file_change' && Array.isArray(item.changes)) {
+    return item.changes.flatMap((change) => {
+      const target = object(change)?.path;
+      return typeof target === 'string' ? [{ kind: 'edit', target }] : [];
+    });
+  }
+  return [];
 }
 
 /** 把逐行 JSON 的输出解析成对象数组，忽略不是 JSON 的行。 */
