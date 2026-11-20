@@ -9,7 +9,7 @@ import { pickSymbols } from './theme.js';
 
 export { UiUnavailableError };
 
-interface Options {
+export interface ReplOptions {
   engine: Engine;
   stdin: NodeJS.ReadStream;
   stdout: NodeJS.WriteStream;
@@ -18,7 +18,10 @@ interface Options {
 }
 
 /** 卸载之后仍可能有排队的任务需要确认，用原终端逐行提问。 */
-async function finishInPlain(session: Session, opts: Options) {
+export async function finishInPlain(session: Session, opts: ReplOptions, error: Error) {
+  opts.printLine(`界面显示出错（${error.message}），改用逐行交互。`);
+  const { runningJobId, queued } = session.getSnapshot();
+  if (!runningJobId && !queued) return session.whenIdle();
   const off = opts.engine.onProgress(event => {
     if (event.kind !== 'activity' && event.jobId === session.getSnapshot().runningJobId) opts.printLine(`[${event.jobId}] ${event.text}`);
   });
@@ -51,7 +54,7 @@ async function finishInPlain(session: Session, opts: Options) {
   }
 }
 
-export async function runReplUi(opts: Options): Promise<'exit' | 'plain'> {
+export async function runReplUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
   const { engine, stdin, stdout, env } = opts;
   const color = !!stdout.isTTY && !env.NO_COLOR;
   const session = new Session({ engine, color });
@@ -96,10 +99,7 @@ export async function runReplUi(opts: Options): Promise<'exit' | 'plain'> {
     const result = await ended;
     unmount();
     if (!(result instanceof Error)) return result;
-    opts.printLine(`界面显示出错（${result.message}），改用逐行交互。`);
-    const { runningJobId, queued } = session.getSnapshot();
-    if (runningJobId || queued) await finishInPlain(session, opts);
-    else await session.whenIdle();
+    await finishInPlain(session, opts, result);
     return 'plain';
   } finally {
     unmount();

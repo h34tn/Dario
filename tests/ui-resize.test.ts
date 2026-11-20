@@ -1,6 +1,23 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, expect, it, vi } from 'vitest';
-import { watchResize } from '../src/ui/resize.js';
+import { pollSize, watchResize } from '../src/ui/resize.js';
+
+it('独立轮询按指定间隔刷新，主动停止或查询抛错后都不再刷新', () => {
+  vi.useFakeTimers();
+  const stream = { _refreshSize: vi.fn() };
+  const stop = pollSize(stream, 25);
+  vi.advanceTimersByTime(24);
+  expect(stream._refreshSize).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(51);
+  expect(stream._refreshSize).toHaveBeenCalledTimes(3);
+  stop();
+  vi.advanceTimersByTime(100);
+  expect(stream._refreshSize).toHaveBeenCalledTimes(3);
+  stream._refreshSize.mockImplementation(() => { throw new Error('流已关闭'); });
+  pollSize(stream, 25);
+  vi.advanceTimersByTime(100);
+  expect(stream._refreshSize).toHaveBeenCalledTimes(4);
+});
 
 it('每百毫秒主动查询一次，取消、禁用或流关闭后停止查询', () => {
   vi.useFakeTimers();

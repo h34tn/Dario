@@ -68,6 +68,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
   --output-format <格式>   text（默认）或 json
   --verbose                在纯文本输出里逐条显示 AI 的活动
   --plain                  不使用动态界面，按纯文本输出
+  --inline                 交互方式使用行内界面，不占满整个终端
   -y, --yes                含改文件步骤的计划免确认
   --project <目录>         指定项目根目录
   -h, --help               显示本帮助
@@ -79,6 +80,7 @@ const SUBCOMMANDS = new Set(['roles', 'role', 'agents', 'health', 'jobs', 'job',
 
 interface Parsed {
   plain: boolean;
+  inline: boolean;
   verbose: boolean;
   positionals: string[];
   to?: string;
@@ -93,7 +95,7 @@ interface Parsed {
 }
 
 function parseArgs(argv: string[]): Parsed {
-  const p: Parsed = { positionals: [], plain: false, print: false, verbose: false, format: 'text', yes: false, save: false, reset: false, help: false, version: false };
+  const p: Parsed = { positionals: [], plain: false, inline: false, print: false, verbose: false, format: 'text', yes: false, save: false, reset: false, help: false, version: false };
   const need = (i: number, flag: string): string => {
     const v = argv[i];
     if (v === undefined) throw new ConfigError(`${flag} 后面缺少取值。`);
@@ -110,6 +112,7 @@ function parseArgs(argv: string[]): Parsed {
     else if (a === '-p' || a === '--print') p.print = true;
     else if (a === '--verbose') p.verbose = true;
     else if (a === '--plain') p.plain = true;
+    else if (a === '--inline') p.inline = true;
     else if (a === '--output-format') {
       const v = need(++i, '--output-format');
       if (v !== 'text' && v !== 'json') throw new ConfigError('--output-format 只能是 text 或 json。');
@@ -230,13 +233,15 @@ async function runTask(io: CliIO, p: Parsed): Promise<number> {
         (stdout.columns === undefined || stdout.columns >= 40)) {
       let ui;
       try {
-        ui = await import('../ui/repl.js');
+        const inline = p.inline || io.env.DARIO_INLINE === '1' || (stdout.rows !== undefined && stdout.rows < 12);
+        ui = inline ? await import('../ui/repl.js') : await import('../ui/full.js');
       } catch (error) {
         io.stderr(`界面不可用（${(error as Error).message}），改用逐行交互。`);
       }
       if (ui) {
         try {
-          const kind = await ui.runReplUi({ engine, stdin: streams.stdin, stdout, env: io.env, printLine: io.stdout });
+          const run = 'runFullUi' in ui ? ui.runFullUi : ui.runReplUi;
+          const kind = await run({ engine, stdin: streams.stdin, stdout, env: io.env, printLine: io.stdout });
           if (kind === 'exit') return 0;
         } catch (error) {
           if (!(error instanceof ui.UiUnavailableError)) throw error;

@@ -1,7 +1,7 @@
 import { Box, Static, Text } from 'ink';
 import { useScreen } from './screen.js';
 import { clip } from './text.js';
-import { formatDuration } from '../core/util.js';
+import { stepText } from './lines.js';
 import type { FeedLine, FeedState, StepView } from './feed.js';
 import { toneColor, type Symbols } from './theme.js';
 
@@ -15,27 +15,10 @@ export interface LiveJobProps {
   color: boolean;
 }
 
-const phases = { plan: '计划', step: '执行', review: '审查', rework: '返工', summary: '汇总' };
-
-function elapsed(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  return [Math.floor(seconds / 60), seconds % 60].map(n => String(n).padStart(2, '0')).join(':');
-}
-
 type StepProps = Pick<LiveJobProps, 'now' | 'symbols' | 'color'> & { truncate?: boolean };
 
 export function StepRow({ step, now, symbols, color, stopping, truncate }: StepProps & { step: StepView; stopping?: boolean }) {
-  const running = step.state === 'running';
-  const tone = running ? 'dim' : step.state === 'done' ? 'done' : 'fail';
-  const symbol = tone === 'dim' ? symbols.frames[Math.floor(now / 250) % symbols.frames.length] : symbols[tone];
-  const suffix = running && stopping ? '正在终止…' : step.state === 'timeout' ? '超时' : step.state === 'failed' ? '未完成' : '';
-  return <Text wrap={truncate ? 'truncate-end' : undefined}>
-    <Text {...toneColor(tone, color)}>{symbol}</Text> {phases[step.kind]}{'   '}
-    <Text {...toneColor('role', color)}>{step.role}</Text>
-    {step.agent && <> · <Text {...toneColor('agent', color)}>{step.agent}</Text></>}
-    {'   '}<Text {...toneColor('dim', color)}>{running ? elapsed(now - step.startedAt) : formatDuration(step.durationMs ?? 0)}</Text>
-    {suffix && `  ${suffix}`}
-  </Text>;
+  return <Text wrap={truncate ? 'truncate-end' : undefined}>{stepText(step, { now, symbols, color, stopping })}</Text>;
 }
 
 /** 步骤状态占一行，动态区底部另留两行余量。 */

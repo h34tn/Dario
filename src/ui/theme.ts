@@ -6,6 +6,8 @@ export interface Symbols {
   warn: string;
   frames: string[];
   ellipsis: string;
+  rule: string;
+  down: string;
   wide: boolean;
 }
 
@@ -16,8 +18,8 @@ export function pickSymbols(env: NodeJS.ProcessEnv, system: { platform: string; 
   const wide = system.platform === 'win32' && !env.WT_SESSION && !env.TERM_PROGRAM
     && /^(zh|ja|ko)/i.test(system.locale);
   return env.WT_SESSION
-    ? { done: '✓', fail: '✗', warn: '!', frames: [...'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'], ellipsis: '…', wide }
-    : { done: '+', fail: 'x', warn: '!', frames: ['-', '\\', '|', '/'], ellipsis: '...', wide };
+    ? { done: '✓', fail: '✗', warn: '!', frames: [...'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'], ellipsis: '…', rule: '─', down: '↓', wide }
+    : { done: '+', fail: 'x', warn: '!', frames: ['-', '\\', '|', '/'], ellipsis: '...', rule: '-', down: 'v', wide };
 }
 
 export type Tone = 'done' | 'fail' | 'warn' | 'role' | 'agent' | 'dim' | 'title';

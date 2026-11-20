@@ -5,6 +5,18 @@ export interface ResizeHandlers {
   onSettle: () => void;
 }
 
+type SizeStream = Partial<Pick<NodeJS.WriteStream, 'columns'>> & { _refreshSize?: () => void };
+
+/** Windows 上主动刷新终端大小，流关闭后停止查询。 */
+export function pollSize(stream: SizeStream, ms = 100): () => void {
+  if (ms <= 0 || !stream._refreshSize) return () => {};
+  const timer = setInterval(() => {
+    try { stream._refreshSize?.(); } catch { clearInterval(timer); }
+  }, ms);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 /** 监听终端大小变化，把一连串 resize 事件归并成“开始”和“稳定”两个时刻。返回取消监听的函数。 */
 export function watchResize(
   stream: Pick<NodeJS.WriteStream, 'prependListener' | 'removeListener'> & { _refreshSize?: () => void },
@@ -24,15 +36,9 @@ export function watchResize(
     if (first) handlers.onStart();
   }
   stream.prependListener('resize', resize);
-  let poll: NodeJS.Timeout | undefined;
-  if (pollMs > 0 && stream._refreshSize) {
-    poll = setInterval(() => {
-      try { stream._refreshSize?.(); } catch { clearInterval(poll); }
-    }, pollMs);
-    poll.unref();
-  }
+  const stopPoll = pollSize(stream, pollMs);
   return () => {
-    clearInterval(poll);
+    stopPoll();
     stream.removeListener('resize', resize);
     clearTimeout(timer);
   };
