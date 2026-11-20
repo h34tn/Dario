@@ -96,7 +96,7 @@ it('担当者着色：正常用 AI 名的颜色，首选异常用警告色，无
 
 it('四十列下活动、状态、菜单与两种计划视图都留有一格', async () => {
   const view = await narrow(<Box flexDirection="column">
-    <CurrentStep now={0} symbols={pickSymbols({})} color={false} feed={{ lines: [], stopping: false,
+    <CurrentStep now={0} symbols={pickSymbols({})} color={false} activityLines={[long]} feed={{ lines: [], stopping: false,
       activities: [long], current: { index: 0, kind: 'step', role: '实现', startedAt: 0, state: 'running' } }} />
     <StatusBar status={{ project: long, roles: [] }} color={false} queued={2} />
     <StatusBar status={{ project: '项目', roles: [] }} color queued={2} contextJobId={long} />

@@ -22,6 +22,7 @@ export interface FeedState {
 }
 
 export const EMPTY_FEED: FeedState = { lines: [], activities: [], stopping: false };
+const MAX_ACTIVITIES = 500;
 
 export function shortRole(label: string): string {
   return label.replace(/（[^（）]*）$/, '');
@@ -31,7 +32,7 @@ export function reduceFeed(state: FeedState, event: ProgressEvent, now: number):
   const { kind, step, fallback } = event;
   if (kind === 'activity') {
     if (!state.current || state.activities.at(-1) === event.text) return state;
-    return { ...state, activities: [...state.activities.slice(-2), event.text] };
+    return { ...state, activities: [...state.activities.slice(1 - MAX_ACTIVITIES), event.text] };
   }
   if (kind === 'fallback' && fallback) {
     const text = `${fallback.from} 不可用（${fallback.reason}），改用 ${fallback.to}`;

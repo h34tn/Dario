@@ -35,13 +35,21 @@ it('换人记录提示，新担当者接手时重新计时并清空活动', () =
   expect(next.lines).toBe(notice.lines);
 });
 
-it('活动保留最近三条，连续相同时复用原状态', () => {
+it('活动按发生顺序保留，连续相同时复用原状态', () => {
   let state = apply(EMPTY_FEED, 'step_start', { step });
   for (const text of ['一', '二', '三', '思考中']) state = apply(state, 'activity', { text });
-  expect(state.activities).toEqual(['二', '三', '思考中']);
+  expect(state.activities).toEqual(['一', '二', '三', '思考中']);
   expect(apply(state, 'activity', { text: '思考中' })).toBe(state);
   expect(markStopping(state).stopping).toBe(true);
   expect(state.stopping).toBe(false);
+});
+
+it('超过五百条时丢最旧的活动，新步骤从空开始', () => {
+  let state = apply(EMPTY_FEED, 'step_start', { step });
+  const activities = Array.from({ length: 507 }, (_, i) => `活动 ${i}`);
+  for (const text of activities) state = apply(state, 'activity', { text });
+  expect(state.activities).toEqual(activities.slice(7));
+  expect(apply(state, 'step_start', { step }).activities).toEqual([]);
 });
 
 it('没有当前步骤时忽略活动，计划也不更新界面', () => {

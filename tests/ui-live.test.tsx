@@ -25,6 +25,29 @@ it.each(['', '终端'])('定稿行和动态区按终端符号显示，关闭颜�
 });
 
 const plan = { summary: '', steps: [{ role: 'coder', writes: true, task: '第一行\n第二行', acceptance: '编译通过' }] };
+
+it.each([12, 20, 40, undefined])('单次命令在 %s 行终端显示放得下的全部活动', async rows => {
+  const view = render(<></>);
+  if (rows) Object.assign(view.stdout, { rows });
+  const activities = Array.from({ length: 100 }, (_, i) => `活动 ${i}\n第二行`);
+  const available = (rows ?? 24) - 3;
+  const current: StepView = { index: 1, kind: 'step', role: '实现', startedAt: 0, state: 'running' };
+  for (const count of [4, available, available + 1, 100]) {
+    view.rerender(<RunApp jobId="J1" title="任务" color={false} symbols={pickSymbols({ WT_SESSION: '终端' })}
+      inputEnabled={false} onInterrupt={vi.fn()} onError={vi.fn()}
+      feed={{ current, lines: [], stopping: false, activities: activities.slice(0, count) }} />);
+    const omitted = count > available ? count - available + 1 : 0;
+    const expected = activities.slice(omitted, count).map(text => '    ' + text.split('\n')[0]);
+    if (omitted) expected.unshift(`    …前面还有 ${omitted} 条`);
+    await vi.waitFor(() => {
+      const lines = view.lastFrame()!.split('\n');
+      const start = lines.findIndex(line => line.includes('执行   实现'));
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(lines.slice(start + 1)).toEqual(expected);
+      expect(lines.length - start).toBeLessThan(rows ?? 24);
+    });
+  }
+});
 it('收起时只写标题和定稿行，恢复后显示当前步骤、活动和计划确认', async () => {
   const step: StepView = { index: 1, kind: 'plan', role: '主控', startedAt: 0, state: 'done' };
   const props = { jobId: 'J0012', title: '任务标题', symbols: pickSymbols({}), color: false,

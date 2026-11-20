@@ -38,21 +38,26 @@ export function StepRow({ step, now, symbols, color, stopping, truncate }: StepP
   </Text>;
 }
 
-export function currentStepLines(feed: FeedState): number {
-  return feed.current ? 1 + feed.activities.length : 0;
+/** 步骤状态占一行，动态区底部另留两行余量。 */
+export function visibleActivities(activities: string[], rows: number, footerRows: number, ellipsis: string): string[] {
+  const available = Math.max(1, rows - 1 - footerRows - 2);
+  if (activities.length <= available) return activities;
+  const omitted = activities.length - available + 1;
+  return [`${ellipsis}前面还有 ${omitted} 条`, ...activities.slice(omitted)];
 }
 
-export function CurrentStep({ feed, ...props }: StepProps & { feed: FeedState }) {
+export function CurrentStep({ feed, activityLines, ...props }: StepProps & { feed: FeedState; activityLines: string[] }) {
   const { columns, wide, ellipsis } = useScreen();
   const limit = columns - 1;
   const { color } = props;
   return feed.current && <>
     <StepRow {...props} step={feed.current} stopping={feed.stopping} />
-    {feed.activities.map((text, i) => <Text key={i} wrap="truncate-end" {...toneColor('dim', color)}>{clip('    ' + text.split(/\r?\n/, 1)[0], limit, wide, ellipsis)}</Text>)}
+    {activityLines.map((text, i) => <Text key={i} wrap="truncate-end" {...toneColor('dim', color)}>{clip('    ' + text.split(/\r?\n/, 1)[0], limit, wide, ellipsis)}</Text>)}
   </>;
 }
 
 export function LiveJob({ jobId, title, feed, now, symbols, color, suspended }: LiveJobProps) {
+  const { rows, ellipsis } = useScreen();
   const items: (FeedLine | { type: 'title' })[] = [{ type: 'title' }, ...feed.lines];
   return <Box flexDirection="column">
     <Static items={items}>{line => {
@@ -60,6 +65,7 @@ export function LiveJob({ jobId, title, feed, now, symbols, color, suspended }: 
       if (line.type === 'notice') return <Text key={line.key} {...toneColor('warn', color)}>{symbols.warn} {line.text}</Text>;
       return <StepRow key={line.key} step={line.step} {...{ now, symbols, color }} />;
     }}</Static>
-    {!suspended && <CurrentStep {...{ feed, now, symbols, color }} />}
+    {!suspended && rows >= 3 && <CurrentStep {...{ feed, now, symbols, color }} truncate
+      activityLines={visibleActivities(feed.activities, rows, 0, ellipsis)} />}
   </Box>;
 }

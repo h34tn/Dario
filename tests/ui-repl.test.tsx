@@ -11,6 +11,11 @@ import { DEFAULT_ROWS, plan, setup, step, type RoleRow } from './ui-session-help
 
 afterEach(cleanup);
 
+const cursor = vi.hoisted(() => vi.fn());
+vi.mock('ink', async importOriginal => ({
+  ...await importOriginal<typeof import('ink')>(), useCursor: () => ({ setCursorPosition: cursor }),
+}));
+
 async function screen(rows?: RoleRow[]) {
   const data = await setup({}, rows);
   const onExit = vi.fn();
@@ -55,6 +60,53 @@ it('菜单过滤与补全，提交后输入清空并回显到历史', async () =
   await contains('上文 J0001');
   expect(view.frames.join('\n')).toContain('> 文字');
   expect(view.lastFrame()).toMatch(/\n>\s*\n/);
+});
+
+it.each([6, 10, 12, 20, 40])('交互界面在 %i 行终端随菜单调整活动和输入光标', async rows => {
+  const { props, view, key, session, emit, hold, contains } = await screen();
+  Object.assign(view.stdout, { rows });
+  const finish = hold();
+  session.submit('任务');
+  await contains('主控安排 · 任务');
+  const jobId = 'J0001';
+  emit({ jobId, kind: 'step_start', text: '', step });
+  const activities = Array.from({ length: 100 }, (_, i) => `活动 ${i}`);
+  async function check(count: number, menu: boolean) {
+    const footer = menu ? Math.min(6, rows - 5) : 1;
+    const available = Math.max(1, rows - 5 - footer);
+    const omitted = count > available ? count - available + 1 : 0;
+    const expected = activities.slice(omitted, count).map(text => '    ' + text);
+    if (omitted) expected.unshift(`    ...前面还有 ${omitted} 条`);
+    await vi.waitFor(() => {
+      const frame = view.lastFrame()!.split('\n');
+      const start = frame.findIndex(line => line.includes('执行   实现'));
+      expect(start).toBeGreaterThanOrEqual(0);
+      const lines = frame.slice(start);
+      const input = lines.findIndex(line => line.trimEnd() === (menu ? '> /' : '>'));
+      expect(lines.slice(1, input - 1)).toEqual(expected);
+      expect(lines.length - input - 1).toBe(footer);
+      expect(lines.length).toBeLessThan(rows);
+      expect(cursor).toHaveBeenLastCalledWith(expect.objectContaining({ y: input }));
+    });
+  }
+  for (const text of activities.slice(0, 4)) emit({ jobId, kind: 'activity', text });
+  await check(4, false);
+  for (const text of activities.slice(4)) emit({ jobId, kind: 'activity', text });
+  await check(100, false);
+  key('/');
+  await check(100, true);
+  Object.assign(view.stdout, { rows: 5 });
+  view.rerender(<ReplApp {...props} />);
+  await vi.waitFor(() => expect(view.lastFrame()).not.toMatch(/执行   实现|前面还有|> \//));
+  Object.assign(view.stdout, { rows });
+  view.rerender(<ReplApp {...props} />);
+  await check(100, true);
+  key('\x1b');
+  await check(100, false);
+  emit({ jobId, kind: 'step_end', text: '', step: { ...step, outcome: 'ok' } });
+  await vi.waitFor(() => expect(view.lastFrame()).not.toMatch(/前面还有|活动 \d/));
+  finish();
+  await session.whenIdle();
 });
 
 it('角色表只有主控、可写角色、审查时，状态栏与原来的文字完全相同', async () => {
