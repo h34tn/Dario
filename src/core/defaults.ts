@@ -18,7 +18,7 @@ roles:
   server:
     alias: [服务端]
     description: 服务端与配表相关的改动。
-    candidates: [codebuddy, codex]
+    candidates: [codex, codebuddy]
     access: write
   reviewer:
     alias: [审查]
@@ -29,7 +29,7 @@ roles:
   bulk:
     alias: [杂活]
     description: 量大、低风险的工作，如批量检查、整理、文档初稿。
-    candidates: [deepseek, codebuddy]
+    candidates: [codebuddy, deepseek]
     access: write
 
 # auto：某家不可用时自动换下一家；manual：只报告，等人换
@@ -89,9 +89,8 @@ agents: {}
   #     read_only: [Read, Grep, Glob]
   #     write: [Read, Grep, Glob, Edit, Write, "Bash(npm test:*)"]
   #   env_pass: [MY_PROXY_*]             # 额外传给它的环境变量
-  # deepseek:
-  #   plugin: codebuddy
-  #   model: deepseek-v4-pro
+  # codebuddy:
+  #   model: glm-5.3                     # 不写则用 CodeBuddy 自己的默认模型
 
 # 某家 AI 被判为不可用后，多久之内不再尝试（分钟）
 cooldown_minutes: 10
