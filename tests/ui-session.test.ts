@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
+import { formatRoles } from '../src/core/report.js';
 import { ConfigError } from '../src/core/util.js';
-import { plan, setup, step } from './ui-session-helper.js';
+import { DEFAULT_ROWS, plan, setup, step } from './ui-session-helper.js';
 
 it('开场、回显、标题和定稿历史只追加，动态快照不保留定稿行', async () => {
   const { session, hold, snap, emit } = await setup();
@@ -137,15 +138,72 @@ it('上一个任务的差异包含统计、截断和未跟踪说明，读取失�
   await vi.waitFor(() => expect(snap().history.at(-1)).toMatchObject({ type: 'error', text: '无法读取' }));
 });
 
-it('状态栏按主控、可写、审查排序，首选异常标黄，刷新失败保留上次值', async () => {
+it('状态栏按角色表顺序列出全部担当者，标记优先保留的角色和首选异常，刷新失败保留上次值', async () => {
   const { session, engine, snap } = await setup();
   const status = snap().status;
   expect(status).toEqual({ project: 'rise', roles: [
-    { label: '主控', holder: 'claude', degraded: false }, { label: '实现', holder: 'codex', degraded: true },
-    { label: '审查', holder: 'claude', degraded: false }] });
+    { label: '主控', holder: 'claude', degraded: false, priority: true },
+    { label: '实现', holder: 'codex', degraded: true, priority: true },
+    { label: '测试', holder: 'codex', degraded: false, priority: false },
+    { label: '审查', holder: 'claude', degraded: false, priority: true },
+    { label: '杂活', holder: 'claude', degraded: false, priority: false }] });
   engine.rolesView.mockRejectedValueOnce(new Error('探测失败'));
   session.submit('/role coder reset');
   await Promise.resolve();
   expect(engine.rolesView).toHaveBeenCalledTimes(2);
   expect(snap().status).toBe(status);
+});
+
+it('首屏按担当者匹配型号，临时换人后更新，读取 AI 信息失败时回退到名字', async () => {
+  const { session, snap, engine } = await setup({}, DEFAULT_ROWS, [
+    { id: 'claude', model: 'claude-fable-5-2' }, { id: 'codex' }, { id: '另一家', model: '另一型号' },
+  ]);
+  expect(snap().status.roles.map(r => r.model)).toEqual(['claude-fable-5-2', undefined, undefined, 'claude-fable-5-2', 'claude-fable-5-2']);
+  const rows = await engine.rolesView();
+  engine.rolesView.mockResolvedValue(rows.map(r => r.id === 'coder' ? { ...r, holder: '另一家' } : r));
+  session.submit('/role coder 另一家');
+  await vi.waitFor(() => expect(snap().status.roles[1]).toMatchObject({ holder: '另一家', model: '另一型号' }));
+
+  engine.agentsView.mockRejectedValueOnce(new Error('无法读取 AI'));
+  session.submit('/health');
+  await vi.waitFor(() => expect(snap().status.roles.every(r => r.model === undefined)).toBe(true));
+  expect(snap().status.roles.map(r => r.holder)).toEqual(['claude', '另一家', 'codex', 'claude', 'claude']);
+  session.submit('任务');
+  await session.whenIdle();
+  expect(snap().status.roles[1]?.model).toBe('另一型号');
+});
+
+it('只有主控、可写角色、审查三个角色时，状态栏的角色与改动前一致且都优先保留', async () => {
+  const rows = DEFAULT_ROWS.filter(r => ['lead', 'coder', 'review'].includes(r.id));
+  const { snap } = await setup({}, rows);
+  expect(snap().status).toEqual({ project: 'rise', roles: [
+    { label: '主控', holder: 'claude', degraded: false, priority: true },
+    { label: '实现', holder: 'codex', degraded: true, priority: true },
+    { label: '审查', holder: 'claude', degraded: false, priority: true }] });
+});
+
+it('优先保留的可写角色是主控与审查之外的第一个可写角色，其余角色照角色表顺序列出', async () => {
+  const { snap } = await setup({}, [
+    { id: 'helper', label: '杂活', holder: 'claude', access: 'write', state: 'ok' },
+    { id: 'lead', label: '主控', holder: 'claude', access: 'write', state: 'ok' },
+    { id: 'coder', label: '实现', holder: 'codex', access: 'write', state: 'ok' },
+    { id: 'review', label: '审查', holder: 'codex', access: 'write', state: 'ok' },
+    { id: 'docs', label: '文档', access: 'write', state: 'unavailable' },
+  ]);
+  expect(snap().status.roles).toEqual([
+    { label: '杂活', holder: 'claude', degraded: false, priority: true },
+    { label: '主控', holder: 'claude', degraded: false, priority: true },
+    { label: '实现', holder: 'codex', degraded: false, priority: false },
+    { label: '审查', holder: 'codex', degraded: false, priority: true },
+    { label: '文档', holder: undefined, degraded: true, priority: false }]);
+});
+
+it('/roles 与 /agents 的输出文字不受状态栏影响', async () => {
+  const { session, engine, snap } = await setup();
+  session.submit('/roles');
+  session.submit('/agents');
+  await session.whenIdle();
+  const views = await engine.rolesView() as unknown as Parameters<typeof formatRoles>[0];
+  expect(snap().history.filter(h => h.type === 'text').map(h => 'text' in h && h.text))
+    .toEqual([formatRoles(views, 'auto'), 'codex：可用 · 版本']);
 });

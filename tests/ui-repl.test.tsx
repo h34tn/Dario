@@ -7,12 +7,12 @@ import { ReplApp } from '../src/ui/ReplApp.js';
 import type { Engine } from '../src/core/engine.js';
 import { runReplUi, UiUnavailableError } from '../src/ui/repl.js';
 import { pickSymbols } from '../src/ui/theme.js';
-import { plan, setup, step } from './ui-session-helper.js';
+import { DEFAULT_ROWS, plan, setup, step, type RoleRow } from './ui-session-helper.js';
 
 afterEach(cleanup);
 
-async function screen() {
-  const data = await setup();
+async function screen(rows?: RoleRow[]) {
+  const data = await setup({}, rows);
   const onExit = vi.fn();
   const props = { session: data.session, color: false, symbols: pickSymbols({}), onExit, onError: vi.fn() };
   const view = render(<ReplApp {...props} />);
@@ -57,9 +57,22 @@ it('菜单过滤与补全，提交后输入清空并回显到历史', async () =
   expect(view.lastFrame()).toMatch(/\n>\s*\n/);
 });
 
+it('角色表只有主控、可写角色、审查时，状态栏与原来的文字完全相同', async () => {
+  const { view, contains } = await screen(DEFAULT_ROWS.filter(r => ['lead', 'coder', 'review'].includes(r.id)));
+  await contains('rise · ');
+  expect(view.lastFrame()!.split('\n').filter(line => line.startsWith('rise · ')))
+    .toEqual(['rise · 主控 claude · 实现 codex · 审查 claude']);
+});
+
+it('状态栏第一帧就同时显示已配置的型号和未配置型号的担当者名字', async () => {
+  const { session } = await setup({}, DEFAULT_ROWS, [{ id: 'claude', model: 'claude-fable-5-2' }, { id: 'codex' }]);
+  const view = render(<ReplApp session={session} color={false} symbols={pickSymbols({})} onExit={vi.fn()} onError={vi.fn()} />);
+  expect(view.frames[0]).toContain('rise · 主控 claude-fable-5-2 · 实现 codex');
+});
+
 it('状态栏、步骤与活动随队列更新，批准计划时按键只交给确认框', async () => {
   const { key, session, engine, contains, emit, hold } = await screen();
-  await contains('rise · 主控 claude · 实现 codex · 审查 claude');
+  await contains('rise · 主控 claude · 实现 codex · 测试 codex · 审查 claude · 杂活 claude');
   const finish = hold();
   session.submit('一');
   session.submit('二');

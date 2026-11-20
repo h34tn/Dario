@@ -382,4 +382,30 @@ describe('分层', () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  // 静态导入、仅导入副作用和动态导入三种写法都算引用。
+  const specifiers = (dir: string) => fs.readdirSync(dir).flatMap(file => {
+    const text = fs.readFileSync(path.join(dir, file), 'utf8');
+    return [...text.matchAll(/(?:from\s*|import\s*\(?\s*)['"]([^'"]+)['"]/g)].map(m => ({ file, spec: m[1]!, text: m[0] }));
+  });
+
+  it('界面不引用 AI 接入层和渠道', () => {
+    const uiDir = path.join(__dirname, '..', 'src', 'ui');
+    const all = specifiers(uiDir);
+    expect(all.some(s => s.spec.startsWith('../core/'))).toBe(true);
+    const offenders = all.filter(s => /\/(agents|channels)\/|compose/.test(s.spec)).map(s => `${s.file} → ${s.spec}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('命令行只用 await import 加载界面', () => {
+    const cliDir = path.join(__dirname, '..', 'src', 'cli');
+    const toUi = specifiers(cliDir).filter(s => s.spec.startsWith('../ui/'));
+    expect(toUi.length).toBeGreaterThan(0);
+    for (const file of fs.readdirSync(cliDir)) {
+      const text = fs.readFileSync(path.join(cliDir, file), 'utf8');
+      const total = text.match(/['"]\.\.\/ui\//g)?.length ?? 0;
+      const lazy = text.match(/await import\(\s*['"]\.\.\/ui\//g)?.length ?? 0;
+      expect(`${file}：${lazy}/${total}`).toBe(`${file}：${total}/${total}`);
+    }
+  });
 });

@@ -1,4 +1,5 @@
 import { setImmediate } from 'node:timers/promises';
+import { stripVTControlCharacters } from 'node:util';
 import { useState, type ReactElement } from 'react';
 import { Box } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
@@ -10,8 +11,9 @@ import { PlanPrompt } from '../src/ui/PlanPrompt.js';
 import { TextInput } from '../src/ui/TextInput.js';
 import { EMPTY_EDITOR } from '../src/ui/editor.js';
 import { GlyphContext } from '../src/ui/screen.js';
+import type { StatusView } from '../src/ui/session.js';
 import { displayWidth } from '../src/ui/text.js';
-import { pickSymbols } from '../src/ui/theme.js';
+import { paint, pickSymbols, type Tone } from '../src/ui/theme.js';
 
 const cursor = vi.hoisted(() => vi.fn());
 vi.mock('ink', async importOriginal => ({
@@ -21,10 +23,10 @@ afterEach(cleanup);
 const long = '·“中”'.repeat(20);
 const glyphs = { wide: true, ellipsis: '...' };
 
-async function narrow(tree: ReactElement) {
+async function narrow(tree: ReactElement, columns = 40, wide = glyphs.wide) {
   const view = render(<></>);
-  Object.defineProperty(view.stdout, 'columns', { value: 40 });
-  view.rerender(<GlyphContext.Provider value={glyphs}>{tree}</GlyphContext.Provider>);
+  Object.defineProperty(view.stdout, 'columns', { value: columns });
+  view.rerender(<GlyphContext.Provider value={{ ...glyphs, wide }}>{tree}</GlyphContext.Provider>);
   await setImmediate();
   return view;
 }
@@ -33,6 +35,64 @@ function check(frame: string) {
   expect(frame).not.toContain('…');
   for (const line of frame.split('\n')) expect(displayWidth(line, true)).toBeLessThanOrEqual(39);
 }
+
+it('只有三个角色时保留原有的状态栏文字', async () => {
+  const status = { project: 'project', roles: [
+    { label: '主控', holder: 'a1', degraded: false, priority: true },
+    { label: '实现', holder: 'a2', degraded: false, priority: true },
+    { label: '审查', holder: 'a3', degraded: false, priority: true },
+  ] };
+  const view = await narrow(<StatusBar status={status} queued={0} color={false} />, 80);
+  expect(view.lastFrame()).toBe('project · 主控 a1 · 实现 a2 · 审查 a3');
+});
+
+const five: StatusView = { project: '项目', roles: [
+  { label: '主控', holder: 'a1', degraded: false, priority: true },
+  { label: '实现', holder: 'a2', degraded: true, priority: true },
+  { label: '测试', degraded: true, priority: false },
+  { label: '审查', holder: 'a3', degraded: false, priority: true },
+  { label: '杂活', holder: 'a4', degraded: false, priority: false },
+] };
+// 依次收起的每一步。
+const collapse = [
+  '项目 · 主控 a1 · 实现 a2 · 测试 无可用 · 审查 a3 · 杂活 a4 · 排队 2 · 上文 J0001',
+  '项目 · 主控 a1 · 实现 a2 · 测试 无可用 · 审查 a3 · 排队 2 · 上文 J0001',
+  '项目 · 主控 a1 · 实现 a2 · 审查 a3 · 排队 2 · 上文 J0001',
+  '项目 · 主控 a1 · 实现 a2 · 审查 a3 · 排队 2',
+  '项目 · 主控 a1 · 实现 a2 · 审查 a3',
+  '项目 · 主控 a1 · 实现 a2',
+  '项目 · 主控 a1',
+  '项目',
+];
+
+it.each(collapse)('状态栏在恰好留一格时显示「%s」', async expected => {
+  const view = await narrow(<StatusBar status={five} queued={2} contextJobId="J0001" color={false} />,
+    displayWidth(expected, glyphs.wide) + 1);
+  expect(view.lastFrame()).toBe(expected);
+});
+
+it.each(collapse.map((line, i) => [line, collapse[i + 1] ?? '...']))('少一列时「%s」收起为「%s」', async (line, next) => {
+  const view = await narrow(<StatusBar status={five} queued={2} contextJobId="J0001" color={false} />,
+    displayWidth(line, glyphs.wide));
+  expect(view.lastFrame()).toBe(next);
+});
+
+it('宽度不定的「·」按终端约定计宽：占一格时放得下的整行，占两格时要收起', async () => {
+  const columns = displayWidth(collapse[0]!, false) + 1;
+  expect(displayWidth(collapse[0]!, true)).toBeGreaterThan(columns - 1);
+  const bar = <StatusBar status={five} queued={2} contextJobId="J0001" color={false} />;
+  expect((await narrow(bar, columns, false)).lastFrame()).toBe(collapse[0]);
+  expect((await narrow(bar, columns, true)).lastFrame()).toBe(collapse[1]);
+});
+
+it('担当者着色：正常用 AI 名的颜色，首选异常用警告色，无可用用失败色', async () => {
+  const frame = (await narrow(<StatusBar status={five} queued={2} contextJobId="J0001" color />, 200)).lastFrame()!;
+  expect(stripVTControlCharacters(frame)).toBe(collapse[0]);
+  const tones: Array<[Tone, string]> = [['role', '主控'], ['agent', 'a1'], ['role', '实现'], ['warn', 'a2'], ['role', '测试'],
+    ['fail', '无可用'], ['agent', 'a3'], ['role', '杂活'], ['agent', 'a4'], ['dim', '上文 J0001']];
+  for (const [tone, text] of tones) expect(frame).toContain(paint(tone, text, true));
+  expect(frame).not.toContain(paint('agent', 'a2', true));
+});
 
 it('四十列下活动、状态、菜单与两种计划视图都留有一格', async () => {
   const view = await narrow(<Box flexDirection="column">

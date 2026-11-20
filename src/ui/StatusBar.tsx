@@ -10,12 +10,18 @@ export function StatusBar({ status, queued, contextJobId, color }: {
   const { columns, wide, ellipsis } = useScreen();
   const limit = columns - 1;
   const parts = [status.project];
+  const extraRoles: number[] = [];
   for (const role of status.roles) {
+    if (!role.priority) extraRoles.push(parts.length);
     const tone = !role.holder ? 'fail' : role.degraded ? 'warn' : 'agent';
-    parts.push(paint('role', role.label, color) + ' ' + paint(tone, role.holder ?? '无可用', color));
+    const name = role.holder ? role.model || role.holder : '无可用';
+    parts.push(paint('role', role.label, color) + ' ' + paint(tone, name, color));
   }
   if (queued) parts.push(`排队 ${queued}`);
   if (contextJobId) parts.push(paint('dim', `上文 ${contextJobId}`, color));
-  while (parts.length > 1 && displayWidth(parts.join(' · '), wide) > limit) parts.pop();
+  while (parts.length > 1 && displayWidth(parts.join(' · '), wide) > limit) {
+    const index = extraRoles.pop() ?? parts.length - 1;
+    parts.splice(index, 1);
+  }
   return <Text wrap="truncate-end">{parts.length === 1 ? clip(status.project, limit, wide, ellipsis) : parts.join(' · ')}</Text>;
 }

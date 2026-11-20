@@ -17,7 +17,7 @@ export type HistoryItem = { [K in TextKind]: { id: number; type: K; text: string
 
 export interface StatusView {
   project: string;
-  roles: Array<{ label: string; holder?: string; degraded: boolean }>;
+  roles: Array<{ label: string; holder?: string; model?: string; degraded: boolean; priority: boolean }>;
 }
 
 export interface SessionSnapshot {
@@ -112,28 +112,28 @@ export class Session {
       });
       this.update({ history: [...history, ...items], feed: { ...next, lines: [] } });
     });
-    await Promise.all([this.refreshStatus(), this.loadAgents()]);
+    await this.refreshStatus();
   }
 
-  private async loadAgents() {
+  private async loadAgents(version: number) {
     try {
-      const agents = (await this.engine.agentsView()).map(a => a.id);
-      this.completion = { ...this.completion, agents };
-    } catch { /* 探测失败时仍然可以手工输入名字。 */ }
+      const agents = await this.engine.agentsView();
+      if (version === this.statusVersion) this.completion = { ...this.completion, agents: agents.map(a => a.id) };
+      return new Map(agents.map(a => [a.id, a.model]));
+    } catch { return undefined; }
   }
 
   private async refreshStatus() {
     const version = ++this.statusVersion;
     try {
-      const views = await this.engine.rolesView();
+      const [views, models] = await Promise.all([this.engine.rolesView(), this.loadAgents(version)]);
       const { leadRole, reviewRole } = this.engine.project.settings;
       const writer = views.find(v => v.access === 'write' && v.id !== leadRole && v.id !== reviewRole);
-      const ids = new Set([leadRole, writer?.id, reviewRole]);
-      const roles: StatusView['roles'] = [];
-      for (const id of ids) {
-        const view = views.find(v => v.id === id);
-        if (view) roles.push({ label: shortRole(this.roleLabel(view.id)), holder: view.holder, degraded: view.candidates[0]?.state !== 'ok' });
-      }
+      const priorityIds = new Set([leadRole, writer?.id, reviewRole]);
+      const roles = views.map(view => ({
+        label: shortRole(this.roleLabel(view.id)), holder: view.holder, model: view.holder ? models?.get(view.holder) : undefined,
+        degraded: view.candidates[0]?.state !== 'ok', priority: priorityIds.has(view.id),
+      }));
       if (version !== this.statusVersion) return;
       this.completion = { ...this.completion, roles: views.map(({ id, alias }) => ({ id, alias })) };
       this.update({ status: { project: this.snapshot.status.project, roles } });
