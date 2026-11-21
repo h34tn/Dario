@@ -29,6 +29,7 @@ export interface SubmitRequest {
   origin: Origin;
   autoApprove?: boolean;
   confirm?: RunOptions['confirm'];
+  confirmFallback?: RunOptions['confirmFallback'];
   context?: string;
   /** 同一次交互里上一个任务留下的各角色会话，本任务接着用。 */
   sessions?: Record<string, RoleSession>;
@@ -175,11 +176,11 @@ export class Engine {
 
   async submit(req: SubmitRequest): Promise<Job> {
     const job = this.create(req);
-    return this.advance(job, { autoApprove: req.autoApprove ?? false, confirm: req.confirm });
+    return this.advance(job, { autoApprove: req.autoApprove ?? false, confirm: req.confirm, confirmFallback: req.confirmFallback });
   }
 
-  /** 批准等待确认的计划并继续执行。 */
-  async approve(jobId: string): Promise<Job> {
+  /** 批准等待确认的计划并继续执行。批准的是计划；执行中要不要换人仍然另问。 */
+  async approve(jobId: string, opts: Pick<RunOptions, 'confirmFallback'> = {}): Promise<Job> {
     const job = this.requireJob(jobId);
     if (job.status !== 'awaiting_approval') {
       throw new ConfigError(`任务 ${job.id} 当前是"${job.status}"状态，不在等待确认。`);
@@ -188,7 +189,7 @@ export class Engine {
       throw new ConfigError(`任务 ${job.id} 属于另一个项目：${job.projectRoot}。请在那个目录里批准。`);
     }
     this.deps.state.audit('job_approved', { job: job.id });
-    return this.advance(job, { autoApprove: true });
+    return this.advance(job, { autoApprove: true, confirmFallback: opts.confirmFallback });
   }
 
   /** 取消任务。正在运行时终止 AI 进程树，由推进它的进程收尾。 */

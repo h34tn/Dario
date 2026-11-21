@@ -14,9 +14,9 @@ import {
   DEFAULT_ROLES_YAML,
 } from '../core/defaults.js';
 import { describePlan } from '../core/orchestrator.js';
-import { formatJob, formatRoles, formatSteps, jobToJson } from '../core/report.js';
+import { formatFallbackQuestion, formatJob, formatRoles, formatSteps, jobToJson } from '../core/report.js';
 import type { Engine } from '../core/engine.js';
-import { exitCodeForJob, STATUS_LABEL, type Job, type ProgressEvent } from '../core/types.js';
+import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job, type ProgressEvent } from '../core/types.js';
 import { ConfigError, DarioError, ellipsis, formatLocalTime } from '../core/util.js';
 import { runRepl } from './repl.js';
 
@@ -308,8 +308,16 @@ async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, re
     }
     if (!job) {
       unsubscribe = engine.onProgress(progress);
-      job = resume ? await engine.approve(created.id) : await engine.advance(created, {
+      // --yes 视为事先同意换人；能逐行询问时当场问；否则没法询问，fallback 为 ask 时这一步停下
+      const agreed = (answer: string): boolean => ['y', 'yes', '确认'].includes(answer.trim().toLowerCase());
+      const confirmFallback = p.yes
+        ? async () => true
+        : io.isTTY && !p.print && ask
+          ? async (q: FallbackQuestion) => agreed(await ask(`[${q.jobId}] ${formatFallbackQuestion(q).join('')}(y/N) `))
+          : undefined;
+      job = resume ? await engine.approve(created.id, { confirmFallback }) : await engine.advance(created, {
         autoApprove: p.yes,
+        confirmFallback,
         confirm: io.isTTY && !p.print && ask
           ? async () => ['y', 'yes', '确认'].includes((await ask('这份计划会改动文件，执行吗？(y/N) ')).trim().toLowerCase())
           : undefined,

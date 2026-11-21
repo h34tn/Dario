@@ -5,6 +5,8 @@ import { Session, type SessionOptions } from '../src/ui/session.js';
 
 export const step = { index: 1, kind: 'step', role: 'coder', roleLabel: '实现（coder）', agent: 'codex' } as const;
 export const plan = { summary: '', steps: [{ role: 'coder', task: '改文件', writes: true }] };
+/** 主控的首选 claude 额度用尽，备选是 codex。 */
+export const question = { jobId: 'J0001', role: 'lead', roleLabel: '主控（lead）', from: [{ agent: 'claude', model: 'claude-x', reason: '额度用尽' }], to: { agent: 'codex', model: 'gpt-x' } };
 
 /** 角色表的一行；holder 为空表示没有可用候选，state 是首选候选的状态。 */
 export interface RoleRow { id: string; label: string; holder?: string; access: 'write' | 'read-only'; state: 'ok' | 'unavailable' }
@@ -30,7 +32,7 @@ export async function setup(options?: Partial<SessionOptions>, rows: RoleRow[] =
     agentsView: vi.fn(async () => agents.map(a => ({ ...a, installed: true, enabled: true, version: '版本' }))),
     onProgress(fn: (event: ProgressEvent) => void) { listeners.add(fn); return () => listeners.delete(fn); },
     create: vi.fn<Engine['create']>(req => ({ ...job, ...req, id: 'J' + String(++count).padStart(4, '0') })),
-    advance: vi.fn<Engine['advance']>(async j => j), approve: vi.fn(async (id: string) => ({ ...job, id })),
+    advance: vi.fn<Engine['advance']>(async j => j), approve: vi.fn<Engine['approve']>(async id => ({ ...job, id })),
     cancel: vi.fn(() => job), jobs: vi.fn(() => [job]), job: vi.fn(() => job),
     resetRole: vi.fn(() => '已恢复'), setRole: vi.fn(() => '已指定'), health: vi.fn(async () => [{ agent: 'codex', ok: true, detail: '正常' }]),
   };

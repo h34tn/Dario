@@ -49,6 +49,16 @@ dario role 实现 claude --save  # 写回项目的角色表
 dario role 实现 --reset        # 恢复
 ```
 
+某家 AI 达到限额、登录失效或过载时，Dario 默认自动换成候选里的下一家。想先被问一句再换，把项目 `.dario/roles.yaml` 最后一行改成 `fallback: ask`：
+
+```
+! 主控的担当者 claude（claude-fable-5-2） 不可用（You've hit your limit · resets 6pm）。
+  改用备选 codex（gpt-6.2-astra） 继续这个任务吗？
+改用备选继续吗？  y 继续   n 停止任务
+```
+
+同一个任务里同一对换人只问一次。脚本里用 `--yes` 表示事先同意；既没法询问又没加 `--yes` 时不换人，任务停下并说明原因。
+
 给脚本或其他 AI 调用：
 
 ```

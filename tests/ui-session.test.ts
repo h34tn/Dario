@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { formatRoles } from '../src/core/report.js';
 import { ConfigError } from '../src/core/util.js';
-import { DEFAULT_ROWS, plan, setup, step } from './ui-session-helper.js';
+import { DEFAULT_ROWS, plan, question, setup, step } from './ui-session-helper.js';
 
 it('开场、回显、标题和定稿历史只追加，动态快照不保留定稿行', async () => {
   const { session, hold, snap, emit } = await setup();
@@ -67,6 +67,39 @@ it('各角色的 AI 会话随任务带下去，失败的任务也带，清空后
   expect(engine.create.mock.calls[3][0]).not.toHaveProperty('sessions');
 });
 
+it('换人询问可同意或用中断拒绝；批准已有计划时同样能问', async () => {
+  const { session, engine, snap, job } = await setup();
+  for (const approved of [true, false]) {
+    let decision: boolean | undefined;
+    engine.advance.mockImplementationOnce(async (job, opts) => {
+      decision = await opts.confirmFallback!(question);
+      return job;
+    });
+    session.submit('任务');
+    expect(snap().ask).toBe(question);
+    if (approved) session.decideFallback(true);
+    else session.interrupt();
+    expect(snap().ask).toBeUndefined();
+    await session.whenIdle();
+    expect(decision).toBe(approved);
+  }
+  // 拒绝换人不是取消任务
+  expect(engine.cancel).not.toHaveBeenCalled();
+  let decision: boolean | undefined;
+  engine.approve.mockImplementationOnce(async (id, opts) => {
+    decision = await opts!.confirmFallback!(question);
+    return { ...job, id };
+  });
+  session.submit('/approve J0009');
+  await vi.waitFor(() => expect(snap().ask).toBe(question));
+  session.decideFallback(true);
+  await session.whenIdle();
+  expect(decision).toBe(true);
+  // 没有在问的时候，回答不起作用
+  session.decideFallback(true);
+  expect(snap().ask).toBeUndefined();
+});
+
 it('计划可批准或用中断拒绝，两种选择都清除确认状态', async () => {
   const { session, engine, snap } = await setup();
   for (const approved of [true, false]) {
@@ -122,7 +155,7 @@ it('查看、设置、检查、批准和取消指令分别传到对应引擎接�
   expect(engine.jobs).toHaveBeenCalledWith(10);
   expect(engine.job).toHaveBeenCalledWith('J0001');
   expect(engine.setRole).toHaveBeenCalledWith('coder', 'codex', false);
-  expect(engine.approve).toHaveBeenCalledWith('J0003');
+  expect(engine.approve).toHaveBeenCalledWith('J0003', { confirmFallback: expect.any(Function) });
   session.submit('/cancel J0001');
   expect(engine.cancel).toHaveBeenCalledWith('J0001');
 });

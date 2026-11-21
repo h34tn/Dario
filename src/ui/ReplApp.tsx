@@ -7,6 +7,7 @@ import { suggest } from './completion.js';
 import { editorReduce, editorSetValue, EMPTY_EDITOR, type EditorState } from './editor.js';
 import { CurrentStep, StepRow, visibleActivities } from './LiveJob.js';
 import { itemLines } from './lines.js';
+import { FallbackPrompt } from './FallbackPrompt.js';
 import { PlanPrompt } from './PlanPrompt.js';
 import { DisplayBoundary } from './RunApp.js';
 import type { HistoryItem, Session } from './session.js';
@@ -83,7 +84,7 @@ export function useSessionEditor({ session, onExit, suspended }: Pick<Props, 'se
       else if (armed.current) session.requestExit('exit');
       else arm(true);
     }
-  }, { isActive: !suspended && !snap.plan });
+  }, { isActive: !suspended && !snap.plan && !snap.ask });
   const warningText = warning ? '再按一次 Ctrl+C 退出' + (snap.runningJobId ? '（正在运行的任务会被取消）' : '') : '';
   return { snap, editor, current, change, now, warningText, suggestions: suggest(editor.value, session.completionContext()) };
 }
@@ -102,13 +103,15 @@ function Screen({ session, symbols, color, onExit, suspended }: Props) {
 
   return <Box flexDirection="column">
     <Static items={snap.history}>{item => <Entry key={item.id} {...{ item, color, symbols }} />}</Static>
-    {!suspended && (snap.plan || rows >= minRows) && <>
+    {!suspended && (snap.plan || snap.ask || rows >= minRows) && <>
       <CurrentStep feed={snap.feed} {...{ activityLines, now, color, symbols }} truncate />
       {snap.plan && <PlanPrompt key={snap.runningJobId} plan={snap.plan} roleLabel={session.roleLabel} color={color}
         onDecide={approved => session.decidePlan(approved)} />}
+      {snap.ask && <FallbackPrompt key={snap.ask.from[0]?.agent + '>' + snap.ask.to.agent} question={snap.ask} symbols={symbols} color={color}
+        onDecide={approved => session.decideFallback(approved)} />}
       <StatusBar status={snap.status} queued={snap.queued} contextJobId={snap.contextJobId} color={color} />
       <TextInput state={editor} currentState={current} onChange={change} onSubmit={text => session.submit(text)}
-        isActive={!snap.plan} row={stepRows + 1} color={color} />
+        isActive={!snap.plan && !snap.ask} row={stepRows + 1} color={color} />
       {warningText ? <Text {...toneColor('warn', color)}>{clip(warningText, limit, wide, ellipsis)}</Text>
         : suggestions.length ? <CommandMenu suggestions={suggestions} color={color} />
         : <Text wrap="truncate-end" {...toneColor('dim', color)}>{clip('  / 指令   Esc 中断当前任务   Ctrl+C 退出', limit, wide, ellipsis)}</Text>}

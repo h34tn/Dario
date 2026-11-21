@@ -3,7 +3,7 @@ import path from 'node:path';
 import { HELP_TEXT, parseCommand, type Command } from '../core/commands.js';
 import type { Engine } from '../core/engine.js';
 import { formatJob, formatRoles } from '../core/report.js';
-import { STATUS_LABEL, type Job, type Plan } from '../core/types.js';
+import { STATUS_LABEL, type FallbackQuestion, type Job, type Plan } from '../core/types.js';
 import { DarioError, ellipsis } from '../core/util.js';
 import type { CompletionContext } from './completion.js';
 import { colorizeDiff, readDiff } from './diff.js';
@@ -26,6 +26,8 @@ export interface SessionSnapshot {
   runningJobId?: string;
   queued: number;
   plan?: Plan;
+  /** 正在等发起人回答的换人询问。 */
+  ask?: FallbackQuestion;
   contextJobId?: string;
   status: StatusView;
   exiting?: 'exit' | 'plain';
@@ -64,6 +66,7 @@ export class Session {
   private working = false;
   private readonly waiters = new Set<() => void>();
   private answer?: (approved: boolean) => void;
+  private answerFallback?: (approved: boolean) => void;
   private exitKind?: 'exit' | 'plain';
   private context?: string;
   /** 各角色的 AI 会话，随任务一路带下去，`/new` 时丢弃。 */
@@ -222,7 +225,7 @@ export class Session {
     for (let work = this.queue.shift(); work; work = this.queue.shift()) {
       this.update({ queued: this.queue.length });
       try { await this.runOne(work); } catch (error) { this.error(error); }
-      this.update({ runningJobId: undefined, feed: EMPTY_FEED, plan: undefined });
+      this.update({ runningJobId: undefined, feed: EMPTY_FEED, plan: undefined, ask: undefined });
       await this.refreshStatus();
     }
     this.working = false;
@@ -237,7 +240,7 @@ export class Session {
     if (work.kind === 'approve') {
       this.update({ runningJobId: work.jobId });
       this.append('title', `${work.jobId} · 继续执行已批准的计划`);
-      done = await this.engine.approve(work.jobId);
+      done = await this.engine.approve(work.jobId, { confirmFallback: this.confirmFallback });
     } else {
       const job = this.engine.create({ task: work.text, role: work.role, ...(this.context && { context: this.context }),
         ...(this.roleSessions && { sessions: this.roleSessions }),
@@ -245,7 +248,7 @@ export class Session {
       this.update({ runningJobId: job.id });
       const owner = job.role ? `交给 ${shortRole(this.roleLabel(job.role))}` : '主控安排';
       this.append('title', `${job.id} · ${owner} · ${job.task.split(/\r?\n/, 1)[0]}`);
-      done = await this.engine.advance(job, { autoApprove: false, confirm: record => {
+      done = await this.engine.advance(job, { autoApprove: false, confirmFallback: this.confirmFallback, confirm: record => {
         if (!record.plan || this.snapshot.feed.stopping) return Promise.resolve(false);
         return new Promise(resolve => {
           this.answer = resolve;
@@ -264,6 +267,23 @@ export class Session {
     }
   }
 
+  /** 换人之前问一句，等界面按键回答。任务正在终止时不再问，直接当作不同意。 */
+  private confirmFallback = (question: FallbackQuestion): Promise<boolean> => {
+    if (this.snapshot.feed.stopping) return Promise.resolve(false);
+    return new Promise(resolve => {
+      this.answerFallback = resolve;
+      this.update({ ask: question });
+    });
+  };
+
+  decideFallback(approved: boolean) {
+    if (!this.answerFallback) return;
+    const resolve = this.answerFallback;
+    this.answerFallback = undefined;
+    this.update({ ask: undefined });
+    resolve(approved);
+  }
+
   decidePlan(approved: boolean) {
     if (!this.answer) return;
     const resolve = this.answer;
@@ -276,6 +296,7 @@ export class Session {
     const id = this.snapshot.runningJobId;
     if (!id) return;
     if (this.answer) return this.decidePlan(false);
+    if (this.answerFallback) return this.decideFallback(false);
     this.update({ feed: markStopping(this.snapshot.feed) });
     try { this.engine.cancel(id); } catch { /* 任务可能刚刚结束。 */ }
   }

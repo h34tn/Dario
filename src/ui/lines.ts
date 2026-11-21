@@ -1,5 +1,6 @@
 import { formatDuration, formatTokens } from '../core/util.js';
-import type { Plan } from '../core/types.js';
+import { formatFallbackQuestion } from '../core/report.js';
+import type { FallbackQuestion, Plan } from '../core/types.js';
 import { shortRole, type StepView } from './feed.js';
 import type { HistoryItem } from './session.js';
 import { clip, displayWidth, graphemes } from './text.js';
@@ -146,6 +147,15 @@ function inputLines(text: string, width: number, { color, wide }: LineContext): 
     const pad = ' '.repeat(Math.max(0, width - 2 - displayWidth(row, wide)));
     return INPUT_BAND.open + (i ? '  ' : paint('role', '>', true) + ' ') + INPUT_BAND.text + row + pad + INPUT_BAND.close;
   });
+}
+
+export const FALLBACK_HINT = '改用备选继续吗？  y 继续   n 停止任务';
+
+/** 换人询问显示的行：谁不可用、为什么、打算改用谁（带模型）。 */
+export function fallbackLines(question: FallbackQuestion, width: number, { symbols, color, wide }: LineContext): string[] {
+  const [down, ask] = formatFallbackQuestion(question);
+  const rows = [...wrapAnsi(symbols.warn + ' ' + down, width, wide), ...wrapAnsi('  ' + ask, width, wide)];
+  return rows.map(row => paint('warn', row, color));
 }
 
 export function itemLines(item: HistoryItem, width: number, ctx: LineContext): string[] {

@@ -17,7 +17,7 @@ import {
 import type { RoleBook } from './roles.js';
 import type { StepRunner } from './runner.js';
 import type { StateStore } from './state.js';
-import type { Access, Job, JobStatus, Plan, ProgressEvent, StepKind, StepRecord } from './types.js';
+import type { Access, FallbackQuestion, Job, JobStatus, Plan, ProgressEvent, StepKind, StepRecord } from './types.js';
 import { DarioError, ellipsis, truncate } from './util.js';
 import { outOfScope, type Workspace } from './workspace.js';
 
@@ -34,6 +34,11 @@ export interface RunOptions {
   autoApprove: boolean;
   /** 当场询问是否执行计划（终端交互方式）。不提供时任务停在"等待确认"。 */
   confirm?: (job: Job) => Promise<boolean>;
+  /**
+   * 角色表的 fallback 为 ask 时，换人之前当场询问。不提供表示没有办法询问，此时不换人、这一步停止。
+   * 加了 --yes 的调用方传一个直接返回 true 的函数。
+   */
+  confirmFallback?: (question: FallbackQuestion) => Promise<boolean>;
 }
 
 class Cancelled extends Error {}
@@ -65,7 +70,7 @@ export class Orchestrator {
     try {
       if (job.status === 'queued') {
         if (job.mode === 'direct') {
-          conclusion = await this.runDirect(job, ws);
+          conclusion = await this.runDirect(job, ws, opts);
         } else {
           const proceed = await this.planPhase(job, ws, opts);
           if (!proceed) {
@@ -75,10 +80,10 @@ export class Orchestrator {
             else job.ownerPid = undefined;
             return this.save(job);
           }
-          conclusion = await this.execPhase(job, ws);
+          conclusion = await this.execPhase(job, ws, opts);
         }
       } else if (job.status === 'awaiting_approval') {
-        conclusion = await this.execPhase(job, ws);
+        conclusion = await this.execPhase(job, ws, opts);
       } else {
         throw new DarioError(`任务 ${job.id} 处于"${job.status}"状态，不能继续推进。`);
       }
@@ -130,12 +135,13 @@ export class Orchestrator {
   private async execStep(
     job: Job,
     ws: Workspace,
+    opts: RunOptions,
     req: { kind: StepKind; roleId: string; prompt: string; followUp?: string; task?: string; access?: Access; prefer?: string },
   ): Promise<StepRecord> {
     this.checkCancel(job);
     const before = await ws.stamp();
     const avoid = this.avoidFor(job, req.roleId);
-    const rec = await this.deps.runner.run({ job, cwd: ws.cwd, avoid, ...req });
+    const rec = await this.deps.runner.run({ job, cwd: ws.cwd, avoid, confirmFallback: opts.confirmFallback, ...req });
     rec.changedFiles = await ws.changedSince(before);
     job.steps.push(rec);
     job.activePid = undefined;
@@ -181,18 +187,19 @@ export class Orchestrator {
     job.failureCode = rec.outcome === 'all_unavailable' ? 'all_unavailable' : 'task_failed';
     const who = rec.agent ? `${rec.agent} ` : '';
     const what =
-      rec.outcome === 'timeout' ? '超时' : rec.outcome === 'all_unavailable' ? '没有可用的 AI' : '没有完成';
+      // "没能执行"涵盖几种情况：候选都不可用、fallback 为 manual、没有同意换人。具体是哪种由后面的原因说明
+      rec.outcome === 'timeout' ? '超时' : rec.outcome === 'all_unavailable' ? '没能执行' : '没有完成';
     return `第 ${rec.index + 1} 步（${this.deps.roles.label(rec.role)}）${who}${what}。${rec.reason ?? ''}${rec.text ? `\n${truncate(rec.text, 2000)}` : ''}`;
   }
 
-  private async runDirect(job: Job, ws: Workspace): Promise<string> {
+  private async runDirect(job: Job, ws: Workspace, opts: RunOptions): Promise<string> {
     const { roles, project } = this.deps;
     const roleId = job.role!;
     const role = roles.get(roleId);
     job.branch = (await ws.enterExec(job.id)).branch;
     this.setStatus(job, 'running');
     const prompt = stepPrompt(project, role, role.access, job.task, job.context);
-    const rec = await this.execStep(job, ws, {
+    const rec = await this.execStep(job, ws, opts, {
       kind: 'step',
       roleId,
       task: job.task,
@@ -217,7 +224,7 @@ export class Orchestrator {
     for (let attempt = 0; attempt < 2 && !plan; attempt++) {
       const prompt = planPrompt(project, roles, job.task, job.context, feedback);
       const problem = feedback;
-      const rec = await this.execStep(job, ws, {
+      const rec = await this.execStep(job, ws, opts, {
         kind: 'plan',
         roleId: lead,
         access: 'read-only',
@@ -267,7 +274,7 @@ export class Orchestrator {
     return true;
   }
 
-  private async execPhase(job: Job, ws: Workspace): Promise<string> {
+  private async execPhase(job: Job, ws: Workspace, opts: RunOptions): Promise<string> {
     const { roles, project } = this.deps;
     const plan = job.plan;
     if (!plan) throw new DarioError(`任务 ${job.id} 没有计划，无法执行。`);
@@ -278,14 +285,14 @@ export class Orchestrator {
     for (; job.cursor < plan.steps.length; job.cursor++) {
       const step = plan.steps[job.cursor]!;
       if (step.role === reviewRole) {
-        const failure = await this.reviewLoop(job, ws, step.task);
+        const failure = await this.reviewLoop(job, ws, opts, step.task);
         if (failure !== undefined) return failure;
         this.setStatus(job, 'running');
         continue;
       }
       const role = roles.get(step.role);
       const prompt = stepPrompt(project, role, role.access, step.task, priorSteps(job) || job.context, step.acceptance);
-      const rec = await this.execStep(job, ws, {
+      const rec = await this.execStep(job, ws, opts, {
         kind: 'step',
         roleId: step.role,
         task: step.task,
@@ -297,13 +304,13 @@ export class Orchestrator {
 
     const changed = job.changedFiles.length > 0 || job.unknownChanges === true;
     if (changed && !job.reviewedSinceChange && roles.has(reviewRole)) {
-      const failure = await this.reviewLoop(job, ws, undefined);
+      const failure = await this.reviewLoop(job, ws, opts, undefined);
       if (failure !== undefined) return failure;
     }
 
     this.setStatus(job, 'running');
     const summaryText = summaryPrompt(job, job.steps);
-    const summary = await this.execStep(job, ws, {
+    const summary = await this.execStep(job, ws, opts, {
       kind: 'summary',
       roleId: project.settings.leadRole,
       access: 'read-only',
@@ -320,13 +327,13 @@ export class Orchestrator {
   }
 
   /** 审查并在不通过时返工。通过返回 undefined；失败时返回说明，任务状态已设置。 */
-  private async reviewLoop(job: Job, ws: Workspace, extraTask: string | undefined): Promise<string | undefined> {
+  private async reviewLoop(job: Job, ws: Workspace, opts: RunOptions, extraTask: string | undefined): Promise<string | undefined> {
     const { roles, project } = this.deps;
     const reviewRole = project.settings.reviewRole;
     for (;;) {
       this.setStatus(job, 'reviewing');
       const reviewText = reviewPrompt(project, roles.get(reviewRole), job, extraTask);
-      const rec = await this.execStep(job, ws, {
+      const rec = await this.execStep(job, ws, opts, {
         kind: 'review',
         roleId: reviewRole,
         access: 'read-only',
@@ -358,7 +365,7 @@ export class Orchestrator {
       this.setStatus(job, 'running');
       const writer = job.lastWriter;
       const reworkText = reworkPrompt(project, roles.get(writer.role), writer.task, verdict.issues, rec.text);
-      const rework = await this.execStep(job, ws, {
+      const rework = await this.execStep(job, ws, opts, {
         kind: 'rework',
         roleId: writer.role,
         prefer: writer.agent,

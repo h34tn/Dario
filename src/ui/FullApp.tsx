@@ -2,7 +2,7 @@ import { Box, Text, useInput, useStdout } from 'ink';
 import { stripVTControlCharacters } from 'node:util';
 import { useEffect, useMemo, useReducer, useState } from 'react';
 import { CommandMenu } from './CommandMenu.js';
-import { createLineCache, planLines, stepText, wrapAnsi } from './lines.js';
+import { createLineCache, FALLBACK_HINT, fallbackLines, planLines, stepText, wrapAnsi } from './lines.js';
 import { useSessionEditor } from './ReplApp.js';
 import { DisplayBoundary } from './RunApp.js';
 import { GlyphContext, useScreen } from './screen.js';
@@ -54,6 +54,7 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
   if (!small && snap.plan) {
     for (const line of planLines(snap.plan, session.roleLabel, expanded === snap.plan, limit, ctx)) lines.push(line);
   }
+  if (!small && snap.ask) for (const line of fallbackLines(snap.ask, limit, ctx)) lines.push(line);
   const total = lines.length;
   const [anchor, setAnchor] = useState({ view: FOLLOW, total: 0, height: 0 });
   const baseHeight = Math.max(0, rows - 5 - stepHeight);
@@ -61,7 +62,7 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
   function adjusted(height: number) {
     return afterChange(anchor.view, total - anchor.total + anchor.height - height, total, height);
   }
-  const menu = !snap.plan && !warningText && !adjusted(baseHeight).offset ? suggestions.slice(0, baseHeight) : [];
+  const menu = !snap.plan && !snap.ask && !warningText && !adjusted(baseHeight).offset ? suggestions.slice(0, baseHeight) : [];
   const height = baseHeight - Math.max(0, menu.length - 1);
   const view = menu.length ? FOLLOW : adjusted(height);
   const { visible, below } = sliceView(lines, height, view);
@@ -85,6 +86,9 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
       if (key.ctrl && input === 'c') session.requestExit('exit');
     } else if (key.pageUp || key.pageDown) {
       scroll((key.pageUp ? 1 : -1) * (height - 1));
+    } else if (snap.ask) {
+      const letter = input.toLowerCase();
+      if (letter === 'y' || letter === 'n' || key.escape || (key.ctrl && letter === 'c')) session.decideFallback(letter === 'y');
     } else if (snap.plan) {
       const letter = input.toLowerCase();
       if (letter === 'd') expand(previous => previous === snap.plan ? undefined : snap.plan);
@@ -101,7 +105,7 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
     row(i ? '' : fit('窗口太小，请放大窗口，或按 Ctrl+C 退出'), i))}</Box>;
 
   const rule = paint('dim', symbols.rule.repeat(limit), color);
-  const hint = snap.plan ? '执行吗？  y 执行   n 取消   d 查看每一步的完整任务说明'
+  const hint = snap.ask ? FALLBACK_HINT : snap.plan ? '执行吗？  y 执行   n 取消   d 查看每一步的完整任务说明'
     : warningText || (below ? '  ' + symbols.down + ' 下面还有 ' + below + ' 行   PgDn 向下翻   End 回到最新'
       : '  / 指令   PgUp/PgDn 翻看   Esc 中断当前任务   Ctrl+C 退出');
   return <Box flexDirection="column">
@@ -109,10 +113,10 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
     {stepLine !== undefined && <Text wrap="truncate-end">{stepLine}</Text>}
     <Text wrap="truncate-end">{rule}</Text>
     <TextInput state={editor} currentState={current} onChange={change} onSubmit={text => { follow(); session.submit(text); }}
-      row={height + stepHeight + 1} isActive={!snap.plan} color={color} />
+      row={height + stepHeight + 1} isActive={!snap.plan && !snap.ask} color={color} />
     <Text wrap="truncate-end">{rule}</Text>
     {menu.length ? <CommandMenu suggestions={menu} color={color} />
-      : <Text wrap="truncate-end">{paint(snap.plan || warningText ? 'warn' : 'dim', fit(hint), color)}</Text>}
+      : <Text wrap="truncate-end">{paint(snap.plan || snap.ask || warningText ? 'warn' : 'dim', fit(hint), color)}</Text>}
     <StatusBar status={snap.status} queued={snap.queued} contextJobId={snap.contextJobId} color={color} />
   </Box>;
 }

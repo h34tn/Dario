@@ -143,6 +143,38 @@ describe('失败分类', () => {
     expect(classify(codexPlugin, raw({ stdout: '{"type":"turn.started"}' })).result.outcome).toBe('task_failed');
   });
 
+  it('各种说法的限额提示都判为不可用，带 limit 字样的普通报错不算', () => {
+    for (const text of [
+      "You've hit your usage limit. Upgrade to Pro or try again in 3 hours.",
+      "You've hit your limit · resets 6pm (Asia/Shanghai)",
+      "You've hit your session limit · resets 3pm",
+      "You've hit your weekly limit · resets Mon 9am",
+      'Claude usage limit reached. Your limit will reset at 3pm.',
+      '5-hour limit reached ∙ resets 3pm',
+      'Weekly limit reached ∙ resets Nov 24',
+      'You have reached your daily message limit',
+      'Limit reached · resets 11pm',
+      '今日额度已用完',
+      '已达到使用上限，请稍后再试',
+      '本周用量已达上限',
+      '请求过于频繁，请稍后重试',
+    ]) {
+      expect(looksUnavailable(text), text).toBe(true);
+      expect(classify(codexPlugin, raw({ exitCode: 1, stderr: text })).result.outcome, text).toBe('unavailable');
+    }
+    for (const text of [
+      'reached max turns',
+      'The file exceeds the size limit of 256KB',
+      'Request exceeded the maximum size limit',
+      'limit: 10 items per page',
+      'Maximum call stack size exceeded',
+      '把重试次数的上限改成 3',
+      'const limit = resetCounter(limit)',
+    ]) {
+      expect(looksUnavailable(text), text).toBe(false);
+    }
+  });
+
   it('looksUnavailable 不把普通文字当成不可用', () => {
     expect(looksUnavailable('函数 getQuotaForUser 返回了错误的类型')).toBe(false);
     expect(looksUnavailable('    at parse (src/billing/file.ts:429:11)')).toBe(false);

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Activity } from '../plugin.js';
 import type { RoleView } from './roles.js';
-import { exitCodeForJob, STATUS_LABEL, type Job } from './types.js';
+import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job } from './types.js';
 import { formatDuration, formatTokens } from './util.js';
 
 export function formatActivity(activity: Activity): string {
@@ -48,6 +48,17 @@ export function clip(text: string, maxChars: number, fullFile: string): string {
     // 落盘失败时仍然返回截断后的内容
   }
   return `${text.slice(0, maxChars)}\n\n…（内容过长已截断，全文共 ${text.length} 字，保存在本机 ${fullFile}）`;
+}
+
+function agentName(a: { agent: string; model?: string }): string {
+  return a.model ? `${a.agent}（${a.model}）` : a.agent;
+}
+
+/** 换人之前问发起人的话：谁不可用、为什么、打算改用谁，都带上具体的模型。两行，第二行是问题本身。 */
+export function formatFallbackQuestion(q: FallbackQuestion): [string, string] {
+  const role = q.roleLabel.replace(/（[^（）]*）$/, '');
+  const down = q.from.map((f) => `${agentName(f)} 不可用（${f.reason}）`).join('；');
+  return [`${role}的担当者 ${down}。`, `改用备选 ${agentName(q.to)} 继续这个任务吗？`];
 }
 
 export interface JobJson {
@@ -170,6 +181,6 @@ export function formatRoles(views: RoleView[], fallback: string): string {
     lines.push(`${name} · ${v.access === 'write' ? '可写' : '只读'} · 当前担当：${holder}${pinned}`);
     lines.push(`  候选：${v.candidates.map((c) => `${c.agent}[${STATE_LABEL[c.state] ?? c.state}]`).join(' → ')}`);
   }
-  lines.push('', `不可用时：${fallback === 'auto' ? '自动换下一家' : '只报告，不自动换人'}`);
+  lines.push('', `不可用时：${fallback === 'auto' ? '自动换下一家' : fallback === 'ask' ? '先询问，同意后换下一家' : '只报告，不自动换人'}`);
   return lines.join('\n');
 }

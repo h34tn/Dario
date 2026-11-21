@@ -32,7 +32,7 @@ roles:
     candidates: [codebuddy, deepseek]
     access: write
 
-# auto：某家不可用时自动换下一家；manual：只报告，等人换
+# auto：某家不可用时自动换下一家；ask：先问一句，同意后再换；manual：只报告，等人换
 fallback: auto
 `;
 

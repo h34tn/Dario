@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { FullApp } from '../src/ui/FullApp.js';
 import { displayWidth } from '../src/ui/text.js';
 import { pickSymbols } from '../src/ui/theme.js';
-import { setup, step } from './ui-session-helper.js';
+import { question, setup, step } from './ui-session-helper.js';
 
 const cleanup: Array<() => void> = [];
 afterEach(() => { while (cleanup.length) cleanup.pop()!(); });
@@ -262,4 +262,24 @@ it('着色时输入回显整行铺灰色底，步骤状态行在耗时之后显�
   await ui.check(lines => expect(lines.map(stripVTControlCharacters)).toContain('✓ 执行   实现 · codex   2秒 · ↑ 39.9k ↓ 512 tokens'));
   finish();
   await ui.session.whenIdle();
+});
+
+it.each([['y', true], ['n', false], ['\x1b', false]])('换人询问显示在历史区，提示行给出按键，按 %j 回答', async (key, expected) => {
+  const ui = await screen(70, 20);
+  let decision: boolean | undefined;
+  ui.engine.advance.mockImplementationOnce(async (job, opts) => {
+    decision = await opts.confirmFallback!(question);
+    return job;
+  });
+  ui.session.submit('任务');
+  await ui.contains('! 主控的担当者 claude（claude-x） 不可用（额度用尽）。');
+  await ui.contains('  改用备选 codex（gpt-x） 继续这个任务吗？');
+  await ui.check(lines => expect(lines.at(-2)).toBe('改用备选继续吗？  y 继续   n 停止任务'));
+  // 询问期间输入框不接收文字
+  await ui.key('x');
+  await ui.check(lines => expect(lines.at(-4)).toBe('>'));
+  await ui.key(key);
+  await ui.session.whenIdle();
+  expect(decision).toBe(expected);
+  await ui.check(lines => expect(lines.join('\n')).not.toContain('改用备选'));
 });

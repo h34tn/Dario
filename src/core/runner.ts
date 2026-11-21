@@ -6,7 +6,7 @@ import { formatActivity } from './report.js';
 import type { RoleBook } from './roles.js';
 import type { StateStore } from './state.js';
 import type { TokenUsage } from '../plugin.js';
-import type { Access, Attempt, Job, ProgressEvent, StepKind, StepRecord, StepTokens } from './types.js';
+import type { Access, Attempt, FallbackQuestion, Job, ProgressEvent, StepKind, StepRecord, StepTokens } from './types.js';
 
 export interface StepRequest {
   job: Job;
@@ -25,6 +25,8 @@ export interface StepRequest {
   access?: Access;
   prefer?: string;
   avoid?: string;
+  /** 角色表的 fallback 为 ask 时，换人之前用它询问。不提供表示没法询问，此时不换人。 */
+  confirmFallback?: (question: FallbackQuestion) => Promise<boolean>;
 }
 
 export interface RunnerDeps {
@@ -55,7 +57,7 @@ export class StepRunner {
     const access = req.access ?? role.access;
     const index = req.job.steps.length;
     const started = Date.now();
-    const { usable, skipped, sequence } = await roles.order(req.roleId, { prefer: req.prefer, avoid: req.avoid });
+    const { usable, skipped, sequence, marked } = await roles.order(req.roleId, { prefer: req.prefer, avoid: req.avoid });
     // 排在实际执行者前面、因为不可用而被跳过的候选：这才算"换了人"
     const skippedBefore = (agent: string): Attempt[] => skipped.filter((s) => sequence.indexOf(s.agent) < sequence.indexOf(agent));
     const attempts: Attempt[] = usable.length === 0 ? [...skipped] : skippedBefore(usable[0]!);
@@ -73,6 +75,62 @@ export class StepRunner {
         durationMs: Date.now() - started,
         text: '',
       };
+    }
+
+    // 等发起人回答的时间不算进这一步的耗时
+    let waited = 0;
+    const elapsed = (): number => Date.now() - started - waited;
+    /**
+     * fallback 为 ask 时，换人之前征得同意。同一个任务里，同一对"原来的 AI → 备选的 AI"只问一次。
+     * cannot 表示当前的运行方式没有办法询问。
+     */
+    const consent = async (from: Array<{ agent: string; reason: string }>, to: string): Promise<'yes' | 'no' | 'cannot'> => {
+      const approved = (req.job.fallbackApproved ??= []);
+      const keys = from.map((f) => `${f.agent}>${to}`);
+      if (keys.every((k) => approved.includes(k))) return 'yes';
+      if (!req.confirmFallback) return 'cannot';
+      const model = (id: string): string | undefined => catalog.get(id)?.model;
+      const asked = Date.now();
+      let ok = false;
+      try {
+        ok = await req.confirmFallback({
+          jobId: req.job.id,
+          role: req.roleId,
+          roleLabel,
+          from: from.map((f) => ({ agent: f.agent, model: model(f.agent), reason: f.reason })),
+          to: { agent: to, model: model(to) },
+        });
+      } finally {
+        waited += Date.now() - asked;
+      }
+      state.audit('fallback_ask', { job: req.job.id, step: index, role: req.roleId, from: from.map((f) => f.agent), to, approved: ok });
+      if (ok) {
+        approved.push(...keys.filter((k) => !approved.includes(k)));
+        state.saveJob(req.job);
+      }
+      return ok ? 'yes' : 'no';
+    };
+    const notSwitched = (answer: 'no' | 'cannot', down: string, to: string, text = ''): StepRecord => ({
+      ...base,
+      outcome: 'all_unavailable',
+      reason:
+        answer === 'no'
+          ? `${down}。没有同意改用 ${to}，任务停止。`
+          : `${down}。角色表的 fallback 为 ask，要先确认才能改用 ${to}，但当前的运行方式没法询问：加 --yes 表示同意换人，或者在能交互的终端里运行。`,
+      attempts,
+      durationMs: elapsed(),
+      text,
+    });
+
+    // 首选还在"暂时不可用"的冷却期里，这一步一上来就要用备选：同样先问
+    if (roles.fallback === 'ask') {
+      const down = skippedBefore(usable[0]!)
+        .filter((a) => marked.includes(a.agent))
+        .map((a) => ({ agent: a.agent, reason: (a.reason ?? '不可用').replace(/^暂时不可用：/, '') }));
+      if (down.length > 0) {
+        const answer = await consent(down, usable[0]!);
+        if (answer !== 'yes') return notSwitched(answer, down.map((d) => `${d.agent} 不可用（${d.reason}）`).join('；'), usable[0]!);
+      }
     }
 
     const workDir = state.jobDir(req.job.id);
@@ -149,7 +207,9 @@ export class StepRunner {
         const reason = res.reason ?? '不可用';
         state.markUnavailable(agent, reason, this.deps.cooldownMinutes);
         const next = usable[i + 1];
-        if (roles.fallback === 'auto' && next) {
+        if (next && roles.fallback !== 'manual') {
+          const answer = roles.fallback === 'auto' ? 'yes' : await consent([{ agent, reason }], next);
+          if (answer !== 'yes') return notSwitched(answer, `${agent} 不可用（${reason}）`, next, res.text);
           emit({ jobId: req.job.id, kind: 'fallback', step, fallback: { from: agent, reason, to: next }, text: `${agent} 不可用（${reason}），换成 ${next}` });
           continue;
         }
@@ -157,7 +217,7 @@ export class StepRunner {
           roles.fallback === 'manual'
             ? `${agent} 不可用（${reason}）。角色表的 fallback 为 manual，没有自动换人。`
             : `角色 ${req.roleId} 的候选都不可用。${attempts.map((a) => `${a.agent}：${a.reason ?? a.outcome}`).join('；')}`;
-        return { ...base, outcome: 'all_unavailable', reason: why, attempts, durationMs: Date.now() - started, text: res.text };
+        return { ...base, outcome: 'all_unavailable', reason: why, attempts, durationMs: elapsed(), text: res.text };
       }
 
       const record: StepRecord = {
@@ -166,7 +226,7 @@ export class StepRunner {
         outcome: res.outcome,
         reason: res.reason,
         attempts,
-        durationMs: Date.now() - started,
+        durationMs: elapsed(),
         text: res.text,
         costUsd: res.costUsd,
         ...(resume && { resumed: true }),

@@ -2,6 +2,7 @@ import { GlyphContext } from './screen.js';
 import { Component, useEffect, useState, type ReactNode } from 'react';
 import { Box, useInput } from 'ink';
 import { LiveJob, type LiveJobProps } from './LiveJob.js';
+import { FallbackPrompt, type FallbackPromptProps } from './FallbackPrompt.js';
 import { PlanPrompt, type PlanPromptProps } from './PlanPrompt.js';
 
 export class DisplayBoundary extends Component<{ children: ReactNode; onError: (error: Error) => void }> {
@@ -13,6 +14,7 @@ export class DisplayBoundary extends Component<{ children: ReactNode; onError: (
 
 interface RunAppProps extends Omit<LiveJobProps, 'now'> {
   prompt?: PlanPromptProps;
+  ask?: Omit<FallbackPromptProps, 'symbols'>;
   inputEnabled: boolean;
   onInterrupt: () => void;
   onError: (error: Error) => void;
@@ -26,10 +28,11 @@ function JobScreen(props: RunAppProps) {
   }, []);
   useInput((input, key) => {
     if (key.ctrl && input === 'c') props.onInterrupt();
-  }, { isActive: props.inputEnabled && (!props.prompt || !!props.suspended) });
+  }, { isActive: props.inputEnabled && ((!props.prompt && !props.ask) || !!props.suspended) });
   return <Box flexDirection="column">
     <LiveJob {...props} now={now} />
     {!props.suspended && props.prompt && <PlanPrompt {...props.prompt} />}
+    {!props.suspended && props.ask && <FallbackPrompt {...props.ask} symbols={props.symbols} />}
   </Box>;
 }
 

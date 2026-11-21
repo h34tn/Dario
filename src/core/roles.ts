@@ -35,7 +35,7 @@ export class RoleBook {
     private readonly state: StateStore,
   ) {}
 
-  get fallback(): 'auto' | 'manual' {
+  get fallback(): 'auto' | 'manual' | 'ask' {
     return this.project.roles.fallback;
   }
 
@@ -91,15 +91,20 @@ export class RoleBook {
   async order(
     roleId: string,
     opts: { prefer?: string; avoid?: string } = {},
-  ): Promise<{ usable: string[]; skipped: Attempt[]; sequence: string[] }> {
+  ): Promise<{ usable: string[]; skipped: Attempt[]; sequence: string[]; marked: string[] }> {
     const role = this.get(roleId);
     const { list } = this.sequence(role);
     const usable: string[] = [];
     const skipped: Attempt[] = [];
+    // 被跳过的候选里，因为"暂时不可用"（限额、登录失效、过载等）而跳过的那些；没配置、已停用、没安装的不算
+    const marked: string[] = [];
     for (const agent of list) {
       const view = await this.inspect(agent);
       if (view.state === 'ok') usable.push(agent);
-      else skipped.push({ agent, outcome: 'skipped', reason: view.note });
+      else {
+        skipped.push({ agent, outcome: 'skipped', reason: view.note });
+        if (view.state === 'unavailable') marked.push(agent);
+      }
     }
     if (opts.prefer && usable.includes(opts.prefer)) {
       usable.splice(usable.indexOf(opts.prefer), 1);
@@ -109,7 +114,7 @@ export class RoleBook {
       usable.splice(usable.indexOf(opts.avoid), 1);
       usable.push(opts.avoid);
     }
-    return { usable, skipped, sequence: list };
+    return { usable, skipped, sequence: list, marked };
   }
 
   async view(): Promise<RoleView[]> {

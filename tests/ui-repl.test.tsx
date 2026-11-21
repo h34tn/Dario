@@ -8,7 +8,7 @@ import { ReplApp } from '../src/ui/ReplApp.js';
 import type { Engine } from '../src/core/engine.js';
 import { runReplUi, UiUnavailableError } from '../src/ui/repl.js';
 import { pickSymbols } from '../src/ui/theme.js';
-import { DEFAULT_ROWS, plan, setup, step, type RoleRow } from './ui-session-helper.js';
+import { DEFAULT_ROWS, plan, question, setup, step, type RoleRow } from './ui-session-helper.js';
 
 afterEach(cleanup);
 
@@ -268,4 +268,21 @@ it('着色时输入回显整行铺灰色底，当前步骤在耗时之后显示 
   await vi.waitFor(() => expect(stripVTControlCharacters(view.lastFrame()!)).toMatch(/00:\d\d · \^ 1\.2k v 88 tokens/));
   finish();
   await session.whenIdle();
+});
+
+it.each([['y', true], ['n', false]])('换人询问显示谁不可用和备选的模型，按 %s 回答后收起', async (key, expected) => {
+  const ui = await screen();
+  let decision: boolean | undefined;
+  ui.engine.advance.mockImplementationOnce(async (job, opts) => {
+    decision = await opts.confirmFallback!(question);
+    return job;
+  });
+  ui.session.submit('任务');
+  await ui.contains('! 主控的担当者 claude（claude-x） 不可用（额度用尽）。');
+  await ui.contains('  改用备选 codex（gpt-x） 继续这个任务吗？');
+  await ui.contains('改用备选继续吗？  y 继续   n 停止任务');
+  ui.key(key);
+  await ui.session.whenIdle();
+  expect(decision).toBe(expected);
+  await ui.absent('改用备选');
 });

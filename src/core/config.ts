@@ -21,7 +21,7 @@ export interface RoleDef {
 
 export interface RolesConfig {
   roles: Record<string, RoleDef>;
-  fallback: 'auto' | 'manual';
+  fallback: 'auto' | 'manual' | 'ask';
 }
 
 export interface ProjectSettings {
@@ -103,7 +103,7 @@ const roleSchema = z
 const rolesFileSchema = z
   .object({
     roles: z.record(roleSchema),
-    fallback: z.enum(['auto', 'manual']).default('auto'),
+    fallback: z.enum(['auto', 'manual', 'ask']).default('auto'),
   })
   .strict();
 

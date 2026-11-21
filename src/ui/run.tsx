@@ -1,9 +1,11 @@
 import { render } from 'ink';
 import type { Engine } from '../core/engine.js';
-import { STATUS_LABEL, type Job, type ProgressEvent } from '../core/types.js';
+import { formatFallbackQuestion } from '../core/report.js';
+import { STATUS_LABEL, type FallbackQuestion, type Job, type ProgressEvent } from '../core/types.js';
 import { EMPTY_FEED, markStopping, reduceFeed, shortRole } from './feed.js';
 import { colorEnabled } from './mode.js';
 import { paint, pickSymbols } from './theme.js';
+import type { FallbackPromptProps } from './FallbackPrompt.js';
 import type { PlanPromptProps } from './PlanPrompt.js';
 import { watchResize } from './resize.js';
 import { RunApp } from './RunApp.js';
@@ -43,14 +45,19 @@ export async function runLive(opts: LiveRunOptions): Promise<Job> {
   let title: string;
   let feed = EMPTY_FEED;
   let prompt: PlanPromptProps | undefined;
+  let ask: Omit<FallbackPromptProps, 'symbols'> | undefined;
+  let asking: FallbackQuestion | undefined;
   let instance: ReturnType<typeof render> | undefined;
   let displayError: Error | undefined;
   let started = false;
   let suspended = false;
 
+  const agreed = (answer: string | undefined) => ['y', 'yes', '确认'].includes(answer?.trim().toLowerCase() ?? '');
   async function askPlain() {
-    const answer = await opts.askPlain?.('这份计划会改动文件，执行吗？(y/N) ');
-    return ['y', 'yes', '确认'].includes(answer?.trim().toLowerCase() ?? '');
+    return agreed(await opts.askPlain?.('这份计划会改动文件，执行吗？(y/N) '));
+  }
+  async function askFallbackPlain(question: FallbackQuestion) {
+    return agreed(await opts.askPlain?.(`[${question.jobId}] ${formatFallbackQuestion(question).join('')}(y/N) `));
   }
 
   function onError(error: Error) {
@@ -63,6 +70,8 @@ export async function runLive(opts: LiveRunOptions): Promise<Job> {
       opts.notice(`界面显示出错（${error.message}），改用纯文本输出。`);
       const pending = prompt;
       if (pending) void askPlain().then(pending.onDecide, () => pending.onDecide(false));
+      const waiting = ask;
+      if (waiting && asking) void askFallbackPlain(asking).then(waiting.onDecide, () => waiting.onDecide(false));
     });
   }
 
@@ -75,7 +84,7 @@ export async function runLive(opts: LiveRunOptions): Promise<Job> {
 
   function screen() {
     return <RunApp jobId={job.id} title={title} feed={feed} symbols={symbols} color={color}
-      prompt={prompt} suspended={suspended} inputEnabled={!!stdin.isTTY} onError={onError} onInterrupt={onInterrupt} />;
+      prompt={prompt} ask={ask} suspended={suspended} inputEnabled={!!stdin.isTTY} onError={onError} onInterrupt={onInterrupt} />;
   }
 
   function update() {
@@ -90,6 +99,20 @@ export async function runLive(opts: LiveRunOptions): Promise<Job> {
     return new Promise(resolve => {
       prompt = { plan, roleLabel, color, onDecide: approved => {
         prompt = undefined;
+        update();
+        resolve(approved);
+      } };
+      update();
+    });
+  }
+
+  async function confirmFallback(question: FallbackQuestion): Promise<boolean> {
+    if (displayError) return askFallbackPlain(question);
+    return new Promise(resolve => {
+      asking = question;
+      ask = { question, color, onDecide: approved => {
+        ask = undefined;
+        asking = undefined;
         update();
         resolve(approved);
       } };
@@ -127,8 +150,10 @@ export async function runLive(opts: LiveRunOptions): Promise<Job> {
     update();
   });
   try {
-    const result = opts.resume ? await engine.approve(job.id) : await engine.advance(job, {
-      autoApprove: opts.autoApprove, confirm: stdin.isTTY ? confirm : undefined,
+    // --yes 视为事先同意换人；标准输入没有连着终端时没法询问
+    const fallback = opts.autoApprove ? async () => true : stdin.isTTY ? confirmFallback : undefined;
+    const result = opts.resume ? await engine.approve(job.id, { confirmFallback: fallback }) : await engine.advance(job, {
+      autoApprove: opts.autoApprove, confirm: stdin.isTTY ? confirm : undefined, confirmFallback: fallback,
     });
     if (!displayError) {
       try { await instance.waitUntilRenderFlush(); } catch (error) { onError(error as Error); }

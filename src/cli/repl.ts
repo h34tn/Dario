@@ -3,8 +3,8 @@ import readline from 'node:readline';
 import { HELP_TEXT, parseCommand } from '../core/commands.js';
 import type { Engine } from '../core/engine.js';
 import { describePlan } from '../core/orchestrator.js';
-import { formatJob, formatRoles } from '../core/report.js';
-import { STATUS_LABEL } from '../core/types.js';
+import { formatFallbackQuestion, formatJob, formatRoles } from '../core/report.js';
+import { STATUS_LABEL, type FallbackQuestion } from '../core/types.js';
 import { DarioError, ellipsis } from '../core/util.js';
 
 export interface ReplStreams {
@@ -38,6 +38,11 @@ export async function runRepl(
     if (e.kind === 'plan') out(`[${e.jobId}] 计划：\n${e.text}`);
     else out(`[${e.jobId}] ${e.text}`);
   });
+  const confirmFallback = async (q: FallbackQuestion): Promise<boolean> => {
+    out(`[${q.jobId}] ${formatFallbackQuestion(q)[0]}`);
+    const answer = ((await readLine(`${formatFallbackQuestion(q)[1]}(y/N) `)) ?? '').trim().toLowerCase();
+    return answer === 'y' || answer === 'yes' || answer === '确认';
+  };
   const origin = { channel: 'terminal', senderId: os.userInfo().username };
   out('Dario 交互方式。直接输入任务，或输入 /help 查看指令，/exit 退出。');
 
@@ -83,7 +88,7 @@ export async function runRepl(
             break;
           case 'approve':
             if (!cmd.jobId) out('用法：/approve <任务号>');
-            else out(formatJob(await engine.approve(cmd.jobId)));
+            else out(formatJob(await engine.approve(cmd.jobId, { confirmFallback })));
             break;
           case 'pause':
           case 'resume':
@@ -94,6 +99,7 @@ export async function runRepl(
               task: cmd.text,
               role: cmd.role,
               origin,
+              confirmFallback,
               confirm: async (j) => {
                 out(`[${j.id}] 这份计划会改动文件：\n${j.plan ? describePlan(j.plan, engine.roles) : ''}`);
                 const answer = ((await readLine('执行吗？(y/N) ')) ?? '').trim().toLowerCase();

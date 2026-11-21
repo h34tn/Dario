@@ -53,7 +53,7 @@ it('批准已有计划只推进一次', async () => {
   const { opts, engine } = setup();
   engine.approve.mockResolvedValue(opts.job);
   await runLive({ ...opts, resume: true });
-  expect(engine.approve).toHaveBeenCalledExactlyOnceWith(opts.job.id);
+  expect(engine.approve).toHaveBeenCalledExactlyOnceWith(opts.job.id, { confirmFallback: undefined });
   expect(engine.advance).not.toHaveBeenCalled();
 });
 
@@ -131,4 +131,35 @@ it.each([
   } finally {
     app.mockRestore();
   }
+});
+
+const question = { jobId: 'J0001', role: 'lead', roleLabel: '主控（lead）', from: [{ agent: 'claude', model: 'claude-x', reason: '额度用尽' }], to: { agent: 'codex', model: 'gpt-x' } };
+
+it('单次命令：换人之前在动态区询问，按 y 继续；--yes 不问；标准输入非终端时没法问', async () => {
+  const { opts, engine, frames } = setup();
+  opts.stdin.isTTY = true;
+  engine.advance.mockImplementation(async (job, options) => {
+    const pending = options.confirmFallback!(question);
+    await vi.waitFor(() => expect(stripVTControlCharacters(frames.join(''))).toContain('改用备选 codex（gpt-x） 继续这个任务吗？'));
+    expect(stripVTControlCharacters(frames.join(''))).toContain('主控的担当者 claude（claude-x） 不可用（额度用尽）。');
+    opts.stdin.write('y');
+    expect(await pending).toBe(true);
+    return job;
+  });
+  expect(await runLive(opts)).toBe(opts.job);
+
+  const yes = setup();
+  yes.engine.advance.mockImplementation(async (job, options) => {
+    expect(await options.confirmFallback!(question)).toBe(true);
+    return job;
+  });
+  await runLive({ ...yes.opts, autoApprove: true });
+  expect(stripVTControlCharacters(yes.frames.join(''))).not.toContain('改用备选');
+
+  const piped = setup();
+  piped.engine.advance.mockImplementation(async (job, options) => {
+    expect(options.confirmFallback).toBeUndefined();
+    return job;
+  });
+  await runLive(piped.opts);
 });

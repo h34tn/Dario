@@ -1,6 +1,7 @@
 import readline from 'node:readline';
 import { render } from 'ink';
 import type { Engine } from '../core/engine.js';
+import { formatFallbackQuestion } from '../core/report.js';
 import { ReplApp } from './ReplApp.js';
 import { UiUnavailableError } from './run.js';
 import { watchResize } from './resize.js';
@@ -43,9 +44,24 @@ export async function finishInPlain(session: Session, opts: ReplOptions, error: 
       rl.close();
     });
   }
-  const stop = session.subscribe(checkPlan);
+  function checkAsk() {
+    const { ask } = session.getSnapshot();
+    if (!ask || prompt) return;
+    const rl = readline.createInterface({ input: opts.stdin, output: opts.stdout });
+    prompt = rl;
+    rl.once('close', () => {
+      prompt = undefined;
+      session.decideFallback(false);
+    });
+    rl.question(formatFallbackQuestion(ask).join('') + '(y/N) ', answer => {
+      session.decideFallback(['y', 'yes', '确认'].includes(answer.trim().toLowerCase()));
+      rl.close();
+    });
+  }
+  const stop = session.subscribe(() => { checkPlan(); checkAsk(); });
   try {
     checkPlan();
+    checkAsk();
     await session.whenIdle();
   } finally {
     stop();

@@ -355,3 +355,57 @@ describe('完整交互界面：命令行入口', () => {
     }
   });
 });
+
+describe('完整交互界面：换人之前询问', () => {
+  const roles = `
+roles:
+  lead: { alias: [主控], candidates: [a1], access: read-only }
+  coder: { alias: [实现], candidates: [a2, a3], access: write }
+fallback: ask
+`;
+  const limit = { exit: 1, stderr: "You've hit your limit · resets 6pm" };
+  const askBox = () => sandbox({ git: true, roles, agentsExtra: { agents: { a2: { model: 'model-a2' }, a3: { model: 'model-a3' } } } });
+
+  it('担当者达到限额时停下来问，写明备选的模型；按 y 由备选做完', async () => {
+    const box = askBox();
+    box.setScenario({ a2: [limit], a3: [{ text: 'a3 做完了' }] });
+    const ui = await open(box);
+    await ui.term.line('/to 实现 做点事');
+    await ui.see("! 实现的担当者 a2（model-a2） 不可用（You've hit your limit · resets 6pm）。");
+    await ui.see('  改用备选 a3（model-a3） 继续这个任务吗？');
+    await ui.see('改用备选继续吗？  y 继续   n 停止任务');
+    // 还在等回答，备选没有被启动
+    expect(box.calls().map((c) => c.name)).toEqual(['a2']);
+    ui.term.press('y');
+    await ui.see('[J0001] 完成');
+    await ui.see('a3 做完了');
+    expect(box.calls().map((c) => c.name)).toEqual(['a2', 'a3']);
+    await ui.term.line('/exit');
+    expect(await ui.done).toBe('exit');
+  });
+
+  it('按 n 不换人，任务停止，界面继续可用', async () => {
+    const box = askBox();
+    box.setScenario({ a2: [limit], a3: [{ text: 'a3 做完了' }] });
+    const ui = await open(box);
+    await ui.term.line('/to 实现 做点事');
+    await ui.see('改用备选继续吗？  y 继续   n 停止任务');
+    ui.term.press('n');
+    await ui.see('[J0001] 失败');
+    // 结论按窗口宽度折行，只认折行之前的那一段
+    await ui.see('a2 不可用（You\'ve hit your limit · resets 6pm）。没有同意改用');
+    expect(box.calls().map((c) => c.name)).toEqual(['a2']);
+    // 接着还能下达任务：a2 在冷却期里，一上来就问，这次同意
+    await ui.term.line('/to 实现 再做点事');
+    await ui.see('J0002 · 交给 实现 · 再做点事');
+    const afterSecondTask = () => ui.term.screen().split('J0002 · 交给 实现 · 再做点事').at(-1)!;
+    await waitFor(() => afterSecondTask().includes('改用备选继续吗？'), '第二个任务一上来就询问', ui.term.screen);
+    // 这次没有去试 a2
+    expect(box.calls().map((c) => c.name)).toEqual(['a2']);
+    ui.term.press('y');
+    await ui.see('[J0002] 完成');
+    expect(box.calls().map((c) => c.name)).toEqual(['a2', 'a3']);
+    await ui.term.line('/exit');
+    expect(await ui.done).toBe('exit');
+  });
+});

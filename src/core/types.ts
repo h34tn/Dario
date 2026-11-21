@@ -153,6 +153,8 @@ export interface Job {
   /** 最近一次改动之后是否已经审查过。 */
   reviewedSinceChange: boolean;
   lastWriter?: { role: string; agent: string; task: string };
+  /** 本任务里已经同意过的换人，写成 "原来的 AI>备选的 AI"。同一对不再重复询问。 */
+  fallbackApproved?: string[];
   /** 各角色可以续接的会话，键是角色 id。每个角色最多一个。 */
   sessions?: Record<string, RoleSession>;
   /** 只读角色改动了文件。 */
@@ -169,6 +171,17 @@ export interface Job {
   /** 正在运行的 AI 子进程。 */
   activePid?: number;
   cancelRequested?: boolean;
+}
+
+/** 角色表的 fallback 为 ask 时，换人之前问发起人的问题。 */
+export interface FallbackQuestion {
+  jobId: string;
+  role: string;
+  roleLabel: string;
+  /** 不可用的那几家，按候选顺序；通常只有一家。 */
+  from: Array<{ agent: string; model?: string; reason: string }>;
+  /** 打算改用的备选。 */
+  to: { agent: string; model?: string };
 }
 
 export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity' | 'usage';
