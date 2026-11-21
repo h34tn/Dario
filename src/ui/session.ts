@@ -5,9 +5,9 @@ import path from 'node:path';
 import { HELP_TEXT, refreshHolderModels, runModel, parseCommand, type Command } from '../core/commands.js';
 import type { AgentView, Engine } from '../core/engine.js';
 import { formatJob, formatQuota, formatModel, formatRoles, quotaPercent } from '../core/report.js';
-import { STATUS_LABEL, type FallbackQuestion, type Job, type Plan } from '../core/types.js';
+import { ACTIVE_STATUSES, STATUS_LABEL, type FallbackQuestion, type Job, type Plan } from '../core/types.js';
 import type { SavedSession } from '../core/state.js';
-import { DarioError, ellipsis, formatLocalTime, nowIso } from '../core/util.js';
+import { DarioError, ellipsis, formatLocalTime, normPath, nowIso } from '../core/util.js';
 import type { CompletionContext } from './completion.js';
 import { colorizeDiff, readDiff } from './diff.js';
 import { EMPTY_FEED, markStopping, reduceFeed, shortRole, type FeedState, type StepView } from './feed.js';
@@ -64,8 +64,8 @@ export interface SessionOptions {
   engine: Engine;
   color: boolean;
   senderId?: string;
-  /** 启动时直接接上这个项目上一次的会话（`dario --continue`）。 */
-  continueLast?: boolean;
+  /** 启动时直接接上会话（`dario --continue`）：true 接上这个项目上一次的会话，任务号则从那个任务接着做。 */
+  continueLast?: boolean | string;
   now?: () => number;
   readDiff?: typeof readDiff;
 }
@@ -168,7 +168,8 @@ export class Session {
       this.update({ history: [...history, ...items], feed: { ...next, lines: [] } });
     });
     const saved = this.loadSaved();
-    if (saved && this.opts.continueLast) this.restore(saved);
+    if (typeof this.opts.continueLast === 'string') this.continueFrom(this.opts.continueLast);
+    else if (saved && this.opts.continueLast) this.restore(saved);
     else if (saved) this.append('notice', `上一次会话停在 ${saved.jobId}（${formatLocalTime(saved.savedAt)}）：${ellipsis(saved.task, 50)}。输入 /continue 接着做。`);
     else if (this.opts.continueLast) this.append('notice', '这个项目没有可以接着做的会话，从头开始。');
     await this.refreshStatus(true);
@@ -183,13 +184,47 @@ export class Session {
     try { this.engine.state?.saveSession(this.engine.project.root, session); } catch { /* 见上 */ }
   }
 
+  /** 一个任务结束后留给下一个任务的上文。只有做成的任务才有。 */
+  private static contextOf(job: Job): string | undefined {
+    const conclusion = job.result?.conclusion;
+    return job.status === 'done' && conclusion?.trim()
+      ? `同一次会话里上一个任务（${job.id}）的结论：\n${conclusion.slice(0, 3000)}` : undefined;
+  }
+
+  /**
+   * 从指定的任务接着做：把会话还原成那个任务刚结束时的样子。
+   * 做成的任务，上文是它的结论；没做成的，上文沿用它当时收到的上文（没做成的任务不改变上文）。
+   * 各角色的 AI 会话取任务记录里的，包括它从更早的任务带过来的。
+   */
+  private continueFrom(id: string) {
+    try {
+      const job = this.engine.job(id);
+      if (normPath(job.projectRoot) !== normPath(this.engine.project.root)) {
+        throw new DarioError(`${job.id} 是在另一个项目里做的（${job.projectRoot}），不能在这里接着做。`);
+      }
+      if (ACTIVE_STATUSES.includes(job.status)) throw new DarioError(`${job.id} 还没有结束（${STATUS_LABEL[job.status]}），结束后才能接着做。`);
+      // 旧的任务记录没有 contextJob 字段时，从上文开头的“上一个任务（J…）”里取
+      const own = Session.contextOf(job);
+      this.restore({
+        savedAt: job.updatedAt, jobId: job.id, task: job.task.split(/\r?\n/, 1)[0] ?? '',
+        files: job.result?.changedFiles ?? job.changedFiles,
+        ...(own ? { context: own, contextJobId: job.id } : job.context
+          ? { context: job.context, contextJobId: job.contextJob ?? /上一个任务（(J\d+)）/.exec(job.context)?.[1] } : {}),
+        ...(job.sessions && { sessions: job.sessions }),
+      });
+    } catch (error) {
+      this.error(error);
+      this.append('notice', '没有接上，从头开始。');
+    }
+  }
+
   /** 接上存档的会话：上文、各角色的 AI 会话、上一个任务改动的文件。 */
   private restore(saved: SavedSession) {
     this.context = saved.context;
     this.roleSessions = saved.sessions;
     this.files = saved.files ?? [];
     this.contextVersion++;
-    this.update({ contextJobId: saved.context ? (saved.contextJobId ?? saved.jobId) : undefined });
+    this.update({ contextJobId: saved.context ? saved.contextJobId ?? saved.jobId : undefined });
     try {
       const last = this.engine.job(saved.jobId);
       this.append('title', `${last.id} · ${last.task.split(/\r?\n/, 1)[0]}`);
@@ -294,8 +329,10 @@ export class Session {
       this.persist(undefined);
       return this.append('notice', '已清空会话上文，各角色的 AI 会话也重新开始，下一个任务从头开始。');
     }
-    if (line === '/continue') {
-      if (this.working) return this.append('error', '有任务在运行，等它结束后再接上一次的会话。');
+    if (line === '/continue' || line.startsWith('/continue ')) {
+      if (this.working) return this.append('error', '有任务在运行，等它结束后再接上之前的会话。');
+      const id = line.slice('/continue'.length).trim();
+      if (id) return this.continueFrom(id);
       const saved = this.loadSaved();
       return saved ? this.restore(saved) : this.append('notice', '这个项目没有可以接着做的会话。');
     }
@@ -305,7 +342,7 @@ export class Session {
     switch (cmd.kind) {
       case 'invalid': return this.append('error', cmd.message);
       case 'help': return this.append('text', [HELP_TEXT, '/diff                  查看上一个任务的改动',
-        '/continue              接上这个项目上一次的会话（退出前做到哪，接着做）',
+        '/continue [任务号]     接上这个项目上一次的会话；给出任务号则从那个任务接着做',
         '/new                   清空会话上文，各角色的 AI 会话重新开始', '/plain                 切换到逐行交互', '/exit                  退出'].join('\n'));
       case 'roles': return this.append('text', formatRoles(await engine.rolesView(), engine.roles.fallback, engine.roles.modelLabel));
       case 'agents':
@@ -492,8 +529,9 @@ export class Session {
     const conclusion = done.result?.conclusion;
     // 会话不看任务成败：做成的那几轮仍然有效，没做成的那一轮执行时已经作废
     if (version === this.contextVersion && done.sessions) this.roleSessions = done.sessions;
-    if (version === this.contextVersion && done.status === 'done' && conclusion?.trim()) {
-      this.context = `同一次会话里上一个任务（${done.id}）的结论：\n${conclusion.slice(0, 3000)}`;
+    const own = Session.contextOf(done);
+    if (version === this.contextVersion && own) {
+      this.context = own;
       this.update({ contextJobId: done.id });
     }
     // 每个任务结束都存档，退出（包括更新 Dario 后重进）再进来可以用 --continue 或 /continue 接上

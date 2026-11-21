@@ -71,7 +71,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
   --verbose                在纯文本输出里逐条显示 AI 的活动
   --plain                  不使用动态界面，按纯文本输出
   --inline                 交互方式使用行内界面，不占满整个终端
-  -c, --continue           交互方式启动时接上这个项目上一次的会话
+  -c, --continue [任务号]  交互方式启动时接上这个项目上一次的会话；给出任务号则从那个任务接着做
   -y, --yes                含改文件步骤的计划免确认
   --project <目录>         指定项目根目录
   -h, --help               显示本帮助
@@ -84,7 +84,7 @@ const SUBCOMMANDS = new Set(['roles', 'role', 'model', 'agents', 'health', 'jobs
 interface Parsed {
   plain: boolean;
   inline: boolean;
-  continueLast?: boolean;
+  continueLast?: boolean | string;
   verbose: boolean;
   positionals: string[];
   to?: string;
@@ -100,7 +100,7 @@ interface Parsed {
   version: boolean;
 }
 
-function parseArgs(argv: string[]): Parsed {
+export function parseArgs(argv: string[]): Parsed {
   const p: Parsed = { positionals: [], modelFlags: [], plain: false, inline: false, print: false, verbose: false, format: 'text', yes: false, save: false, reset: false, help: false, version: false };
   const need = (i: number, flag: string): string => {
     const v = argv[i];
@@ -119,7 +119,16 @@ function parseArgs(argv: string[]): Parsed {
     else if (a === '--verbose') p.verbose = true;
     else if (a === '--plain') p.plain = true;
     else if (a === '--inline') p.inline = true;
-    else if (a === '-c' || a === '--continue') p.continueLast = true;
+    else if (a === '-c' || a === '--continue') {
+      // 后面紧跟任务号（J 加数字）时从那个任务接着做；别的词仍然是任务描述
+      const next = argv[i + 1];
+      if (next !== undefined && /^J\d+$/i.test(next)) { p.continueLast = next.toUpperCase(); i++; }
+      else p.continueLast = true;
+    } else if (a.startsWith('--continue=')) {
+      const id = a.slice('--continue='.length);
+      if (!/^J\d+$/i.test(id)) throw new ConfigError('--continue= 后面要写任务号，例如 --continue=J0027。');
+      p.continueLast = id.toUpperCase();
+    }
     else if (a === '--output-format') {
       const v = need(++i, '--output-format');
       if (v !== 'text' && v !== 'json') throw new ConfigError('--output-format 只能是 text 或 json。');

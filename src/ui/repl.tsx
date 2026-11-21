@@ -17,7 +17,7 @@ export interface ReplOptions {
   env: NodeJS.ProcessEnv;
   printLine: (line: string) => void;
   /** 启动时直接接上这个项目上一次的会话。 */
-  continueLast?: boolean;
+  continueLast?: boolean | string;
 }
 
 /** 卸载之后仍可能有排队的任务需要确认，用原终端逐行提问。 */
