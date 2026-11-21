@@ -133,8 +133,23 @@ it('宽字符光标按真实列定位，长输入继续键入时窗口跟随行�
     view.stdin.write(input!);
     await vi.waitFor(() => expect(view.lastFrame()?.endsWith(end!)).toBe(true));
     const frame = view.lastFrame()!;
-    expect(frame.startsWith('> ...')).toBe(true);
+    expect(frame.startsWith('> a·b')).toBe(true);
+    const lines = frame.split('\n');
+    expect(lines.slice(1).every(line => line.startsWith('  '))).toBe(true);
     check(frame);
-    expect(cursor).toHaveBeenLastCalledWith({ x: displayWidth(frame, true), y: 0 });
+    expect(cursor).toHaveBeenLastCalledWith({ x: displayWidth(lines.at(-1)!, true), y: lines.length - 1 });
   }
+});
+
+it('十个屏幕行只显示八行，首末标注随光标移动并计入高度', async () => {
+  function Input() {
+    const [state, onChange] = useState({ ...EMPTY_EDITOR, value: Array(10).fill('中').join('\n'), cursor: 0 });
+    return <TextInput state={state} onChange={onChange} onSubmit={vi.fn()} color={false} row={2} />;
+  }
+  const view = await narrow(<Input />, 40, false);
+  expect(view.lastFrame()!.split('\n')).toEqual(['> 中', ...Array(6).fill('  中'), '  ... 下面还有 3 行']);
+  expect(cursor).toHaveBeenLastCalledWith({ x: 2, y: 2 });
+  for (let i = 0; i < 9; i++) view.stdin.write('\x1b[B');
+  await vi.waitFor(() => expect(view.lastFrame()!.split('\n')).toEqual(['  ... 上面还有 3 行', ...Array(7).fill('  中')]));
+  expect(cursor).toHaveBeenLastCalledWith({ x: 2, y: 9 });
 });

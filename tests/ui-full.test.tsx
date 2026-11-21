@@ -4,7 +4,7 @@ import { render } from 'ink';
 import { stripVTControlCharacters } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Mouse } from '../src/ui/mouse.js';
-import type { CopyResult } from '../src/ui/clipboard.js';
+import type { CopyResult, ReadResult } from '../src/ui/clipboard.js';
 import { FullApp } from '../src/ui/FullApp.js';
 import { displayWidth } from '../src/ui/text.js';
 import { pickSymbols } from '../src/ui/theme.js';
@@ -31,7 +31,8 @@ async function screen(columns = 100, rows = 30, wide = false, color = false) {
   const onExit = vi.fn();
   const onError = vi.fn();
   const copy = vi.fn(async (_text: string): Promise<CopyResult> => ({ ok: true }));
-  const props = { copy, session: data.session, symbols, color, onExit, onError,
+  const readClipboard = vi.fn(async (): Promise<ReadResult> => ({ ok: true, text: '' }));
+  const props = { readClipboard, copy, session: data.session, symbols, color, onExit, onError,
     onMouse(listener: (d: Mouse) => void) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
@@ -191,6 +192,8 @@ it.each([['y', true], ['n', false], ['\x1b', false], ['\x03', false]] as const)(
   ui.session.submit('编排');
   await ui.contains('执行吗？');
   await ui.contains('1. 实现  改文件  第一行');
+  ui.mouse({ type: 'rightPress', col: 3, row: 27 });
+  expect(ui.props.readClipboard).not.toHaveBeenCalled();
   const decide = vi.spyOn(ui.session, 'decidePlan');
   await ui.key('字');
   await ui.key('d');
@@ -281,6 +284,8 @@ it.each([['y', true], ['n', false], ['\x1b', false]])('换人询问显示在历�
   await ui.contains('! 主控的担当者 claude（claude-x） 不可用（额度用尽）。');
   await ui.contains('  改用备选 codex（gpt-x） 继续这个任务吗？');
   await ui.check(lines => expect(lines.at(-2)).toBe('改用备选继续吗？  y 继续   n 停止任务'));
+  ui.mouse({ type: 'rightPress', col: 1, row: 17 });
+  expect(ui.props.readClipboard).not.toHaveBeenCalled();
   // 询问期间输入框不接收文字
   await ui.key('x');
   await ui.check(lines => expect(lines.at(-4)).toBe('>'));
@@ -350,6 +355,8 @@ it('拖选反显，松开复制，提示位于步骤与边线之间并在三秒�
   ui.session.submit('任务');
   ui.emit({ jobId: 'J0001', kind: 'step_start', text: '', step });
   await ui.contains('执行   实现');
+  await ui.key('\x1b[200~甲\n乙\x1b[201~');
+  await ui.contains('  乙');
   ui.mouse({ type: 'press', col: 1, row: 1 });
   ui.mouse({ type: 'move', col: 5, row: 1 });
   await ui.contains('\x1b[7mDario');
@@ -484,4 +491,63 @@ it('迟到的复制结果不会覆盖新提示，失败后仍可输入', async (
   await ui.key('继续');
   await ui.contains('> 继续');
   expect(ui.lines().join('')).toContain('复制失败：终端已关闭');
+});
+
+it('翻看时输入框长高保留首行，矮窗口给输入框最多三分之一', async () => {
+  const ui = await screen(80, 12);
+  ui.session.submit('/help');
+  await ui.key('\x1b[5~');
+  await ui.contains('下面还有');
+  const history = ui.lines().slice(0, 4);
+  for (let i = 0; i < 6; i++) await ui.key('\n');
+  await ui.key('末');
+  await ui.contains('上面还有 4 行');
+  const frame = ui.lines();
+  expect(frame).toHaveLength(12);
+  expect(frame.slice(0, 4)).toEqual(history);
+  expect(frame[4]).toBe(ui.symbols.rule.repeat(79));
+  expect(frame[8]).toBe('  末');
+  expect(cursor).toHaveBeenLastCalledWith({ x: 4, y: 8 });
+});
+
+it('右键仅在输入框和边线上读取，等待期间按最新光标插入并提示结果', async () => {
+  const ui = await screen(80, 20);
+  const read = ui.props.readClipboard;
+  const click = (row: number) => ui.mouse({ type: 'rightPress', col: 3, row });
+  click(1);
+  click(19);
+  expect(read).not.toHaveBeenCalled();
+  let done!: (result: ReadResult) => void;
+  read.mockImplementationOnce(() => new Promise(resolve => { done = resolve; }));
+  click(16);
+  await ui.key('前后');
+  await ui.key('\x1b[D');
+  done({ ok: true, text: '甲\n👍🏽' });
+  await ui.contains('已粘贴 3 个字符');
+  expect(ui.lines().slice(15, 17)).toEqual(['> 前甲', '  👍🏽后']);
+  click(17);
+  await ui.contains('剪贴板里没有文字');
+  read.mockResolvedValueOnce({ ok: false, reason: '测试原因' });
+  click(18);
+  await ui.contains('粘贴失败：测试原因');
+  expect(read).toHaveBeenCalledTimes(3);
+  read.mockResolvedValueOnce({ ok: true, text: Array(9).fill('行').join('\n') });
+  click(15);
+  await ui.contains('> [已粘贴 9 行] 前甲');
+});
+
+it('增强键盘下方向键编辑，Alt 组合忽略，中文、粘贴、Esc 和 Ctrl+C 照常处理', async () => {
+  const ui = await screen();
+  await ui.key('甲乙');
+  await ui.key('\x1b[D');
+  await ui.key('\x1b[120;3u');
+  await ui.key('\x1b[200~中\n文\x1b[201~');
+  await ui.contains('> 甲中\n  文乙');
+  await ui.key('\x1b[27u');
+  await ui.check(lines => expect(lines.at(-4)).toBe('>'));
+  await ui.key('新');
+  await ui.key('\x1b[99;5u');
+  await ui.check(lines => expect(lines.at(-4)).toBe('>'));
+  await ui.key('\x1b[99;5u');
+  await ui.contains('再按一次 Ctrl+C');
 });

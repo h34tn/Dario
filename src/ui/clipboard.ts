@@ -56,3 +56,48 @@ export async function copyText(text: string, { platform = process.platform, env 
     return { ok: false, reason: error instanceof Error ? error.message : '无法写入终端' };
   }
 }
+
+export type ReadResult = { ok: true; text: string } | { ok: false; reason: string };
+type ReadCommand = (command: string, args: string[], signal: AbortSignal) => Promise<string>;
+
+const readCommand: ReadCommand = (command, args, signal) => new Promise((resolve, reject) => {
+  const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, signal, killSignal: 'SIGKILL' });
+  let output = '';
+  child.stdout.setEncoding('utf8').on('data', chunk => { output += chunk; });
+  child.once('error', reject);
+  child.once('close', code => {
+    if (code !== 0) reject(new Error('剪贴板命令执行失败'));
+    // PowerShell 输出字符串时另写一个行结束符，剪贴板原有的末尾换行保留。
+    else resolve(command === 'powershell.exe' ? output.replace(/\r\n$/, '') : output);
+  });
+});
+
+export async function readClipboard({ platform = process.platform, env = process.env, run = readCommand }: {
+  platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; run?: ReadCommand;
+} = {}): Promise<ReadResult> {
+  if (env.SSH_TTY || env.SSH_CONNECTION) return { ok: false, reason: '远程会话里读不到本机剪贴板，请用终端自己的粘贴' };
+  let commands: string[][] = [];
+  if (platform === 'win32') commands = [['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw']];
+  if (platform === 'darwin') commands = [['pbpaste']];
+  if (platform === 'linux') commands = env.WAYLAND_DISPLAY ? [['wl-paste', '--no-newline']]
+    : [['xclip', '-selection', 'clipboard', '-o'], ['xsel', '--clipboard', '--output']];
+  const controller = new AbortController();
+  let reason = '系统没有可用的剪贴板命令';
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { reject(new Error('剪贴板命令超时')); controller.abort(); }, TIMEOUT_MS);
+  });
+  try {
+    for (const [command, ...args] of commands) {
+      try {
+        const text = await Promise.race([run(command, args, controller.signal), timeout]);
+        return { ok: true, text: text.replace(/\r\n/g, '\n') };
+      } catch (error) {
+        reason = error instanceof Error ? error.message : '无法读取剪贴板';
+        if (controller.signal.aborted) break;
+      }
+    }
+    return { ok: false, reason };
+  } finally { clearTimeout(timer); }
+}

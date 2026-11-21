@@ -6,7 +6,7 @@ import { GlyphContext, useScreen } from './screen.js';
 import { clip, graphemes } from './text.js';
 import { pickSymbols, toneColor, type Symbols } from './theme.js';
 
-const intro = 'Dario 输入检查：在下面输入几行文字（包括中文、粘贴多行），每提交一行会显示程序实际收到的内容。\n输入 /exit 或按两次 Ctrl+C 退出。\n';
+const intro = 'Dario 输入检查：在下面输入几行文字（包括中文、粘贴多行），每次提交会显示程序实际收到的内容。\n可试 Shift+Enter 换行（终端分不出它时用 Ctrl+J）。输入 /exit 或按两次 Ctrl+C 退出。\n';
 
 function receipt(text: string, count: number): string {
   const lines = text.split('\n');
@@ -35,6 +35,7 @@ function InputTestBody({ color, onExit }: InputTestProps) {
   const { columns, wide, ellipsis } = useScreen();
   const limit = columns - 1;
   const [editor, setEditor] = useState(EMPTY_EDITOR);
+  const [newline, setNewline] = useState('');
   const [items, setItems] = useState([intro]);
   const [warning, setWarning] = useState(false);
   const armed = useRef(false);
@@ -55,8 +56,9 @@ function InputTestBody({ color, onExit }: InputTestProps) {
   }
   return <Box flexDirection="column">
     <Static items={items}>{(item, index) => <Text key={index}>{item}</Text>}</Static>
-    <TextInput state={editor} onChange={setEditor} onSubmit={submit} row={0} color={color} />
-    <Text {...toneColor('dim', color)}>{clip('  上下键翻历史 · Ctrl+U 清空 · Ctrl+A / Ctrl+E 行首行尾', limit, wide, ellipsis)}</Text>
+    <TextInput state={editor} onChange={setEditor} onSubmit={submit} onNewline={setNewline} row={0} color={color} />
+    <Text {...toneColor('dim', color)}>{clip('  上下键移行，到首末行翻历史 · Ctrl+U 清空 · Ctrl+A / Ctrl+E 行首行尾', limit, wide, ellipsis)}</Text>
+    {newline && <Text>收到换行键：{newline}</Text>}
     {warning && <Text {...toneColor('warn', color)}>{clip('再按一次 Ctrl+C 退出', limit, wide, ellipsis)}</Text>}
   </Box>;
 }
@@ -72,7 +74,7 @@ export async function runInputTest(opts: {
     return 2;
   }
   const app = render(<InputTestScreen symbols={pickSymbols(env)} color={!env.NO_COLOR} onExit={() => app.unmount()} />,
-    { stdin, stdout, exitOnCtrlC: false });
+    { stdin, stdout, kittyKeyboard: { mode: 'auto' }, exitOnCtrlC: false });
   await app.waitUntilExit();
   return 0;
 }

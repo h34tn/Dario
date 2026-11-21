@@ -83,7 +83,7 @@ it('诊断回显字素数、逐个码点和多行粘贴的行数与字数', asyn
   await vi.waitFor(() => expect(view.frames.join('\n')).toContain('第 1 次  收到 2 个字  "你好"'));
   expect(view.frames.join('\n')).toContain('码点 4F60 597D');
   view.stdin.write('\x1b[200~甲\r\n👍🏽\n乙丙\x1b[201~');
-  await vi.waitFor(() => expect(view.lastFrame()).toContain('> [已粘贴 3 行]'));
+  await vi.waitFor(() => expect(view.lastFrame()).toContain('> 甲\n  👍🏽\n  乙丙'));
   view.stdin.write('\r');
   await vi.waitFor(() => expect(view.frames.join('\n')).toContain('第 2 次  收到 3 行（共 4 个字）'));
   expect(view.frames.join('\n')).toContain('第一行 "甲"');
@@ -132,4 +132,35 @@ it('诊断命令缺少标准输出流时报错，管道提示只写到提供的�
   expect(stdout.write).toHaveBeenCalledWith('输入检查需要在终端里直接运行，不能通过管道。\n');
   expect(io.stderr).toHaveBeenCalledTimes(1);
   expect(io.readStdin).not.toHaveBeenCalled();
+});
+
+it.each([['Shift+Enter', '\x1b[13;2u'], ['Ctrl+J', '\n'],
+  ['反斜杠+Enter', '\\']])('%s 在光标处换行并报告键名，普通回车提交两行', async (name, key) => {
+  const view = render(<InputTestScreen color={false} onExit={vi.fn()} />);
+  await setImmediate();
+  view.stdin.write('甲');
+  view.stdin.write(key);
+  if (key === '\\') view.stdin.write('\r');
+  view.stdin.write('乙');
+  await vi.waitFor(() => expect(view.lastFrame()).toContain('收到换行键：' + name));
+  expect(view.lastFrame()).toContain('> 甲\n  乙');
+  view.stdin.write('\r');
+  await vi.waitFor(() => expect(view.frames.join('\n')).toContain('第 1 次  收到 2 行'));
+});
+
+it('三个交互入口都由 Ink 自动探测增强键盘', () => {
+  for (const name of ['full', 'repl', 'input-test']) {
+    expect(readFileSync(new URL('../src/ui/' + name + '.tsx', import.meta.url), 'utf8')).toMatch(/kittyKeyboard: \{ mode: 'auto' \}/);
+  }
+});
+
+it('Alt+Enter 不是换行键：既不换行也不提交', async () => {
+  const view = render(<InputTestScreen color={false} onExit={vi.fn()} />);
+  await setImmediate();
+  view.stdin.write('甲');
+  view.stdin.write('\x1b\r');
+  view.stdin.write('乙');
+  await vi.waitFor(() => expect(view.lastFrame()).toContain('> 甲乙'));
+  expect(view.frames.join('\n')).not.toContain('收到换行键');
+  expect(view.frames.join('\n')).not.toContain('第 1 次');
 });

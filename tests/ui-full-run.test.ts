@@ -198,3 +198,20 @@ it.each([false, true])('全屏转逐行后可继续用原输入流执行指令�
     app.mockRestore();
   }
 });
+
+it('全屏握手应答到达 Ink，启用协议后原有快捷键、中文和粘贴仍可用', async () => {
+  const t = await terminal();
+  const done = runFullUi(t.opts);
+  await t.see('\x1b[?u');
+  t.input.write('\x1b[?1u');
+  await t.see('\x1b[>1u');
+  for (const value of ['甲乙', '\x1b[27u', '丙', '\x1b[99;5u', '/nw', '\x1b[D',
+    '\x1b[120;3u', '\x1b[200~e\x1b[201~', '\r']) {
+    t.input.write(value);
+    await setImmediate();
+  }
+  await t.see('已清空会话上文');
+  await t.line('/exit');
+  expect(await done).toBe('exit');
+  expect(t.output()).toContain('\x1b[<u');
+});

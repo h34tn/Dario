@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 export const ENABLE_MOUSE = '\x1b[?1000h\x1b[?1002h\x1b[?1006h';
 export const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1002l\x1b[?1000l';
 
-export type Pointer = { type: 'press' | 'move' | 'release'; col: number; row: number };
+export type Pointer = { type: 'press' | 'rightPress' | 'move' | 'release'; col: number; row: number };
 export type Mouse = 'up' | 'down' | Pointer;
 
 const event = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
@@ -17,6 +17,7 @@ export function extractMouse(input: string) {
   const rest = input.slice(0, input.length - pending.length).replace(event, (_, button, col, row, end) => {
     if (end === 'M' && button === '64') events.push('up');
     if (end === 'M' && button === '65') events.push('down');
+    if (end === 'M' && button === '2') events.push({ type: 'rightPress', col: Number(col), row: Number(row) });
     if (button === '0' || (button === '32' && end === 'M')) {
       events.push({ type: end === 'm' ? 'release' : button === '32' ? 'move' : 'press', col: Number(col), row: Number(row) });
     }

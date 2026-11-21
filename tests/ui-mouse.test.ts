@@ -71,8 +71,21 @@ it('鼠标输入过滤独立于渲染库', () => {
 });
 
 it('左键修饰与其他按钮被过滤，分段的释放事件保留坐标', () => {
-  const ignored = [1, 2, 4, 8, 16, 36, 40, 48].map(code => '\x1b[<' + code + ';4;5M').join('');
+  const ignored = [1, 6, 10, 18, 34, 4, 8, 16, 36, 40, 48].map(code => '\x1b[<' + code + ';4;5M').join('');
   const first = extractMouse('甲' + ignored + '\x1b[<0;12;');
   expect(first).toEqual({ rest: '甲', pending: '\x1b[<0;12;', events: [] });
   expect(extractMouse(first.pending + '34m乙')).toEqual({ rest: '乙', pending: '', events: [{ type: 'release', col: 12, row: 34 }] });
+});
+
+it('只上报无修饰键的右键按下，增强键盘应答完整穿过过滤流', async () => {
+  const source = new PassThrough(), mouse = vi.fn();
+  const { stream, dispose } = createInputFilter(source as unknown as NodeJS.ReadStream, mouse);
+  try {
+    source.write('\x1b[');
+    await setImmediate();
+    source.write('?1u\x1b[<2;12;9M\x1b[<2;12;9m');
+    await setImmediate();
+    expect(stream.read()).toBe('\x1b[?1u');
+    expect(mouse).toHaveBeenCalledExactlyOnceWith({ type: 'rightPress', col: 12, row: 9 });
+  } finally { dispose(); }
 });

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { clip, displayWidth, wrapText } from '../src/ui/text.js';
-import { editorView, editorWindow, EMPTY_EDITOR } from '../src/ui/editor.js';
+import { editorReduce, editorWindow, EMPTY_EDITOR } from '../src/ui/editor.js';
 import { pickSymbols } from '../src/ui/theme.js';
 
 it('终端和语言共同决定省略号与不定宽字符宽度', () => {
@@ -34,25 +34,13 @@ it('硬折行保留空段和原有换行，按真实格数对齐', () => {
   expect(wrapText('', 3, true)).toEqual(['']);
 });
 
-it('输入放得下时保留粘贴前缀与原来的光标', () => {
-  const state = { ...EMPTY_EDITOR, pasted: '甲\n乙', value: 'a·b', cursor: 2 };
-  const view = editorWindow(state, 40, true, '...');
-  expect(view.prefix).toBe('[已粘贴 2 行] ');
-  expect({ text: view.prefix + view.text, cursorColumn: view.cursorColumn }).toEqual(editorView(state, true));
-});
-
-it.each([
-  [0, '', '0123456...'],
-  [12, '...56789ab', ''],
-  [8, '...4567', '...'],
-] as const)('窗口随光标移动并为省略号留出格数：第 %i 个字', (cursor, left, right) => {
-  const view = editorWindow({ ...EMPTY_EDITOR, pasted: '甲\n乙', value: '0123456789ab', cursor }, 11, true, '...');
-  expect(view).toEqual({ prefix: '', text: left + right, cursorColumn: left.length });
-});
-
-it('宽字符窗口以真实列数定位光标', () => {
-  const value = '甲·乙“丙”丁·末';
-  const view = editorWindow({ ...EMPTY_EDITOR, value, cursor: 5 }, 13, true, '...');
-  expect(view).toEqual({ prefix: '', text: '...乙“丙...', cursorColumn: 9 });
-  expect(displayWidth(view.text, true)).toBe(12);
+it('宽字符按显示列折行，行首行尾和纵向移动采用同一折行位置', () => {
+  const state = { ...EMPTY_EDITOR, value: '甲·乙“丙”丁·末', cursor: 5 };
+  const view = editorWindow(state, 6, true);
+  expect(view.visible.map(line => line.text)).toEqual(['甲·乙', '“丙”', '丁·末']);
+  expect(view).toMatchObject({ cursorColumn: 4, cursorRow: 1 });
+  for (const [type, x, y] of [['home', 0, 1], ['end', 6, 1], ['up', 4, 0], ['down', 4, 2]] as const) {
+    const next = editorReduce(state, { type }, 6, true);
+    expect(editorWindow(next, 6, true)).toMatchObject({ cursorColumn: x, cursorRow: y });
+  }
 });

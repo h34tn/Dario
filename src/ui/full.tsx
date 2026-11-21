@@ -1,6 +1,6 @@
 import { writeSync } from 'node:fs';
 import { render } from 'ink';
-import { copyText } from './clipboard.js';
+import { copyText, readClipboard } from './clipboard.js';
 import { FullApp, type FullAppProps } from './FullApp.js';
 import { createLineCache } from './lines.js';
 import { createInputFilter, DISABLE_MOUSE, ENABLE_MOUSE, type Mouse } from './mouse.js';
@@ -45,9 +45,10 @@ export async function runFullUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
       try {
         input = createInputFilter(stdin, event => mouse?.(event));
         app = render(<FullApp session={session} symbols={symbols} color={color} onMouse={onMouse}
+          readClipboard={() => readClipboard({ env })}
           copy={text => copyText(text, { env, write: sequence => new Promise((resolve, reject) =>
             stdout.write(sequence, error => error ? reject(error) : resolve())) })}
-          onExit={finish} onError={onError} />, { stdout, stdin: input.stream, exitOnCtrlC: false,
+          onExit={finish} onError={onError} />, { stdout, stdin: input.stream, kittyKeyboard: { mode: 'auto' }, exitOnCtrlC: false,
           patchConsole: false, maxFps: 15, interactive: !!stdout.isTTY, alternateScreen: true, incrementalRendering: true });
         await app.waitUntilRenderFlush();
         if (mountError) throw mountError;

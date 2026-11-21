@@ -10,7 +10,8 @@ import { GlyphContext, useScreen } from './screen.js';
 import type { Session } from './session.js';
 import { StatusBar } from './StatusBar.js';
 import { TextInput } from './TextInput.js';
-import type { CopyResult } from './clipboard.js';
+import { editorReduce, editorWindow } from './editor.js';
+import type { CopyResult, ReadResult } from './clipboard.js';
 import type { Mouse, Pointer } from './mouse.js';
 import { columns as selectedColumns, highlight, paragraph, selectedText, word, type Point, type Selection } from './selection.js';
 import { clip, displayWidth, graphemes } from './text.js';
@@ -29,6 +30,7 @@ export interface FullAppProps {
   session: Session;
   symbols: Symbols;
   color: boolean;
+  readClipboard?: () => Promise<ReadResult>;
   copy?: (text: string) => Promise<CopyResult>;
   /** 订阅鼠标事件，返回取消订阅的函数。 */
   onMouse?: (listener: (event: Mouse) => void) => () => void;
@@ -36,7 +38,7 @@ export interface FullAppProps {
   onError: (error: Error) => void;
 }
 
-function Screen({ session, symbols, color, onMouse, copy, onExit }: FullAppProps) {
+function Screen({ session, symbols, color, onMouse, copy, readClipboard, onExit }: FullAppProps) {
   const { stdout } = useStdout();
   const [, resize] = useReducer(n => n + 1, 0);
   useEffect(() => {
@@ -100,6 +102,28 @@ function Screen({ session, symbols, color, onMouse, copy, onExit }: FullAppProps
     }
   }, [small, !!snap.picker]);
   useEffect(() => () => { generation.current++; clearTimeout(noticeTimer.current); }, []);
+  function showNotice(message: string) {
+    clearTimeout(noticeTimer.current);
+    setNotice(message);
+    noticeTimer.current = setTimeout(() => setNotice(''), 3000);
+  }
+  const inputActive = !small && !snap.plan && !snap.ask && !snap.picker;
+  const pasteGeneration = useRef(0);
+  useLayoutEffect(() => () => { pasteGeneration.current++; }, [inputActive]);
+  async function pasteClipboard() {
+    if (!readClipboard || !inputActive) return;
+    const request = pasteGeneration.current;
+    const id = ++generation.current;
+    let result: ReadResult;
+    try { result = await readClipboard(); } catch (error) {
+      result = { ok: false, reason: error instanceof Error ? error.message : '无法读取剪贴板' };
+    }
+    const { plan, ask, picker } = session.getSnapshot();
+    if (request !== pasteGeneration.current || plan || ask || picker) return;
+    if (result.ok && result.text) change(editorReduce(current.current, { type: 'paste', text: result.text }));
+    if (id === generation.current) showNotice(!result.ok ? '粘贴失败：' + result.reason
+      : result.text ? '已粘贴 ' + graphemes(result.text).length + ' 个字符' : '剪贴板里没有文字');
+  }
   async function copySelection(range: Selection) {
     const text = selectedText(lines, joins, range, wide);
     if (!text || !copy) return;
@@ -109,10 +133,12 @@ function Screen({ session, symbols, color, onMouse, copy, onExit }: FullAppProps
       result = { ok: false, reason: error instanceof Error ? error.message : '无法写入剪贴板' };
     }
     if (id !== generation.current) return;
-    setNotice(result.ok ? '已复制 ' + graphemes(text).length + ' 个字符到剪贴板' : '复制失败：' + result.reason);
-    noticeTimer.current = setTimeout(() => setNotice(''), 3000);
+    showNotice(result.ok ? '已复制 ' + graphemes(text).length + ' 个字符到剪贴板' : '复制失败：' + result.reason);
   }
-  const baseHeight = Math.max(0, rows - 5 - stepHeight - Number(!!notice));
+  const maxRows = Math.floor(rows / 3);
+  const inputView = useMemo(() => editorWindow(editor, limit - 2, wide, maxRows), [editor, limit, wide, maxRows]);
+  const inputHeight = inputView.visible.length;
+  const baseHeight = Math.max(0, rows - 4 - inputHeight - stepHeight - Number(!!notice));
   // 离开底部时固定首行，计入历史内容和下方固定区域的高度变化。
   function adjusted(height: number) {
     return afterChange(anchor.view, total - anchor.total + anchor.height - height, total, height);
@@ -169,6 +195,11 @@ function Screen({ session, symbols, color, onMouse, copy, onExit }: FullAppProps
     };
     return onMouse?.(event => {
       if (typeof event === 'string') { scrollMouse(event === 'up' ? 3 : -3); return; }
+      if (event.type === 'rightPress') {
+        const top = height + stepHeight + Number(!!notice) + 1;
+        if (event.col >= 1 && event.col <= limit && event.row >= top && event.row <= top + inputHeight + 1) void pasteClipboard();
+        return;
+      }
       if (event.type === 'press') {
         clearNotice();
         const last = clicks.current;
@@ -236,13 +267,13 @@ function Screen({ session, symbols, color, onMouse, copy, onExit }: FullAppProps
   const rule = paint('dim', symbols.rule.repeat(limit), color);
   const hint = snap.ask ? FALLBACK_HINT : snap.plan ? '执行吗？  y 执行   n 取消   d 查看每一步的完整任务说明'
     : warningText || (below ? '  ' + symbols.down + ' 下面还有 ' + below + ' 行   PgDn 向下翻   End 回到最新'
-      : '  / 指令   PgUp/PgDn 翻看   Esc 中断当前任务   Ctrl+C 退出');
+      : '  / 指令   PgUp/PgDn 翻看   Shift+Enter 换行   Esc 中断当前任务   Ctrl+C 退出');
   return <Box flexDirection="column">
     {Array.from({ length: height }, (_, i) => row(highlight(visible[i] ?? '', selectedColumns(selection, above + i), wide), i))}
     {stepLine !== undefined && <Text wrap="truncate-end">{stepLine}</Text>}
     {!!notice && <Text wrap="truncate-end">{' '.repeat(Math.max(0, limit - displayWidth(fit(notice), wide))) + paint('dim', fit(notice), color)}</Text>}
     <Text wrap="truncate-end">{rule}</Text>
-    <TextInput state={editor} currentState={current} onChange={change} onSubmit={text => { follow(); session.submit(text); }}
+    <TextInput view={inputView} state={editor} currentState={current} onChange={change} onSubmit={text => { follow(); session.submit(text); }}
       row={height + stepHeight + Number(!!notice) + 1} isActive={!snap.plan && !snap.ask} color={color} />
     <Text wrap="truncate-end">{rule}</Text>
     {menu.length ? <CommandMenu suggestions={menu} color={color} />

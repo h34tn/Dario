@@ -1,11 +1,11 @@
 import { GlyphContext, useScreen } from './screen.js';
 import { clip } from './text.js';
 import { Box, Static, Text, useInput } from 'ink';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ModelPrompt } from './ModelPrompt.js';
 import { CommandMenu } from './CommandMenu.js';
 import { suggest } from './completion.js';
-import { editorReduce, editorSetValue, EMPTY_EDITOR, type EditorState } from './editor.js';
+import { editorReduce, editorWindow, editorSetValue, EMPTY_EDITOR, type EditorState } from './editor.js';
 import { CurrentStep, StepRow, visibleActivities } from './LiveJob.js';
 import { itemLines } from './lines.js';
 import { FallbackPrompt } from './FallbackPrompt.js';
@@ -96,10 +96,14 @@ function Screen({ session, symbols, color, onExit, suspended }: Props) {
   const { snap, editor, current, change, now, warningText, suggestions: candidates } = useSessionEditor({ session, onExit, suspended });
   const active = !!snap.feed.current;
   // 极矮的窗口先缩短菜单，给状态栏、输入框、当前步骤和终端末行留位。
-  const minRows = active ? 6 : 4;
+  const minimum = active ? 6 : 4;
+  const maxRows = rows - minimum + 1;
+  const inputView = useMemo(() => editorWindow(editor, limit - 2, wide, maxRows), [editor, limit, wide, maxRows]);
+  const inputHeight = inputView.visible.length;
+  const minRows = minimum + inputHeight - 1;
   const suggestions = candidates.slice(0, Math.max(1, rows - minRows + 1));
   const hintRows = warningText ? 1 : Math.max(1, suggestions.length);
-  const activityLines = visibleActivities(snap.feed.activities, rows, 2 + hintRows, ellipsis);
+  const activityLines = visibleActivities(snap.feed.activities, rows, 1 + inputHeight + hintRows, ellipsis);
   const stepRows = active ? 1 + activityLines.length : 0;
 
   return <Box flexDirection="column">
@@ -112,11 +116,11 @@ function Screen({ session, symbols, color, onExit, suspended }: Props) {
       {snap.ask && <FallbackPrompt key={snap.ask.from[0]?.agent + '>' + snap.ask.to.agent} question={snap.ask} symbols={symbols} color={color}
         onDecide={approved => session.decideFallback(approved)} />}
       <StatusBar status={snap.status} queued={snap.queued} contextJobId={snap.contextJobId} color={color} />
-      <TextInput state={editor} currentState={current} onChange={change} onSubmit={text => session.submit(text)}
+      <TextInput view={inputView} state={editor} currentState={current} onChange={change} onSubmit={text => session.submit(text)}
         isActive={!snap.plan && !snap.ask} row={stepRows + 1} color={color} />
       {warningText ? <Text {...toneColor('warn', color)}>{clip(warningText, limit, wide, ellipsis)}</Text>
         : suggestions.length ? <CommandMenu suggestions={suggestions} color={color} />
-        : <Text wrap="truncate-end" {...toneColor('dim', color)}>{clip('  / 指令   Esc 中断当前任务   Ctrl+C 退出', limit, wide, ellipsis)}</Text>}
+        : <Text wrap="truncate-end" {...toneColor('dim', color)}>{clip('  / 指令   Shift+Enter 换行   Esc 中断当前任务   Ctrl+C 退出', limit, wide, ellipsis)}</Text>}
     </>}
   </Box>;
 }

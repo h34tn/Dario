@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { EMPTY_EDITOR, editorReduce, editorSubmit, editorView, type EditorAction, type EditorState } from '../src/ui/editor.js';
+import { EMPTY_EDITOR, editorReduce, editorSubmit, editorWindow, type EditorAction, type EditorState } from '../src/ui/editor.js';
 import { displayWidth, graphemes } from '../src/ui/text.js';
 
 function frozen(fields: Partial<EditorState> = {}): EditorState {
@@ -53,27 +53,29 @@ it('左右各跨一个字，行首行尾移动和删除不会越界', () => {
 it('真实光标列数包含中文和粘贴前缀的显示宽度', () => {
   for (const [cursor, column] of [0, 1, 3, 4].entries()) {
     const state = frozen({ value: 'a中b', cursor });
-    expect(editorView(state)).toEqual({ text: 'a中b', cursorColumn: column });
-    expect(editorView(frozen({ ...state, pasted: '甲\n乙' })).cursorColumn).toBe(displayWidth('[已粘贴 2 行] ') + column);
+    expect(editorWindow(state, 40, false).cursorColumn).toBe(column);
+    expect(editorWindow(frozen({ ...state, pasted: '甲\n乙' }), 40, false).cursorColumn).toBe(displayWidth('[已粘贴 2 行] ') + column);
   }
 });
 
 it('单行粘贴插入，多行规范换行、折叠、合并，整块删除或提交', () => {
-  const line = edit(frozen(), { type: 'paste', text: '\r\n备注\t\r' });
-  expect(line).toMatchObject({ value: '备注', cursor: 2 });
-  const pasted = edit(line, { type: 'paste', text: '\r\n甲\r\n乙\r丙\n\n' });
-  expect(pasted).toMatchObject({ value: '备注', cursor: 2, pasted: '甲\n乙\n丙' });
-  expect(editorView(frozen(pasted)).text).toBe('[已粘贴 3 行] 备注');
-  const merged = edit(pasted, { type: 'paste', text: '丁\n戊' });
-  expect(editorSubmit(frozen(merged)).text).toBe('甲\n乙\n丙\n丁\n戊\n备注');
-  expect(edit(edit(merged, { type: 'home' }), { type: 'backspace' })).toMatchObject({ pasted: undefined, value: '备注' });
+  const line = edit(frozen({ value: '前后', cursor: 1 }), { type: 'paste', text: '备注\t' });
+  const short = edit(line, { type: 'paste', text: '\r\n甲\r乙\r\n' });
+  expect(short.value).toBe('前备注\n甲\n乙\n后');
+  const eight = Array(8).fill('行').join('\n');
+  expect(edit(frozen(), { type: 'paste', text: eight }).value).toBe(eight);
+  const long = eight + '\n末';
+  const pasted = edit(short, { type: 'paste', text: long });
+  const merged = edit(pasted, { type: 'paste', text: long });
+  expect(editorSubmit(merged).text).toBe([long, long, short.value].join('\n'));
+  expect(edit({ ...merged, cursor: 0 }, { type: 'backspace' }).pasted).toBeUndefined();
 });
 
 it('历史可来回浏览并恢复草稿，编辑退出浏览，直接提交保留多行原文', () => {
   const history = ['最旧', '甲\n乙'];
   const draft = frozen({ history, value: '草稿', cursor: 2, pasted: '一\n二' });
   const latest = edit(draft, { type: 'historyPrev' });
-  expect(latest).toMatchObject({ value: '甲 …', cursor: 3, draft: '草稿', pasted: undefined, historyIndex: 1 });
+  expect(latest).toMatchObject({ value: '甲\n乙', cursor: 3, draft: '草稿', pasted: undefined, historyIndex: 1 });
   const submitted = editorSubmit(frozen(latest));
   expect(submitted).toEqual({ text: '甲\n乙', state: { ...EMPTY_EDITOR, history } });
   const oldest = frozen(edit(latest, { type: 'historyPrev' }));
@@ -97,4 +99,25 @@ it('空白提交保留原状态，清空输入和粘贴时保留历史', () => {
   expect(result.text).toBeUndefined();
   expect(result.state).toBe(state);
   expect(edit(state, { type: 'clear' })).toEqual({ ...EMPTY_EDITOR, history: ['旧'] });
+});
+
+it('上下穿过短行后恢复目标显示列，到首末行才翻历史', () => {
+  const state = frozen({ value: 'ab中\n短\n中文末', cursor: 3, history: ['历史'] });
+  const short = edit(state, { type: 'down' });
+  expect(short.cursor).toBe(5);
+  expect(edit(short, { type: 'down' }).cursor).toBe(8);
+  expect(edit(edit(short, { type: 'up' }), { type: 'up' }).value).toBe('历史');
+  const long = Array(9).fill('长').join('\n');
+  const recall = edit(frozen({ history: [long] }), { type: 'up' });
+  expect(recall.value).toBe('长 …');
+  expect(editorSubmit(recall).text).toBe(long);
+  const editable = edit(frozen({ history: ['一\n二'] }), { type: 'up' });
+  expect(editorSubmit(edit(editable, { type: 'insert', text: '三' })).text).toBe('一\n二三');
+});
+
+it('换行从光标处分开，行首退格或行尾删除重新合并', () => {
+  const split = edit(frozen({ value: '甲乙', cursor: 1 }), { type: 'newline' });
+  expect(split).toMatchObject({ value: '甲\n乙', cursor: 2 });
+  expect(edit(split, { type: 'backspace' }).value).toBe('甲乙');
+  expect(edit(edit(split, { type: 'left' }), { type: 'delete' }).value).toBe('甲乙');
 });

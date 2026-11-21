@@ -164,7 +164,7 @@ it('转义键优先清空文字或粘贴，空输入时中断当前任务', asyn
   const finish = hold();
   session.submit('任务');
   const interrupt = vi.spyOn(session, 'interrupt');
-  for (const [input, visible] of [['文字', '> 文字'], ['\x1b[200~甲\n乙\x1b[201~', '已粘贴 2 行']]) {
+  for (const [input, visible] of [['文字', '> 文字'], ['\x1b[200~甲\n乙\x1b[201~', '> 甲\n  乙']]) {
     key(input);
     await contains(visible);
     key('\x1b');

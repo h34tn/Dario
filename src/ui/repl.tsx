@@ -101,7 +101,7 @@ export async function runReplUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
     await session.start();
     try {
       app = render(screen(false),
-        { stdout, stdin, exitOnCtrlC: false, patchConsole: false, maxFps: 15 });
+        { stdout, stdin, kittyKeyboard: { mode: 'auto' }, exitOnCtrlC: false, patchConsole: false, maxFps: 15 });
       await app.waitUntilRenderFlush();
       if (mountError) throw mountError;
       mounted = true;
