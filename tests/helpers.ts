@@ -38,6 +38,7 @@ export interface FakeResponse {
   files?: Array<{ path: string; content: string | null }>;
   spawnChild?: boolean;
   echoPrompt?: boolean;
+  sessionLost?: boolean;
 }
 
 export interface FakeCall {
@@ -69,6 +70,8 @@ export interface SandboxOptions {
   progressLines?: boolean;
   /** 追加到 agents.yaml 顶层的设置。 */
   agentsExtra?: Record<string, unknown>;
+  /** 假 AI 是否支持续接会话。为 true 时用代码式插件接入。 */
+  resumable?: boolean;
 }
 
 export function sh(cwd: string, command: string, args: string[]): string {
@@ -103,11 +106,14 @@ export class Sandbox {
     fs.mkdirSync(path.join(this.home, 'plugins'), { recursive: true });
     fs.mkdirSync(path.join(this.project, '.dario'), { recursive: true });
 
-    for (const name of this.agents) this.writeFakePlugin(name, opts.streams ?? false, undefined, undefined, opts.progressLines);
+    for (const name of this.agents) {
+      if (opts.resumable) this.writeResumablePlugin(name);
+      else this.writeFakePlugin(name, opts.streams ?? false, undefined, undefined, opts.progressLines);
+    }
     fs.writeFileSync(
       path.join(this.home, 'agents.yaml'),
       stringify({
-        plugins: this.agents.map((n) => `./plugins/${n}.yaml`),
+        plugins: this.agents.map((n) => `./plugins/${n}.${opts.resumable ? 'mjs' : 'yaml'}`),
         cooldown_minutes: 10,
         startup_timeout_seconds: 2,
         ...(opts.agentsExtra ?? {}),
@@ -137,6 +143,30 @@ export class Sandbox {
         streams,
         ...(progressLines && { progress: 'lines' }),
       }),
+    );
+  }
+
+  /** 支持续接的假 AI：续接时参数里带 --resume <会话号>，会话号取自输出的第一行。 */
+  writeResumablePlugin(name: string): void {
+    const base = [FAKE_AGENT, '--name', name, '--scenario', this.scenarioFile, '--emit-session'];
+    fs.writeFileSync(
+      path.join(this.home, 'plugins', `${name}.mjs`),
+      `const base = ${JSON.stringify(base)};
+export default {
+  apiVersion: 1,
+  id: ${JSON.stringify(name)},
+  displayName: ${JSON.stringify(`假 AI ${name}`)},
+  defaultCommand: ${JSON.stringify(process.execPath)},
+  versionArgs: ${JSON.stringify([FAKE_AGENT, '--name', name, '--version'])},
+  streams: false,
+  resumes: true,
+  build: (req) => ({ args: [...base, '--access', req.access, ...(req.resume ? ['--resume', req.resume] : [])], stdin: req.prompt }),
+  parse: (raw) => {
+    const m = /^SESSION:([^ ]+?)[\\r\\n]+/.exec(raw.stdout);
+    return { text: (m ? raw.stdout.slice(m[0].length) : raw.stdout).trim(), sessionId: m?.[1] };
+  },
+};
+`,
     );
   }
 

@@ -11,6 +11,8 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'];
 /** Claude Code 与 CodeBuddy 的命令行参数形式相同。 */
 function claudeStyleArgs(req: InvokeRequest): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', req.access === 'write' ? 'acceptEdits' : 'dontAsk'];
+  // 续接只带回对话历史，权限与工具清单仍按这一次的参数生效
+  if (req.resume) args.push('--resume', req.resume);
   if (req.model) args.push('--model', req.model);
   args.push(...extraArgs(req));
   if (req.allowedTools.length > 0) args.push('--allowedTools', ...req.allowedTools);
@@ -26,7 +28,9 @@ export const claudePlugin: AgentPlugin = defineAgent({
   displayName: 'Claude Code',
   defaultCommand: 'claude',
   streams: true,
-  envPass: ['ANTHROPIC_*', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_USE_*', 'CLAUDE_CODE_GIT_BASH_PATH'],
+  resumes: true,
+  // 后两个是 Claude Code 自动压缩会话历史的阈值设置：用户为自己调过的上限，续接时照样生效
+  envPass: ['ANTHROPIC_*', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_USE_*', 'CLAUDE_CODE_GIT_BASH_PATH', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'],
   defaultAllowedTools: { readOnly: READ_TOOLS, write: [...READ_TOOLS, ...EDIT_TOOLS] },
   build: (req) => ({ args: claudeStyleArgs(req), stdin: req.prompt }),
   parse: (raw) => parseStreamJsonResult(raw.stdout),
@@ -39,6 +43,7 @@ export const codebuddyPlugin: AgentPlugin = defineAgent({
   displayName: 'CodeBuddy',
   defaultCommand: 'codebuddy',
   streams: true,
+  resumes: true,
   envPass: ['CODEBUDDY_*'],
   defaultAllowedTools: { readOnly: READ_TOOLS, write: [...READ_TOOLS, ...EDIT_TOOLS] },
   build: (req) => ({ args: claudeStyleArgs(req), stdin: req.prompt }),
@@ -52,21 +57,13 @@ export const codexPlugin: AgentPlugin = defineAgent({
   displayName: 'Codex',
   defaultCommand: 'codex',
   streams: true,
+  resumes: true,
   envPass: ['OPENAI_*', 'CODEX_*'],
   build: (req) => {
-    const args = [
-      'exec',
-      '-C',
-      req.cwd,
-      '-s',
-      req.access === 'write' ? 'workspace-write' : 'read-only',
-      '--skip-git-repo-check',
-      '--color',
-      'never',
-      '--json',
-      '-o',
-      req.resultFile,
-    ];
+    // 沙箱方式是 exec 自己的参数，续接时必须写在 resume 之前才对这一轮生效
+    const args = ['exec', '-C', req.cwd, '-s', req.access === 'write' ? 'workspace-write' : 'read-only', '--skip-git-repo-check', '--color', 'never'];
+    if (req.resume) args.push('resume', req.resume);
+    args.push('--json', '-o', req.resultFile);
     if (req.model) args.push('-m', req.model);
     args.push(...extraArgs(req));
     // 末尾的 - 表示任务说明从标准输入读取
@@ -77,11 +74,13 @@ export const codexPlugin: AgentPlugin = defineAgent({
     const events = parseJsonLines(raw.stdout);
     let lastMessage = '';
     let usage: unknown;
+    let sessionId: string | undefined;
     const errors: string[] = [];
     let turnFailed = false;
     for (const e of events) {
       const item = e.item as { type?: string; text?: string; message?: string } | undefined;
       if (e.type === 'item.completed' && item?.type === 'agent_message' && typeof item.text === 'string') lastMessage = item.text;
+      else if (e.type === 'thread.started' && typeof e.thread_id === 'string' && e.thread_id) sessionId = e.thread_id;
       else if (e.type === 'turn.completed') usage = e.usage;
       else if (e.type === 'turn.failed') {
         turnFailed = true;
@@ -92,9 +91,9 @@ export const codexPlugin: AgentPlugin = defineAgent({
     const text = (raw.resultFileText ?? '').trim() || lastMessage;
     if (turnFailed || !text) {
       // 失败时把 Codex 报的错误带出来，供判断是否"不可用"
-      return { text: [...errors, text].filter(Boolean).join('\n'), isError: true, usage };
+      return { text: [...errors, text].filter(Boolean).join('\n'), isError: true, usage, sessionId };
     }
-    return { text, usage };
+    return { text, usage, sessionId };
   },
 });
 

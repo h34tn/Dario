@@ -22,6 +22,8 @@ export interface AgentRunRequest {
   /** AI 子进程启动和结束时回调，结束时传 undefined。 */
   onPid?: (pid: number | undefined) => void;
   onActivity?: (activity: Activity) => void;
+  /** 要续接的会话号。只对 resumes 为 true 的 AI 有效，此时 prompt 是这一轮的增量说明。 */
+  resume?: string;
 }
 
 export interface AgentRunResult {
@@ -30,6 +32,10 @@ export interface AgentRunResult {
   reason?: string;
   durationMs: number;
   costUsd?: number;
+  /** 这次运行所在的会话号，可用于下一次续接。 */
+  sessionId?: string;
+  /** 续接失败，且原因是会话已经不在了。调用方应当不带 resume、用完整的任务说明重跑。 */
+  sessionLost?: boolean;
   /** 实际启动的命令与参数，写入审计日志。任务说明走标准输入，不在其中。 */
   command?: string[];
 }
@@ -39,6 +45,8 @@ export interface AgentPort {
   displayName: string;
   pluginId: string;
   enabled: boolean;
+  /** 是否支持续接会话。 */
+  resumes: boolean;
   model?: string;
   /** 该 AI 自己的时限，优先于角色和项目的时限。 */
   timeoutMinutes?: number;

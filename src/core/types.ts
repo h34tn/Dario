@@ -71,6 +71,19 @@ export interface StepRecord {
   costUsd?: number;
   /** 交给该角色的任务说明（不含 Dario 附加的前言）。 */
   task?: string;
+  /** 这一步续接了该角色在本任务里已有的会话，收到的是增量说明。 */
+  resumed?: boolean;
+}
+
+/** 一个角色在本任务里的 AI 会话。担当者换了，会话就不能再续。 */
+export interface RoleSession {
+  agent: string;
+  sessionId: string;
+  /**
+   * 最近一次用到这个会话的步骤下标：这之后发生的事，会话里还不知道。
+   * -1 表示会话是从同一次交互的上一个任务带过来的，在本任务里还没有上过场，连本任务是什么都不知道。
+   */
+  step: number;
 }
 
 export interface PlanStep {
@@ -129,6 +142,8 @@ export interface Job {
   /** 最近一次改动之后是否已经审查过。 */
   reviewedSinceChange: boolean;
   lastWriter?: { role: string; agent: string; task: string };
+  /** 各角色可以续接的会话，键是角色 id。每个角色最多一个。 */
+  sessions?: Record<string, RoleSession>;
   /** 只读角色改动了文件。 */
   readOnlyViolation?: boolean;
   /** 目录不是 git 仓库，无法检测改动，但有可写步骤执行过。 */

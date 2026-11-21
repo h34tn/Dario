@@ -31,6 +31,8 @@ export interface InvokeRequest {
   resultFile: string;
   /** 用户在 agents.yaml 的 options 里给这个 AI 写的自由配置。 */
   options: Record<string, unknown>;
+  /** 要续接的会话号。只有声明了 resumes 的插件会收到；有值时 prompt 只是这一轮的增量说明。 */
+  resume?: string;
 }
 
 export interface Invocation {
@@ -62,6 +64,8 @@ export interface AgentOutput {
   isError?: boolean;
   costUsd?: number;
   usage?: unknown;
+  /** 这次运行所在的会话号，下一次续接时原样传回 InvokeRequest.resume。 */
+  sessionId?: string;
 }
 
 export type Classification = { outcome: 'ok' } | { outcome: FailureKind; reason: string };
@@ -77,6 +81,11 @@ export interface AgentPlugin {
   versionArgs?: string[];
   /** 运行开始后是否很快就有输出。为 true 时才启用"启动后无输出即判不可用"。 */
   streams: boolean;
+  /**
+   * 是否支持续接会话。为 true 时 build 要处理 req.resume，parse 要返回 sessionId。
+   * 读写权限仍然每次按 req.access 给出，不能沿用会话上一轮的权限。
+   */
+  resumes?: boolean;
   /** 该工具需要的环境变量名，支持以 * 结尾的前缀写法。 */
   envPass?: string[];
   defaultAllowedTools?: { readOnly: string[]; write: string[] };
@@ -137,6 +146,12 @@ function toolActivity(name: string, input: Record<string, unknown>): Activity {
 /** 提取 Claude Code 和 CodeBuddy 的助手活动，保留内容块的顺序。 */
 export function streamJsonActivities(line: string): Activity[] {
   const record = jsonRecord(line);
+  if (record?.type === 'system' && record.subtype === 'compact_boundary') {
+    // 会话历史超过工具自己的上限，被它压缩成摘要
+    const meta = object(record.compact_metadata);
+    const size = typeof meta?.pre_tokens === 'number' && typeof meta.post_tokens === 'number' ? `（${meta.pre_tokens} → ${meta.post_tokens} token）` : '';
+    return [{ kind: 'say', text: `会话历史已压缩${size}` }];
+  }
   if (record?.type !== 'assistant') return [];
   const blocks = object(record.message)?.content;
   if (!Array.isArray(blocks)) return [];
@@ -225,6 +240,7 @@ export function parseStreamJsonResult(stdout: string): AgentOutput {
       isError: e.is_error === true || (typeof e.subtype === 'string' && e.subtype !== 'success'),
       costUsd: typeof e.total_cost_usd === 'number' ? e.total_cost_usd : undefined,
       usage: e.usage,
+      sessionId: typeof e.session_id === 'string' && e.session_id ? e.session_id : undefined,
     };
   }
   // 没有 result 记录：多半是启动阶段就报错了，把非 JSON 的输出当作报错文字保留下来
@@ -287,4 +303,22 @@ const UNAVAILABLE_RE = new RegExp(
 /** 判断一段报错文字是否像"这家 AI 当前用不了"（登录、额度、过载、网络）。 */
 export function looksUnavailable(text: string): boolean {
   return UNAVAILABLE_RE.test(text);
+}
+
+const SESSION_LOST_RE = new RegExp(
+  [
+    // Claude Code、CodeBuddy
+    'no conversation found',
+    // Codex
+    'no rollout found',
+    '(?:session|conversation|thread|rollout)\\b.{0,80}\\b(?:not found|does not exist|no longer exists|could not be found)',
+    '(?:找不到|没有找到)(?:该|这个)?(?:会话|对话)',
+    '(?:会话|对话)(?:不存在|已失效|已过期)',
+  ].join('|'),
+  'i',
+);
+
+/** 判断一段报错文字是否像"要续接的会话已经不在了"。只在续接失败时使用。 */
+export function looksSessionLost(text: string): boolean {
+  return SESSION_LOST_RE.test(text);
 }

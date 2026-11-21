@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ProjectConfig } from './config.js';
-import type { AgentCatalog } from './ports.js';
+import type { AgentCatalog, AgentRunResult } from './ports.js';
 import { formatActivity } from './report.js';
 import type { RoleBook } from './roles.js';
 import type { StateStore } from './state.js';
@@ -12,6 +12,11 @@ export interface StepRequest {
   kind: StepKind;
   roleId: string;
   prompt: string;
+  /**
+   * 续接该角色已有会话时改用的增量说明，只写会话里还不知道的内容。
+   * 不填，或担当者与会话不是同一家、不支持续接时，新开会话并使用 prompt。
+   */
+  followUp?: string;
   /** 记录用的任务说明（不含前言）。 */
   task?: string;
   cwd: string;
@@ -69,33 +74,57 @@ export class StepRunner {
       const port = catalog.get(agent)!;
       const timeoutMinutes = port.timeoutMinutes ?? role.timeoutMinutes ?? project.settings.defaultTimeoutMinutes;
       const label = `${String(index).padStart(2, '0')}-${req.kind}-${agent}`;
-      try {
-        fs.writeFileSync(path.join(workDir, `${label}.prompt.md`), req.prompt, 'utf8');
-      } catch {
-        // 记录失败不影响执行
-      }
+      // 只有同一家 AI 才能续接这个角色的会话：会话存在各家工具自己手里，换了人就带不过去
+      const sessions = (req.job.sessions ??= {});
+      const slot = sessions[req.roleId];
+      let resume = req.followUp !== undefined && port.resumes && slot?.agent === agent ? slot.sessionId : undefined;
       if (i === 0 && attempts.length > 0) {
         const why = attempts.map((a) => `${a.agent} ${a.reason ?? '不可用'}`).join('；');
         const fallback = { from: attempts.map((a) => a.agent).join('、'), reason: attempts.map((a) => a.reason ?? '不可用').join('；'), to: agent };
         emit({ jobId: req.job.id, kind: 'fallback', step, fallback, text: `${why}，改用 ${agent}` });
       }
-      emit({ jobId: req.job.id, kind: i === 0 ? 'step_start' : 'fallback', step, text: `${head}：交给 ${agent}` });
+      emit({ jobId: req.job.id, kind: i === 0 ? 'step_start' : 'fallback', step, text: `${head}：交给 ${agent}${resume ? '（续接会话）' : ''}` });
 
-      const res = await port.run({
-        access,
-        cwd: req.cwd,
-        prompt: req.prompt,
-        timeoutMs: timeoutMinutes * 60000,
-        workDir,
-        label,
-        onActivity: (activity) => emit({ jobId: req.job.id, kind: 'activity', step, activity, text: formatActivity(activity) }),
-        onPid: (pid) => {
-          req.job.activePid = pid;
-          state.saveJob(req.job);
-        },
-      });
+      const invoke = async (prompt: string, resumeId: string | undefined, runLabel: string): Promise<AgentRunResult> => {
+        try {
+          fs.writeFileSync(path.join(workDir, `${runLabel}.prompt.md`), prompt, 'utf8');
+        } catch {
+          // 记录失败不影响执行
+        }
+        const out = await port.run({
+          access,
+          cwd: req.cwd,
+          prompt,
+          timeoutMs: timeoutMinutes * 60000,
+          workDir,
+          label: runLabel,
+          resume: resumeId,
+          onActivity: (activity) => emit({ jobId: req.job.id, kind: 'activity', step, activity, text: formatActivity(activity) }),
+          onPid: (pid) => {
+            req.job.activePid = pid;
+            state.saveJob(req.job);
+          },
+        });
+        state.audit('agent_run', {
+          job: req.job.id, step: index, kind: req.kind, role: req.roleId, agent,
+          outcome: out.outcome, reason: out.reason, command: out.command,
+          ...(resumeId && { resumed: true }), ...(out.sessionLost && { session_lost: true }),
+        });
+        return out;
+      };
+
+      let res = await invoke(resume ? req.followUp! : req.prompt, resume, label);
+      if (resume && res.sessionLost) {
+        // 会话已经不在了：工具还没开始干活就退出了。新开会话、用完整说明重跑，不算换人，也不标记这家不可用
+        const text = `${agent} 的原会话已失效，改为新开会话`;
+        emit({ jobId: req.job.id, kind: 'activity', step, activity: { kind: 'say', text }, text });
+        resume = undefined;
+        res = await invoke(req.prompt, undefined, `${label}-new`);
+      }
+      // 会话槽位始终对应这个角色最近的一次运行；没做成的那一轮可能停在半截，不再续
+      if (res.outcome === 'ok' && res.sessionId) sessions[req.roleId] = { agent, sessionId: res.sessionId, step: index };
+      else delete sessions[req.roleId];
       attempts.push({ agent, outcome: res.outcome, reason: res.reason, durationMs: res.durationMs });
-      state.audit('agent_run', { job: req.job.id, step: index, kind: req.kind, role: req.roleId, agent, outcome: res.outcome, reason: res.reason, command: res.command });
 
       if (res.outcome === 'unavailable') {
         const reason = res.reason ?? '不可用';
@@ -121,6 +150,7 @@ export class StepRunner {
         durationMs: Date.now() - started,
         text: res.text,
         costUsd: res.costUsd,
+        ...(resume && { resumed: true }),
       };
       emit({
         jobId: req.job.id,

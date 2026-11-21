@@ -74,7 +74,8 @@ rise · 主控 claude · 实现 codex · 审查 claude
 - 直接输入文字是把任务交给主控；`/to 实现 …` 直接交给某个角色。
 - 输入 `/` 弹出指令列表，Tab 补全。`/help` 查看全部指令。
 - 任务运行时可以继续输入，新任务会排队。
-- 后一个任务自动带上前一个任务的结论；`/new` 清空，从头开始。
+- 后一个任务自动带上前一个任务的结论，各角色也接着用上一个任务的 AI 会话，不必重新读一遍项目；`/new` 清空，从头开始。同一个问题做完、要换一个问题时，记得 `/new`。
+- 会话变长后由各家工具自己压缩，Dario 不另设上限。想让它早点压缩，在 `~/.dario/agents.yaml` 里给对应的 AI 加参数：Claude Code 用 `extra_args: ["--autocompact", "200000"]`，Codex 用 `extra_args: ["-c", "model_auto_compact_token_limit=200000"]`。
 - `/diff` 查看上一个任务改了什么。
 - Esc 中断当前任务；Ctrl+C 连按两次退出。输入框里有内容时，这两个键先清空输入。
 - 上下键翻历史输入；粘贴多行文本会折叠成"已粘贴 N 行"，作为一次输入提交。
@@ -172,17 +173,20 @@ export default {
   displayName: 'My Tool',
   defaultCommand: 'mytool',
   streams: true,                    // 启动后是否很快有输出
+  resumes: true,                    // 可选：支持续接会话
   envPass: ['MYTOOL_*'],
   build(req) {
-    // req: access, cwd, prompt, model, allowedTools, resultFile, options
+    // req: access, cwd, prompt, model, allowedTools, resultFile, options, resume
     const args = ['run', '--json', req.access === 'write' ? '--allow-write' : '--read-only'];
+    // 续接时 req.resume 是上一次 parse 给出的会话号；读写权限仍按这一次的 req.access 给
+    if (req.resume) args.push('--resume', req.resume);
     return { args, stdin: req.prompt };
   },
   parse(raw) {
     // raw: exitCode, stdout, stderr, resultFileText, ...
     const last = raw.stdout.trim().split('\n').pop() ?? '{}';
     const data = JSON.parse(last);
-    return { text: data.answer ?? '', isError: data.ok === false };
+    return { text: data.answer ?? '', isError: data.ok === false, sessionId: data.session };
   },
   // 可选：把运行中输出的一行翻译成界面上显示的活动。只用于显示，出错的行会被忽略。
   progress(line) {
@@ -196,7 +200,9 @@ export default {
 
 活动的种类：`read`、`search`、`run`、`edit`、`tool`（这五种带 `target`）、`say`（带 `text`）、`think`。
 
-接口的类型定义和辅助函数（`parseJsonLines`、`parseStreamJsonResult`、`looksUnavailable`）从 `dario/plugin` 导出。
+声明了 `resumes: true` 的 AI，再次担当同一角色时会续接上一次的会话（比如实现者返工、审查者再审，以及交互界面里的后续任务），不必重新读一遍项目。内置的三家都支持；声明式插件不支持，每一步都新开会话。
+
+接口的类型定义和辅助函数（`parseJsonLines`、`parseStreamJsonResult`、`looksUnavailable`、`looksSessionLost`）从 `dario/plugin` 导出。
 
 ## 接入飞书
 

@@ -183,6 +183,27 @@ describe('完整交互界面：排队与会话上文', () => {
     await ui.term.line('/exit');
     expect(await ui.done).toBe('exit');
   });
+
+  it('同一角色的后一个任务续接前一个任务的 AI 会话，/new 之后新开', async () => {
+    const box = sandbox({ git: true, resumable: true });
+    box.setScenario({ a2: [{ text: '第一个任务的结论' }, { text: '第二个任务的结论' }, { text: '第三个任务的结论' }] });
+    const ui = await open(box);
+    await ui.term.line('/to 实现 第一个任务');
+    await ui.see('[J0001] 完成');
+    await ui.term.line('/to 实现 第二个任务');
+    await ui.see('[J0002] 完成');
+    await ui.term.line('/new');
+    await ui.see('已清空会话上文');
+    await ui.term.line('/to 实现 第三个任务');
+    await ui.see('[J0003] 完成');
+
+    const resumes = box.calls().map((c) => (c.argv.includes('--resume') ? c.argv[c.argv.indexOf('--resume') + 1] : '新开'));
+    expect(resumes).toEqual(['新开', 'a2-s0', '新开']);
+    expect(box.calls()[1].prompt).toContain('这是同一次会话里的新任务');
+
+    await ui.term.line('/exit');
+    expect(await ui.done).toBe('exit');
+  });
 });
 
 describe('完整交互界面：中断与退出', () => {

@@ -66,6 +66,8 @@ export class Session {
   private answer?: (approved: boolean) => void;
   private exitKind?: 'exit' | 'plain';
   private context?: string;
+  /** 各角色的 AI 会话，随任务一路带下去，`/new` 时丢弃。 */
+  private roleSessions?: Job['sessions'];
   private contextVersion = 0;
   private statusVersion = 0;
   private files: string[] = [];
@@ -154,9 +156,10 @@ export class Session {
     if (line === '/plain') return this.requestExit('plain');
     if (line === '/new') {
       this.context = undefined;
+      this.roleSessions = undefined;
       this.contextVersion++;
       this.update({ contextJobId: undefined });
-      return this.append('notice', '已清空会话上文，下一个任务从头开始。');
+      return this.append('notice', '已清空会话上文，各角色的 AI 会话也重新开始，下一个任务从头开始。');
     }
     if (line === '/diff') return this.showDiff();
     const cmd = parseCommand(line);
@@ -164,7 +167,7 @@ export class Session {
     switch (cmd.kind) {
       case 'invalid': return this.append('error', cmd.message);
       case 'help': return this.append('text', [HELP_TEXT, '/diff                  查看上一个任务的改动',
-        '/new                   清空会话上文', '/plain                 切换到逐行交互', '/exit                  退出'].join('\n'));
+        '/new                   清空会话上文，各角色的 AI 会话重新开始', '/plain                 切换到逐行交互', '/exit                  退出'].join('\n'));
       case 'roles': return this.append('text', formatRoles(await engine.rolesView(), engine.roles.fallback));
       case 'agents':
         for (const a of await engine.agentsView()) {
@@ -237,6 +240,7 @@ export class Session {
       done = await this.engine.approve(work.jobId);
     } else {
       const job = this.engine.create({ task: work.text, role: work.role, ...(this.context && { context: this.context }),
+        ...(this.roleSessions && { sessions: this.roleSessions }),
         origin: { channel: 'terminal', senderId: this.opts.senderId ?? os.userInfo().username } });
       this.update({ runningJobId: job.id });
       const owner = job.role ? `交给 ${shortRole(this.roleLabel(job.role))}` : '主控安排';
@@ -252,6 +256,8 @@ export class Session {
     this.files = done.result?.changedFiles ?? done.changedFiles;
     this.append('text', resultCard(done, this.opts.color));
     const conclusion = done.result?.conclusion;
+    // 会话不看任务成败：做成的那几轮仍然有效，没做成的那一轮执行时已经作废
+    if (version === this.contextVersion && done.sessions) this.roleSessions = done.sessions;
     if (version === this.contextVersion && done.status === 'done' && conclusion?.trim()) {
       this.context = `同一次会话里上一个任务（${done.id}）的结论：\n${conclusion.slice(0, 3000)}`;
       this.update({ contextJobId: done.id });

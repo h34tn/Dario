@@ -8,7 +8,7 @@ import { killProcessTree } from './proc.js';
 import { RoleBook, type RoleView } from './roles.js';
 import { StepRunner } from './runner.js';
 import type { StateStore } from './state.js';
-import { ACTIVE_STATUSES, type Job, type Origin, type ProgressEvent, type Strategy } from './types.js';
+import { ACTIVE_STATUSES, type Job, type Origin, type ProgressEvent, type RoleSession, type Strategy } from './types.js';
 import { ConfigError, DarioError, isPidAlive, normPath, nowIso } from './util.js';
 import { InPlaceWorkspace, IsolatedWorkspace, type IsolatedOptions, type Workspace } from './workspace.js';
 
@@ -30,6 +30,8 @@ export interface SubmitRequest {
   autoApprove?: boolean;
   confirm?: RunOptions['confirm'];
   context?: string;
+  /** 同一次交互里上一个任务留下的各角色会话，本任务接着用。 */
+  sessions?: Record<string, RoleSession>;
 }
 
 export interface AgentView {
@@ -128,6 +130,10 @@ export class Engine {
       strategy: this.deps.strategy,
       origin: req.origin,
       context: req.context,
+      // 带过来的会话在本任务里还没有上过场
+      ...(req.sessions && {
+        sessions: Object.fromEntries(Object.entries(req.sessions).map(([roleId, s]) => [roleId, { agent: s.agent, sessionId: s.sessionId, step: -1 }])),
+      }),
       cursor: 0,
       steps: [],
       reworkRounds: 0,

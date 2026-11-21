@@ -16,6 +16,10 @@
  *   files       [{ path, content }]，相对当前目录写文件；content 为 null 表示删除
  *   spawnChild  启动一个长时间存活的子进程，并把它的进程号写到 <剧本>.child.pid
  *   echoPrompt  把收到的任务说明原样作为答复
+ *   sessionLost 带 --resume 调用时报"会话找不到"并以退出码 1 结束
+ *
+ * 带 --emit-session 时，输出的第一行是 `SESSION:<会话号>`：带 --resume <会话号> 调用时原样沿用，
+ * 否则新开一个，会话号为 <name>-s<这是第几次调用>。
  * 每次调用会在 <剧本>.log.jsonl 里追加一行记录：名字、权限、参数、收到的任务说明、环境变量名。
  */
 import { spawn } from 'node:child_process';
@@ -30,6 +34,7 @@ const opt = (flag) => {
 const name = opt('--name') ?? 'agent';
 const scenarioFile = opt('--scenario');
 const access = opt('--access') ?? '';
+const resume = opt('--resume');
 
 if (argv.includes('--version')) {
   process.stdout.write(`fake-agent 1.0 (${name})\n`);
@@ -67,6 +72,12 @@ if (scenarioFile) {
     `${JSON.stringify({ name, access, call: n, argv, prompt, cwd: process.cwd(), envNames: Object.keys(process.env), depth: process.env.DARIO_DEPTH })}\n`,
   );
 }
+
+if (response.sessionLost && resume) {
+  process.stderr.write(`No conversation found with session ID: ${resume}\n`);
+  process.exit(1);
+}
+if (argv.includes('--emit-session') && !response.silent) process.stdout.write(`SESSION:${resume ?? `${name}-s${n}`}\n`);
 
 if (response.spawnChild) {
   const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { stdio: 'ignore' });

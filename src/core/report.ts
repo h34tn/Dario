@@ -71,6 +71,8 @@ export interface JobJson {
     reason: string | null;
     duration_ms: number;
     changed_files: string[];
+    /** 这一步是否续接了该角色在本任务里已有的会话。 */
+    resumed: boolean;
     attempts: Array<{ agent: string; outcome: string; reason: string | null }>;
   }>;
 }
@@ -100,6 +102,7 @@ export function jobToJson(job: Job): JobJson {
       reason: s.reason ?? null,
       duration_ms: s.durationMs,
       changed_files: s.changedFiles,
+      resumed: s.resumed === true,
       attempts: s.attempts.map((a) => ({ agent: a.agent, outcome: a.outcome, reason: a.reason ?? null })),
     })),
   };

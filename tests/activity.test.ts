@@ -101,6 +101,14 @@ it('补全样本未用到的工具、缺少参数的工具及推理映射', () =
   expect(formatActivity({ kind: 'read', target: 'a' })).toBe('读 a');
 });
 
+it('Claude Code 压缩会话历史时显示一条说明', () => {
+  // 取自本机实测（Claude Code 2.1.330，无头续接时触发的自动压缩），已删去无关字段
+  const line = '{"type":"system","subtype":"compact_boundary","uuid":"b4a5f16b","compact_metadata":{"trigger":"auto","pre_tokens":37870,"post_tokens":9417}}';
+  expect(streamJsonActivities(line).map(formatActivity)).toEqual(['会话历史已压缩（37870 → 9417 token）']);
+  expect(streamJsonActivities('{"type":"system","subtype":"compact_boundary"}').map(formatActivity)).toEqual(['会话历史已压缩']);
+  expect(streamJsonActivities('{"type":"system","subtype":"init"}')).toEqual([]);
+});
+
 it('逐行回调拼接跨块内容、去掉回车并补发末行，回调失败仍保留原始输出', async () => {
   const lines: string[] = [];
   const result = await runProcess({

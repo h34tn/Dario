@@ -46,6 +46,27 @@ it('依次排队，在开始时注入上文，失败保留上文，清空后从�
   expect(engine.create.mock.calls[2][0]).not.toHaveProperty('context');
 });
 
+it('各角色的 AI 会话随任务带下去，失败的任务也带，清空后不再带', async () => {
+  const { session, engine } = await setup();
+  const sessions = { coder: { agent: 'codex', sessionId: 's1', step: 2 } };
+  engine.advance.mockImplementationOnce(async j => ({ ...j, sessions }));
+  session.submit('一');
+  await session.whenIdle();
+  expect(engine.create.mock.calls[0][0]).not.toHaveProperty('sessions');
+  const later = { coder: { agent: 'codex', sessionId: 's1', step: 0 }, lead: { agent: 'claude', sessionId: 's2', step: 1 } };
+  engine.advance.mockImplementationOnce(async j => ({ ...j, status: 'failed', sessions: later }));
+  session.submit('二');
+  await session.whenIdle();
+  expect(engine.create.mock.calls[1][0].sessions).toEqual(sessions);
+  session.submit('三');
+  await session.whenIdle();
+  expect(engine.create.mock.calls[2][0].sessions).toEqual(later);
+  session.submit('/new');
+  session.submit('四');
+  await session.whenIdle();
+  expect(engine.create.mock.calls[3][0]).not.toHaveProperty('sessions');
+});
+
 it('计划可批准或用中断拒绝，两种选择都清除确认状态', async () => {
   const { session, engine, snap } = await setup();
   for (const approved of [true, false]) {

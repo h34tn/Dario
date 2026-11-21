@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { AgentInstanceConfig } from '../core/config.js';
 import type { AgentDetect, AgentPort, AgentRunRequest, AgentRunResult } from '../core/ports.js';
 import { realPath } from '../core/util.js';
-import { looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type RawResult } from '../plugin.js';
+import { looksSessionLost, looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type RawResult } from '../plugin.js';
 import { buildEnv, runProcess, SYSTEM_ENV, which } from './spawn.js';
 
 export interface HandleSettings {
@@ -114,6 +114,10 @@ export class AgentHandle implements AgentPort {
     return this.config.enabled !== false;
   }
 
+  get resumes(): boolean {
+    return this.plugin.resumes === true;
+  }
+
   get model(): string | undefined {
     return this.config.model;
   }
@@ -156,6 +160,7 @@ export class AgentHandle implements AgentPort {
     const tools = this.config.allowedTools;
     const defaults = this.plugin.defaultAllowedTools;
     const allowedTools = req.access === 'write' ? (tools?.write ?? defaults?.write ?? []) : (tools?.readOnly ?? defaults?.readOnly ?? []);
+    const resume = this.resumes ? req.resume : undefined;
 
     const invocation = this.plugin.build({
       access: req.access,
@@ -165,6 +170,7 @@ export class AgentHandle implements AgentPort {
       allowedTools,
       resultFile,
       options: this.config.options ?? {},
+      ...(resume && { resume }),
     });
 
     const out = await runProcess({
@@ -209,12 +215,22 @@ export class AgentHandle implements AgentPort {
       startupTimedOut: out.startupTimedOut,
     };
     const { result, output } = classify(this.plugin, raw);
+    // 会话不在了是续接特有的失败：工具根本没有开始干活，换成新会话重跑即可，不算这家 AI 不可用。
+    // 只看报错和最终答复；没有答复时才看原始输出（有的工具把这个错误写在标准输出里），免得把 AI 干活过程中的文字当成证据
+    const answer = output?.text.trim() ?? '';
+    const sessionLost =
+      resume !== undefined &&
+      result.outcome !== 'ok' &&
+      result.outcome !== 'timeout' &&
+      looksSessionLost(`${raw.stderr.slice(-4000)}\n${answer ? answer.slice(-4000) : raw.stdout.slice(-4000)}`);
     return {
       outcome: result.outcome,
       reason: result.outcome === 'ok' ? undefined : result.reason,
       text: output?.text ?? '',
       durationMs: out.durationMs,
       costUsd: output?.costUsd,
+      sessionId: this.resumes ? output?.sessionId : undefined,
+      ...(sessionLost && { sessionLost }),
       // 个别插件把任务说明放在参数里，记录时截短
       command: [this.command, ...invocation.args.map((a) => (a.length > 200 ? `${a.slice(0, 200)}…` : a))],
     };
