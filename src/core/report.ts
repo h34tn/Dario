@@ -127,7 +127,10 @@ export function formatSteps(job: Job): string {
     .map((s) => {
       const switched = s.agent ? s.attempts.filter((a) => a.agent !== s.agent && a.outcome !== 'ok') : [];
       const note = switched.length ? `（${switched.map((a) => `${a.agent} 不可用`).join('，')}，已换人）` : '';
-      const tokens = s.tokens ? ` · 输入 ${formatTokens(s.tokens.input)} 输出 ${formatTokens(s.tokens.output)} token` : '';
+      // 输入分开写：新发送的，和重发历史时命中缓存的。后者随请求次数累加，价格很低
+      const tokens = s.tokens
+        ? ` · 输入 ${formatTokens(Math.max(0, s.tokens.input - s.tokens.cachedInput))}（另有缓存命中 ${formatTokens(s.tokens.cachedInput)}）输出 ${formatTokens(s.tokens.output)} token`
+        : '';
       return `  ${s.index + 1}. ${KIND_LABEL[s.kind] ?? s.kind} · ${s.role} · ${s.agent ?? '-'} · ${OUTCOME_LABEL[s.outcome] ?? s.outcome} · ${formatDuration(s.durationMs)}${tokens}${note}`;
     })
     .join('\n');

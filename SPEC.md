@@ -112,7 +112,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 | 交互 | 在终端里不带任务直接运行 `dario` | 默认全屏，按下节条件选择行内界面或逐行交互 |
 
 - **单次命令判断标准错误是否连着终端**，与 `-p` 无关：`-p` 只表示执行完就退出。`dario "任务" > 结果.txt` 在终端里仍有动态进度，文件里只有结论。
-- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`attempts`。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output }`，工具不报用量时为 `null`。
+- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`attempts`。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output }`，`input` 含命中缓存的 `cached_input`；工具不报用量时为 `null`。
 - **`--verbose`**：纯文本方式下，AI 的每条活动（读文件、执行命令等）打印一行。
 - 纯文本与 JSON 两种输出不含任何控制字符，是给脚本和其他 AI 调用的稳定接口。
 
@@ -317,7 +317,7 @@ Dario 边收 AI 的标准输出边按行交给插件的 `progress(line)`，得�
 
 - 任何内置插件都不使用"跳过全部权限"的参数。
 - 三个内置插件都支持续接。`claude` 与 `codebuddy` 加 `--resume <会话号>`，会话号取自 `result` 记录的 `session_id`。`codex` 改用 `exec -C <目录> -s <沙箱方式> --skip-git-repo-check --color never resume <会话号> --json -o <结果文件> -`，会话号取自 `thread.started` 记录的 `thread_id`；沙箱方式必须写在 `resume` 之前才对这一轮生效。三家都实测过：以只读方式续接一个之前可写的会话，写文件会被拒绝。
-- **token 用量**分输入和输出两个数。输入是这一步各次请求发给模型的 token 之和，命中缓存的部分也算在内（另记为其中的一项）；输出含推理。
+- **token 用量**记三个数：输入、其中命中缓存的部分、输出。输入是这一步各次请求发给模型的 token 之和；输出含推理。每次请求都会把到目前为止的全部历史重发一遍，重发的部分大多命中缓存、价格很低，却随请求次数成倍累加（十次请求能到几十万）。所以界面上的 `↑` 只显示输入里**没命中缓存**的部分，也就是这一步真正新发给模型的内容；命中缓存的量在 `dario job` 的各步明细和 JSON 输出里单独给出。
   - `claude` 与 `codebuddy` 加 `--include-partial-messages`，每条消息结束时就有准确的数，运行中实时更新；最后以 `result` 记录为准。子代理的消息不计入。`claude` 报的 `input_tokens` 不含缓存，要加上写入和命中缓存的两项；`codebuddy` 报的已经包含命中缓存的部分。两者都实测过。
   - `codex` 只在一轮结束时报一次，而且报的是整个会话的累计值。续接时 Dario 减去上一轮结束时的累计值（记在会话记录里），得到这一步的用量。所以 Codex 的用量在一步结束时才出现。
   - 声明式插件不统计用量。
@@ -524,16 +524,16 @@ Dario/
 
 ```
 J0012 · 主控安排 · 给背包窗口加一个按品质排序的按钮
-✓ 计划   主控 · claude   12秒 · ↑ 73.0k ↓ 1.1k tokens
-✓ 执行   实现 · codex   1分5秒 · ↑ 98.4k ↓ 426 tokens
+✓ 计划   主控 · claude   12秒 · ↑ 20.4k ↓ 1.1k tokens
+✓ 执行   实现 · codex   1分5秒 · ↑ 9.6k ↓ 426 tokens
 ! claude 暂时不可用（额度用尽），改用 codex
-⠹ 审查   审查 · claude   00:23 · ↑ 31.6k ↓ 212 tokens
+⠹ 审查   审查 · claude   00:23 · ↑ 11.4k ↓ 212 tokens
     读 client/unity/Assets/Scripts/Game/UI/BagWindow.cs
     搜 SortByQuality
     思考中
 ```
 
-- **步骤状态行**：标记、阶段、角色、AI、耗时，之后是这一步的 token 用量：`↑` 输入、`↓` 输出，口径见第 8 节。进行中的步骤随用量变化实时更新，结束后的步骤保留最终值；工具不报用量时不显示这一段。没有 `WT_SESSION` 的终端用 `^` 和 `v`。纯文本方式和远程渠道不显示用量。
+- **步骤状态行**：标记、阶段、角色、AI、耗时，之后是这一步的 token 用量：`↑` 新发送的输入（不含命中缓存的部分）、`↓` 输出，口径见第 8 节。进行中的步骤随用量变化实时更新，结束后的步骤保留最终值；工具不报用量时不显示这一段。没有 `WT_SESSION` 的终端用 `^` 和 `v`。纯文本方式和远程渠道不显示用量。
 - 已完成的步骤和换人提示打印一次就上滚，不再重画。单次命令和行内界面都在当前步骤状态行下按发生顺序显示活动，每条只显示首行，连续重复只记一次，最多保留最近 500 条。窗口放不下时，首行提示保留的活动中有多少条未显示，其下列出最新活动。步骤结束时收起活动，下一步从空开始。当前步骤每秒刷新 4 次。
 - 界面画在标准错误上。结束后标准错误打印状态、改动文件、产出分支、注意事项；结论写到标准输出。标准输出连着终端时结论做轻量排版，被管道或文件接走时保持原文。
 - **计划确认**：含改文件步骤的计划显示各步的角色、读写与任务第一行，按 `y` 执行，`n` 或 Esc 取消，`d` 展开每一步的完整任务说明。标准输入没有连着终端时不询问，按纯文本方式的规则处理。
@@ -555,10 +555,10 @@ PgUp / PgDn 按页翻看，滚轮每格滚动 3 行。向上翻看时，新内�
 Dario · rise        输入任务直接交给主控，/ 开头是指令，/help 查看全部
 > 给背包窗口加一个按品质排序的按钮
 J0012 · 主控安排 · 给背包窗口加一个按品质排序的按钮
-✓ 计划   主控 · claude   12秒 · ↑ 73.0k ↓ 1.1k tokens
+✓ 计划   主控 · claude   12秒 · ↑ 20.4k ↓ 1.1k tokens
 （结果卡片）
 
-⠹ 审查   审查 · claude   00:23 · ↑ 31.6k ↓ 212 tokens
+⠹ 审查   审查 · claude   00:23 · ↑ 11.4k ↓ 212 tokens
     读 client/unity/Assets/Scripts/Game/UI/BagWindow.cs
 rise · 主控 claude · 实现 codex · 测试 codex · 审查 claude · 排队 1 · 上文 J0012
 > 再检查一下背包为空时会不会报错

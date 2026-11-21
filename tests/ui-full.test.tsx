@@ -257,9 +257,9 @@ it('着色时输入回显整行铺灰色底，步骤状态行在耗时之后显�
   });
   ui.emit({ jobId: 'J0001', kind: 'step_start', text: '', step });
   ui.emit({ jobId: 'J0001', kind: 'usage', text: '', step: { ...step, tokens: { input: 35700, cachedInput: 100, output: 426 } } });
-  await ui.check(lines => expect(lines.map(stripVTControlCharacters).some(line => /00:\d\d · ↑ 35\.7k ↓ 426 tokens$/.test(line))).toBe(true));
+  await ui.check(lines => expect(lines.map(stripVTControlCharacters).some(line => /00:\d\d · ↑ 35\.6k ↓ 426 tokens$/.test(line))).toBe(true));
   ui.emit({ jobId: 'J0001', kind: 'step_end', text: '', step: { ...step, outcome: 'ok', durationMs: 2000, tokens: { input: 40000, cachedInput: 100, output: 512 } } });
-  await ui.check(lines => expect(lines.map(stripVTControlCharacters)).toContain('✓ 执行   实现 · codex   2秒 · ↑ 40.0k ↓ 512 tokens'));
+  await ui.check(lines => expect(lines.map(stripVTControlCharacters)).toContain('✓ 执行   实现 · codex   2秒 · ↑ 39.9k ↓ 512 tokens'));
   finish();
   await ui.session.whenIdle();
 });

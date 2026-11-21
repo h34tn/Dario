@@ -119,16 +119,19 @@ it('输入回显着色时整行铺灰色底并补满宽度，续行缩进对齐�
   expect(itemLines({ id: 3, type: 'input', text: '输入' }, 20, { ...ctx, color: false })).toEqual(['> 输入']);
 });
 
-it('有 token 用量时显示在耗时之后，进行中和已结束的步骤都显示，两套符号各用自己的箭头', () => {
+it('有 token 用量时显示在耗时之后，输入只算没命中缓存的部分，两套符号各用自己的箭头', () => {
+  // 输入 35.7k 里有 20k 命中缓存，显示的是其余的 15.7k
   const tokens = { input: 35700, cachedInput: 20000, output: 426 };
   const fancy = pickSymbols({ WT_SESSION: '终端' });
-  expect(plain(stepText({ ...step, tokens }, { symbols: fancy, now: 0, color: true }))).toBe('✓ 执行   实现 · 助手   2秒 · ↑ 35.7k ↓ 426 tokens');
+  expect(plain(stepText({ ...step, tokens }, { symbols: fancy, now: 0, color: true }))).toBe('✓ 执行   实现 · 助手   2秒 · ↑ 15.7k ↓ 426 tokens');
   expect(plain(stepText({ ...step, state: 'running', tokens }, { symbols: fancy, now: 1000, color: true })))
-    .toBe(fancy.frames[4] + ' 执行   实现 · 助手   00:01 · ↑ 35.7k ↓ 426 tokens');
+    .toBe(fancy.frames[4] + ' 执行   实现 · 助手   00:01 · ↑ 15.7k ↓ 426 tokens');
   expect(stepText({ ...step, state: 'failed', tokens }, { symbols: pickSymbols({}), now: 0, color: false }))
-    .toBe('x 执行   实现 · 助手   2秒 · ^ 35.7k v 426 tokens  未完成');
+    .toBe('x 执行   实现 · 助手   2秒 · ^ 15.7k v 426 tokens  未完成');
+  // 全部命中缓存时显示 0，不出现负数
+  expect(plain(stepText({ ...step, tokens: { input: 500, cachedInput: 900, output: 3 } }, { symbols: fancy, now: 0, color: false }))).toContain('↑ 0 ↓ 3 tokens');
   // 用量与耗时同为暗色
-  expect(stepText({ ...step, tokens }, { symbols: fancy, now: 0, color: true })).toContain(paint('dim', '2秒 · ↑ 35.7k ↓ 426 tokens', true));
+  expect(stepText({ ...step, tokens }, { symbols: fancy, now: 0, color: true })).toContain(paint('dim', '2秒 · ↑ 15.7k ↓ 426 tokens', true));
 });
 
 it('token 数的短写法', () => {

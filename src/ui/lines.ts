@@ -98,9 +98,11 @@ export function stepText(step: StepView, { now, symbols, color, stopping, ellips
   const symbol = tone === 'dim' ? symbols.frames[Math.floor(now / 250) % symbols.frames.length] : symbols[tone];
   const suffix = running && stopping ? '正在终止' + ellipsis : step.state === 'timeout' ? '超时' : step.state === 'failed' ? '未完成' : '';
   const time = running ? elapsed(now - step.startedAt) : formatDuration(step.durationMs ?? 0);
-  // 输入是各次请求发给模型的 token 之和（含命中缓存的部分），输出含推理
+  // 输入只显示没命中缓存的部分，也就是这一步真正新发给模型的内容。每次请求都会重发全部历史，
+  // 命中缓存的那部分随请求次数成倍累加（十次请求能到几十万），价格却很低，算进来只会让人误以为烧了那么多。
   const tokens = step.tokens
-    ? ' · ' + symbols.up + ' ' + formatTokens(step.tokens.input) + ' ' + symbols.down + ' ' + formatTokens(step.tokens.output) + ' tokens'
+    ? ' · ' + symbols.up + ' ' + formatTokens(Math.max(0, step.tokens.input - step.tokens.cachedInput))
+      + ' ' + symbols.down + ' ' + formatTokens(step.tokens.output) + ' tokens'
     : '';
   return paint(tone, symbol, color) + ' ' + phases[step.kind] + '   ' + paint('role', step.role, color)
     + (step.agent ? ' · ' + paint('agent', step.agent, color) : '') + '   ' + paint('dim', time + tokens, color)

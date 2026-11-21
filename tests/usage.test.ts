@@ -124,10 +124,10 @@ describe('每一步记下自己的 token 用量', () => {
       ['review', true, null],
       ['summary', true, { input: 200, cached_input: 100, output: 15 }],
     ]);
-    // dario job 的各步列表里也带上用量
+    // dario job 的各步列表里也带上用量，新发送的输入和命中缓存的部分分开写
     const detail = (await sb.cli(['job', r.json.job_id])).out;
-    expect(detail).toContain('输入 1.5k 输出 70 token');
-    expect(detail).toContain('输入 300 输出 30 token');
+    expect(detail).toContain('输入 800（另有缓存命中 700）输出 70 token');
+    expect(detail).toContain('输入 300（另有缓存命中 0）输出 30 token');
   });
 
   it('不报用量的工具：记录为空，文字输出里不出现用量', async () => {
