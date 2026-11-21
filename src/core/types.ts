@@ -73,6 +73,15 @@ export interface StepRecord {
   task?: string;
   /** 这一步续接了该角色在本任务里已有的会话，收到的是增量说明。 */
   resumed?: boolean;
+  /** 这一步的 token 用量；工具不报用量时为空。 */
+  tokens?: StepTokens;
+}
+
+/** 一步的 token 用量。input 是各次请求发给模型的 token 之和，其中 cachedInput 是命中缓存的部分。 */
+export interface StepTokens {
+  input: number;
+  cachedInput: number;
+  output: number;
 }
 
 /** 一个角色在本任务里的 AI 会话。担当者换了，会话就不能再续。 */
@@ -84,6 +93,8 @@ export interface RoleSession {
    * -1 表示会话是从同一次交互的上一个任务带过来的，在本任务里还没有上过场，连本任务是什么都不知道。
    */
   step: number;
+  /** 工具只报会话累计用量时，记下上一轮结束时的累计值，下一轮减去它才是那一步的用量。 */
+  tokens?: StepTokens;
 }
 
 export interface PlanStep {
@@ -160,7 +171,7 @@ export interface Job {
   cancelRequested?: boolean;
 }
 
-export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity';
+export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity' | 'usage';
 
 export interface ProgressStepInfo {
   index: number;
@@ -170,6 +181,8 @@ export interface ProgressStepInfo {
   agent?: string;
   outcome?: StepOutcome;
   durationMs?: number;
+  /** 这一步到目前为止的 token 用量。随 usage 事件更新，step_end 时是最终值。 */
+  tokens?: StepTokens;
 }
 
 export interface ProgressEvent {

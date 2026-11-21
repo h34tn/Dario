@@ -1,4 +1,15 @@
-import { codexActivities, defineAgent, parseJsonLines, parseStreamJsonResult, PLUGIN_API_VERSION, streamJsonActivities, type AgentPlugin, type InvokeRequest } from '../plugin.js';
+import {
+  codexActivities,
+  codexMeter,
+  defineAgent,
+  parseJsonLines,
+  parseStreamJsonResult,
+  PLUGIN_API_VERSION,
+  streamJsonActivities,
+  streamJsonMeter,
+  type AgentPlugin,
+  type InvokeRequest,
+} from '../plugin.js';
 
 function extraArgs(req: InvokeRequest): string[] {
   const extra = req.options.extra_args;
@@ -10,7 +21,8 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'];
 
 /** Claude Code 与 CodeBuddy 的命令行参数形式相同。 */
 function claudeStyleArgs(req: InvokeRequest): string[] {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', req.access === 'write' ? 'acceptEdits' : 'dontAsk'];
+  // --include-partial-messages：每条消息结束时都报准确的 token 用量，运行中就能显示；不加时要等整次运行结束
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', req.access === 'write' ? 'acceptEdits' : 'dontAsk'];
   // 续接只带回对话历史，权限与工具清单仍按这一次的参数生效
   if (req.resume) args.push('--resume', req.resume);
   if (req.model) args.push('--model', req.model);
@@ -34,6 +46,7 @@ export const claudePlugin: AgentPlugin = defineAgent({
   defaultAllowedTools: { readOnly: READ_TOOLS, write: [...READ_TOOLS, ...EDIT_TOOLS] },
   build: (req) => ({ args: claudeStyleArgs(req), stdin: req.prompt }),
   parse: (raw) => parseStreamJsonResult(raw.stdout),
+  meter: () => streamJsonMeter({ inputIncludesCache: false }),
 });
 
 export const codebuddyPlugin: AgentPlugin = defineAgent({
@@ -48,12 +61,15 @@ export const codebuddyPlugin: AgentPlugin = defineAgent({
   defaultAllowedTools: { readOnly: READ_TOOLS, write: [...READ_TOOLS, ...EDIT_TOOLS] },
   build: (req) => ({ args: claudeStyleArgs(req), stdin: req.prompt }),
   parse: (raw) => parseStreamJsonResult(raw.stdout),
+  // 实测 CodeBuddy 报的 input_tokens 已经包含命中缓存的部分
+  meter: () => streamJsonMeter({ inputIncludesCache: true }),
 });
 
 export const codexPlugin: AgentPlugin = defineAgent({
   apiVersion: PLUGIN_API_VERSION,
   id: 'codex',
   progress: codexActivities,
+  meter: codexMeter,
   displayName: 'Codex',
   defaultCommand: 'codex',
   streams: true,

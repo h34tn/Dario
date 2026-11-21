@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { AgentInstanceConfig } from '../core/config.js';
 import type { AgentDetect, AgentPort, AgentRunRequest, AgentRunResult } from '../core/ports.js';
 import { realPath } from '../core/util.js';
-import { looksSessionLost, looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type RawResult } from '../plugin.js';
+import { looksSessionLost, looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type RawResult, type TokenUsage } from '../plugin.js';
 import { buildEnv, runProcess, SYSTEM_ENV, which } from './spawn.js';
 
 export interface HandleSettings {
@@ -173,6 +173,9 @@ export class AgentHandle implements AgentPort {
       ...(resume && { resume }),
     });
 
+    const meter = this.plugin.meter?.();
+    let tokens: TokenUsage | undefined;
+    const showActivity = req.onActivity;
     const out = await runProcess({
       command: this.command,
       args: invocation.args,
@@ -182,11 +185,22 @@ export class AgentHandle implements AgentPort {
       timeoutMs: req.timeoutMs,
       startupTimeoutMs: this.plugin.streams ? this.settings.startupTimeoutSeconds * 1000 : undefined,
       onSpawn: (pid) => req.onPid?.(pid),
-      onStdoutLine: this.plugin.progress && req.onActivity ? (line) => {
+      onStdoutLine: (showActivity && this.plugin.progress) || meter ? (line) => {
+        // 用量和活动互不影响：先统计用量，解析活动出错也不会丢掉这一行的用量
+        try {
+          const usage = meter?.(line);
+          if (usage) {
+            tokens = usage;
+            req.onUsage?.(usage);
+          }
+        } catch {
+          // 用量只用于显示和记录
+        }
+        if (!showActivity || !this.plugin.progress) return;
         // 进程层隔离逐行回调的异常，下一行仍会正常处理。
-        for (const activity of this.plugin.progress!(line) ?? []) {
+        for (const activity of this.plugin.progress(line) ?? []) {
           const normalized = normalizeActivity(activity, req.cwd);
-          if (normalized) req.onActivity!(normalized);
+          if (normalized) showActivity(normalized);
         }
       } : undefined,
     });
@@ -229,6 +243,7 @@ export class AgentHandle implements AgentPort {
       text: output?.text ?? '',
       durationMs: out.durationMs,
       costUsd: output?.costUsd,
+      tokens,
       sessionId: this.resumes ? output?.sessionId : undefined,
       ...(sessionLost && { sessionLost }),
       // 个别插件把任务说明放在参数里，记录时截短

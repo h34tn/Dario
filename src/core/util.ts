@@ -168,6 +168,13 @@ export function formatLocalTime(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** token 数的短写法：426、35.7k、1.2M。 */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(Math.max(0, Math.round(n)));
+  if (n < 999_950) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const s = Math.round(ms / 1000);

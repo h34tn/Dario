@@ -59,7 +59,7 @@ dario -p --to 审查 --output-format json "检查这次改动" < 任务说明.tx
 
 ## 终端界面
 
-在终端里运行时，Dario 会显示实时进度：现在是哪一步、哪个角色、哪家 AI、用了多久，以及这家 AI 此刻在读哪个文件、执行什么命令。输出被管道或文件接走时自动变成纯文本，给脚本用的输出格式不受影响。
+在终端里运行时，Dario 会显示实时进度：现在是哪一步、哪个角色、哪家 AI、用了多久、用了多少 token（`↑` 输入、`↓` 输出），以及这家 AI 此刻在读哪个文件、执行什么命令。输出被管道或文件接走时自动变成纯文本，给脚本用的输出格式不受影响。
 
 不带任务直接运行 `dario` 默认进入全屏界面。历史在上方，输入框、按键提示和状态栏在下方：
 
@@ -200,9 +200,11 @@ export default {
 
 活动的种类：`read`、`search`、`run`、`edit`、`tool`（这五种带 `target`）、`say`（带 `text`）、`think`。
 
+想在界面上显示 token 用量，再实现一个可选的 `meter()`：每次运行调用一次，返回的函数逐行接收标准输出，用量有变化时返回 `{ input, cachedInput, output }`（到目前为止的累计值，`input` 含命中缓存的 `cachedInput`）。工具只报整个会话的累计值时加上 `sessionTotal: true`，续接时 Dario 会自己减去上一轮的数。
+
 声明了 `resumes: true` 的 AI，再次担当同一角色时会续接上一次的会话（比如实现者返工、审查者再审，以及交互界面里的后续任务），不必重新读一遍项目。内置的三家都支持；声明式插件不支持，每一步都新开会话。
 
-接口的类型定义和辅助函数（`parseJsonLines`、`parseStreamJsonResult`、`looksUnavailable`、`looksSessionLost`）从 `dario/plugin` 导出。
+接口的类型定义和辅助函数（`parseJsonLines`、`parseStreamJsonResult`、`streamJsonMeter`、`looksUnavailable`、`looksSessionLost`）从 `dario/plugin` 导出。
 
 ## 接入飞书
 

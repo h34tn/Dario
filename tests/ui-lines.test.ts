@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { stripVTControlCharacters as plain } from 'node:util';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, expect, it, vi } from 'vitest';
+import { formatTokens } from '../src/core/util.js';
 import { createLineCache, itemLines, planLines, stepText, wrapAnsi } from '../src/ui/lines.js';
 import { StepRow } from '../src/ui/LiveJob.js';
 import { paint, pickSymbols } from '../src/ui/theme.js';
@@ -103,11 +104,41 @@ it.each(['', '终端'])('两套符号的步骤文字均与组件和原有格式�
   }
 });
 
-it('七种历史条目保留各自的符号和配色，关闭颜色时也清除原文颜色', () => {
+it('输入回显着色时整行铺灰色底并补满宽度，续行缩进对齐；关闭颜色时是普通的一行', () => {
+  const band = '\x1b[48;5;237m';
+  const rows = itemLines({ id: 0, type: 'input', text: '输入' }, 20, ctx);
+  expect(rows).toEqual([band + paint('role', '>', true) + ' \x1b[38;5;255m输入' + ' '.repeat(14) + '\x1b[0m']);
+  expect(plain(rows[0])).toBe('> 输入' + ' '.repeat(14));
+  const long = itemLines({ id: 1, type: 'input', text: '中文'.repeat(20) }, 11, ctx);
+  expect(long.length).toBeGreaterThan(1);
+  expect(long.every(row => displayWidth(plain(row)) === 11 && row.startsWith(band) && row.endsWith('\x1b[0m'))).toBe(true);
+  expect(plain(long[0]).startsWith('> 中文')).toBe(true);
+  expect(plain(long[1]).startsWith('  中文')).toBe(true);
+  // 原文里的颜色和控制字符不带进回显
+  expect(plain(itemLines({ id: 2, type: 'input', text: '甲\x1b[31m乙\t丙' }, 20, ctx)[0])).toBe('> 甲乙    丙' + ' '.repeat(8));
+  expect(itemLines({ id: 3, type: 'input', text: '输入' }, 20, { ...ctx, color: false })).toEqual(['> 输入']);
+});
+
+it('有 token 用量时显示在耗时之后，进行中和已结束的步骤都显示，两套符号各用自己的箭头', () => {
+  const tokens = { input: 35700, cachedInput: 20000, output: 426 };
+  const fancy = pickSymbols({ WT_SESSION: '终端' });
+  expect(plain(stepText({ ...step, tokens }, { symbols: fancy, now: 0, color: true }))).toBe('✓ 执行   实现 · 助手   2秒 · ↑ 35.7k ↓ 426 tokens');
+  expect(plain(stepText({ ...step, state: 'running', tokens }, { symbols: fancy, now: 1000, color: true })))
+    .toBe(fancy.frames[4] + ' 执行   实现 · 助手   00:01 · ↑ 35.7k ↓ 426 tokens');
+  expect(stepText({ ...step, state: 'failed', tokens }, { symbols: pickSymbols({}), now: 0, color: false }))
+    .toBe('x 执行   实现 · 助手   2秒 · ^ 35.7k v 426 tokens  未完成');
+  // 用量与耗时同为暗色
+  expect(stepText({ ...step, tokens }, { symbols: fancy, now: 0, color: true })).toContain(paint('dim', '2秒 · ↑ 35.7k ↓ 426 tokens', true));
+});
+
+it('token 数的短写法', () => {
+  expect([0, 426, 999, 1000, 35700, 999949, 999950, 1234567].map(formatTokens)).toEqual(['0', '426', '999', '1.0k', '35.7k', '999.9k', '1.0M', '1.2M']);
+});
+
+it('其余六种历史条目保留各自的符号和配色，关闭颜色时也清除原文颜色', () => {
   const cases: [HistoryItem, string][] = [
     [{ id: 0, type: 'banner', text: '欢迎' }, paint('title', '欢迎', true)],
     [{ id: 1, type: 'title', text: '任务' }, paint('title', '任务', true)],
-    [{ id: 2, type: 'input', text: '输入' }, paint('role', '> ', true) + '输入'],
     [{ id: 3, type: 'notice', text: '提示' }, paint('warn', '! 提示', true)],
     [{ id: 4, type: 'error', text: '失败' }, paint('fail', 'x 失败', true)],
     [{ id: 5, type: 'text', text: paint('role', '记录', true) }, paint('role', '记录', true)],

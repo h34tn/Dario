@@ -44,7 +44,7 @@ describe('内置插件：命令行参数', () => {
     const inv = claudePlugin.build(req({ model: 'sonnet' }));
     expect(inv.stdin).toBe('任务说明');
     expect(inv.args).toEqual([
-      '-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'dontAsk',
+      '-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', 'dontAsk',
       '--model', 'sonnet',
       '--allowedTools', 'Read', 'Bash(git diff:*)',
       '--disallowedTools', 'Edit', 'Write', 'NotebookEdit',

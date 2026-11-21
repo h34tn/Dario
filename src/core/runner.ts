@@ -5,7 +5,8 @@ import type { AgentCatalog, AgentRunResult } from './ports.js';
 import { formatActivity } from './report.js';
 import type { RoleBook } from './roles.js';
 import type { StateStore } from './state.js';
-import type { Access, Attempt, Job, ProgressEvent, StepKind, StepRecord } from './types.js';
+import type { TokenUsage } from '../plugin.js';
+import type { Access, Attempt, Job, ProgressEvent, StepKind, StepRecord, StepTokens } from './types.js';
 
 export interface StepRequest {
   job: Job;
@@ -33,6 +34,13 @@ export interface RunnerDeps {
   project: ProjectConfig;
   cooldownMinutes: number;
   emit: (event: ProgressEvent) => void;
+}
+
+/** 这一步自己的用量。工具报的是会话累计值时，减去续接之前的累计值。 */
+function stepTokens(usage: TokenUsage, base: StepTokens | undefined): StepTokens {
+  const own = (now: number, before: number): number => (now >= before ? now - before : now);
+  if (!usage.sessionTotal || !base) return { input: usage.input, cachedInput: usage.cachedInput, output: usage.output };
+  return { input: own(usage.input, base.input), cachedInput: own(usage.cachedInput, base.cachedInput), output: own(usage.output, base.output) };
 }
 
 const KIND_LABEL: Record<StepKind, string> = { plan: '计划', step: '执行', review: '审查', rework: '返工', summary: '汇总' };
@@ -85,7 +93,10 @@ export class StepRunner {
       }
       emit({ jobId: req.job.id, kind: i === 0 ? 'step_start' : 'fallback', step, text: `${head}：交给 ${agent}${resume ? '（续接会话）' : ''}` });
 
+      let tokens: StepTokens | undefined;
       const invoke = async (prompt: string, resumeId: string | undefined, runLabel: string): Promise<AgentRunResult> => {
+        const base = resumeId ? slot?.tokens : undefined;
+        tokens = undefined;
         try {
           fs.writeFileSync(path.join(workDir, `${runLabel}.prompt.md`), prompt, 'utf8');
         } catch {
@@ -100,11 +111,16 @@ export class StepRunner {
           label: runLabel,
           resume: resumeId,
           onActivity: (activity) => emit({ jobId: req.job.id, kind: 'activity', step, activity, text: formatActivity(activity) }),
+          onUsage: (usage) => {
+            tokens = stepTokens(usage, base);
+            emit({ jobId: req.job.id, kind: 'usage', step: { ...step, tokens }, text: '' });
+          },
           onPid: (pid) => {
             req.job.activePid = pid;
             state.saveJob(req.job);
           },
         });
+        if (out.tokens) tokens = stepTokens(out.tokens, base);
         state.audit('agent_run', {
           job: req.job.id, step: index, kind: req.kind, role: req.roleId, agent,
           outcome: out.outcome, reason: out.reason, command: out.command,
@@ -122,7 +138,10 @@ export class StepRunner {
         res = await invoke(req.prompt, undefined, `${label}-new`);
       }
       // 会话槽位始终对应这个角色最近的一次运行；没做成的那一轮可能停在半截，不再续
-      if (res.outcome === 'ok' && res.sessionId) sessions[req.roleId] = { agent, sessionId: res.sessionId, step: index };
+      if (res.outcome === 'ok' && res.sessionId) {
+        const total = res.tokens?.sessionTotal ? { input: res.tokens.input, cachedInput: res.tokens.cachedInput, output: res.tokens.output } : undefined;
+        sessions[req.roleId] = { agent, sessionId: res.sessionId, step: index, ...(total && { tokens: total }) };
+      }
       else delete sessions[req.roleId];
       attempts.push({ agent, outcome: res.outcome, reason: res.reason, durationMs: res.durationMs });
 
@@ -151,11 +170,12 @@ export class StepRunner {
         text: res.text,
         costUsd: res.costUsd,
         ...(resume && { resumed: true }),
+        ...(tokens && { tokens }),
       };
       emit({
         jobId: req.job.id,
         kind: 'step_end',
-        step: { ...step, outcome: record.outcome, durationMs: record.durationMs },
+        step: { ...step, outcome: record.outcome, durationMs: record.durationMs, tokens },
         text: `${head}：${agent} ${res.outcome === 'ok' ? '完成' : res.outcome === 'timeout' ? '超时' : '未完成'}`,
       });
       return record;

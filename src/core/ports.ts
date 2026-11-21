@@ -2,7 +2,7 @@
  * 核心对外的两个接口：AI 目录与渠道。核心只依赖这里的类型，
  * 具体的适配器和渠道在核心之外实现并注入。
  */
-import type { Access, Activity, FailureKind } from '../plugin.js';
+import type { Access, Activity, FailureKind, TokenUsage } from '../plugin.js';
 
 export interface AgentDetect {
   installed: boolean;
@@ -22,6 +22,8 @@ export interface AgentRunRequest {
   /** AI 子进程启动和结束时回调，结束时传 undefined。 */
   onPid?: (pid: number | undefined) => void;
   onActivity?: (activity: Activity) => void;
+  /** token 用量有变化时回调，给出这一次运行到目前为止的累计值。 */
+  onUsage?: (usage: TokenUsage) => void;
   /** 要续接的会话号。只对 resumes 为 true 的 AI 有效，此时 prompt 是这一轮的增量说明。 */
   resume?: string;
 }
@@ -32,6 +34,8 @@ export interface AgentRunResult {
   reason?: string;
   durationMs: number;
   costUsd?: number;
+  /** 这次运行最终的 token 用量；工具不报用量时为空。 */
+  tokens?: TokenUsage;
   /** 这次运行所在的会话号，可用于下一次续接。 */
   sessionId?: string;
   /** 续接失败，且原因是会话已经不在了。调用方应当不带 resume、用完整的任务说明重跑。 */

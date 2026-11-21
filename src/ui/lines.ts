@@ -1,9 +1,9 @@
-import { formatDuration } from '../core/util.js';
+import { formatDuration, formatTokens } from '../core/util.js';
 import type { Plan } from '../core/types.js';
 import { shortRole, type StepView } from './feed.js';
 import type { HistoryItem } from './session.js';
 import { clip, displayWidth, graphemes } from './text.js';
-import { paint, type Symbols } from './theme.js';
+import { INPUT_BAND, paint, type Symbols } from './theme.js';
 
 const reset = '\x1b[0m';
 // 控制串（含 OSC、DCS）、CSI、普通 ESC 指令和单个控制字符，保留换行和制表符另行处理。
@@ -98,8 +98,12 @@ export function stepText(step: StepView, { now, symbols, color, stopping, ellips
   const symbol = tone === 'dim' ? symbols.frames[Math.floor(now / 250) % symbols.frames.length] : symbols[tone];
   const suffix = running && stopping ? '正在终止' + ellipsis : step.state === 'timeout' ? '超时' : step.state === 'failed' ? '未完成' : '';
   const time = running ? elapsed(now - step.startedAt) : formatDuration(step.durationMs ?? 0);
+  // 输入是各次请求发给模型的 token 之和（含命中缓存的部分），输出含推理
+  const tokens = step.tokens
+    ? ' · ' + symbols.up + ' ' + formatTokens(step.tokens.input) + ' ' + symbols.down + ' ' + formatTokens(step.tokens.output) + ' tokens'
+    : '';
   return paint(tone, symbol, color) + ' ' + phases[step.kind] + '   ' + paint('role', step.role, color)
-    + (step.agent ? ' · ' + paint('agent', step.agent, color) : '') + '   ' + paint('dim', time, color)
+    + (step.agent ? ' · ' + paint('agent', step.agent, color) : '') + '   ' + paint('dim', time + tokens, color)
     + (suffix ? '  ' + suffix : '');
 }
 
@@ -132,13 +136,23 @@ export function planLines(plan: Plan, roleLabel: (id: string) => string, details
   return rows;
 }
 
+/** 输入回显：着色时整行铺灰色底，一眼能和程序的输出分开；续行缩进对齐到提示符之后。 */
+function inputLines(text: string, width: number, { color, wide }: LineContext): string[] {
+  const clean = text.replace(controls, '').replaceAll('\t', '    ');
+  if (!color || width < 4) return wrapAnsi('> ' + clean, width, wide);
+  return wrapAnsi(clean, width - 2, wide).map((row, i) => {
+    const pad = ' '.repeat(Math.max(0, width - 2 - displayWidth(row, wide)));
+    return INPUT_BAND.open + (i ? '  ' : paint('role', '>', true) + ' ') + INPUT_BAND.text + row + pad + INPUT_BAND.close;
+  });
+}
+
 export function itemLines(item: HistoryItem, width: number, ctx: LineContext): string[] {
   const { symbols, color, wide } = ctx;
+  if (item.type === 'input') return inputLines(item.text, width, ctx);
   let text: string;
   switch (item.type) {
     case 'banner':
     case 'title': text = paint('title', item.text, color); break;
-    case 'input': text = paint('role', '> ', color) + item.text; break;
     case 'notice': text = paint('warn', symbols.warn + ' ' + item.text, color); break;
     case 'error': text = paint('fail', symbols.fail + ' ' + item.text, color); break;
     case 'text': text = item.text; break;

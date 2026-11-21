@@ -17,6 +17,7 @@
  *   spawnChild  启动一个长时间存活的子进程，并把它的进程号写到 <剧本>.child.pid
  *   echoPrompt  把收到的任务说明原样作为答复
  *   sessionLost 带 --resume 调用时报"会话找不到"并以退出码 1 结束
+ *   usage       [输入, 其中命中缓存, 输出]，带 --emit-session 时在会话号之后输出一行 `USAGE:输入/缓存/输出`
  *
  * 带 --emit-session 时，输出的第一行是 `SESSION:<会话号>`：带 --resume <会话号> 调用时原样沿用，
  * 否则新开一个，会话号为 <name>-s<这是第几次调用>。
@@ -77,7 +78,10 @@ if (response.sessionLost && resume) {
   process.stderr.write(`No conversation found with session ID: ${resume}\n`);
   process.exit(1);
 }
-if (argv.includes('--emit-session') && !response.silent) process.stdout.write(`SESSION:${resume ?? `${name}-s${n}`}\n`);
+if (argv.includes('--emit-session') && !response.silent) {
+  process.stdout.write(`SESSION:${resume ?? `${name}-s${n}`}\n`);
+  if (response.usage) process.stdout.write(`USAGE:${response.usage.join('/')}\n`);
+}
 
 if (response.spawnChild) {
   const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { stdio: 'ignore' });

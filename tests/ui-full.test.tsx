@@ -1,6 +1,7 @@
 import { PassThrough, Writable } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
 import { render } from 'ink';
+import { stripVTControlCharacters } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import { FullApp } from '../src/ui/FullApp.js';
 import { displayWidth } from '../src/ui/text.js';
@@ -15,7 +16,7 @@ vi.mock('ink', async importOriginal => ({
   ...await importOriginal<typeof import('ink')>(), useCursor: () => ({ setCursorPosition: cursor }),
 }));
 
-async function screen(columns = 100, rows = 30, wide = false) {
+async function screen(columns = 100, rows = 30, wide = false, color = false) {
   const data = await setup();
   let frame = '';
   const stdout = Object.assign(new Writable({ write(chunk, _, done) {
@@ -27,7 +28,7 @@ async function screen(columns = 100, rows = 30, wide = false) {
   const listeners = new Set<(d: 'up' | 'down') => void>();
   const onExit = vi.fn();
   const onError = vi.fn();
-  const props = { session: data.session, symbols, color: false, onExit, onError,
+  const props = { session: data.session, symbols, color, onExit, onError,
     onWheel(listener: (d: 'up' | 'down') => void) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
@@ -242,4 +243,23 @@ it.each([[60, 7], [39, 20]])('缩小到 %i 列 %i 行后只显示提示，恢复
   await ui.contains('窗口太小');
   await ui.key('\x03');
   await vi.waitFor(() => expect(ui.onExit).toHaveBeenCalledExactlyOnceWith('exit'));
+});
+
+it('着色时输入回显整行铺灰色底，步骤状态行在耗时之后显示 token 用量', async () => {
+  const ui = await screen(60, 20, false, true);
+  const finish = ui.hold();
+  ui.session.submit('/to 实现 你好');
+  await ui.check(lines => {
+    const echo = lines.find(line => line.includes('你好') && line.includes('/to'))!;
+    expect(echo.startsWith('\x1b[48;5;237m')).toBe(true);
+    // 灰色底一直铺到行尾：去掉颜色后是补满到列数减一的一行
+    expect(stripVTControlCharacters(echo)).toBe('> /to 实现 你好'.padEnd(59 - 4));
+  });
+  ui.emit({ jobId: 'J0001', kind: 'step_start', text: '', step });
+  ui.emit({ jobId: 'J0001', kind: 'usage', text: '', step: { ...step, tokens: { input: 35700, cachedInput: 100, output: 426 } } });
+  await ui.check(lines => expect(lines.map(stripVTControlCharacters).some(line => /00:\d\d · ↑ 35\.7k ↓ 426 tokens$/.test(line))).toBe(true));
+  ui.emit({ jobId: 'J0001', kind: 'step_end', text: '', step: { ...step, outcome: 'ok', durationMs: 2000, tokens: { input: 40000, cachedInput: 100, output: 512 } } });
+  await ui.check(lines => expect(lines.map(stripVTControlCharacters)).toContain('✓ 执行   实现 · codex   2秒 · ↑ 40.0k ↓ 512 tokens'));
+  finish();
+  await ui.session.whenIdle();
 });

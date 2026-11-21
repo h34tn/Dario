@@ -342,6 +342,8 @@ async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, re
 }
 
 function printProgress(e: ProgressEvent, p: Parsed, io: CliIO, labelPlan = false): void {
+  // token 用量只在动态界面里显示
+  if (e.kind === 'usage') return;
   if (e.kind === 'activity') {
     if (p.verbose && p.format === 'text') io.stderr(`[${e.jobId}]     ${e.text}`);
     return;

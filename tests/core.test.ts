@@ -286,7 +286,7 @@ describe('命令行', () => {
     );
     expect(r.json).toMatchObject({ status: 'done', exit_code: 0, mode: 'direct', changed_files: ['src/new.txt'], plan: null, branch: null });
     expect(Object.keys(r.json.steps[0]).sort()).toEqual(
-      ['agent', 'attempts', 'changed_files', 'duration_ms', 'index', 'kind', 'outcome', 'reason', 'resumed', 'role'].sort(),
+      ['agent', 'attempts', 'changed_files', 'duration_ms', 'index', 'kind', 'outcome', 'reason', 'resumed', 'role', 'tokens'].sort(),
     );
     expect(r.json.job_id).toMatch(/^J\d{4}$/);
   });

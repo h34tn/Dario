@@ -39,6 +39,8 @@ export interface FakeResponse {
   spawnChild?: boolean;
   echoPrompt?: boolean;
   sessionLost?: boolean;
+  /** [输入, 其中命中缓存, 输出]，按整个会话的累计值报。只对支持续接的假 AI 有效。 */
+  usage?: [number, number, number];
 }
 
 export interface FakeCall {
@@ -146,7 +148,10 @@ export class Sandbox {
     );
   }
 
-  /** 支持续接的假 AI：续接时参数里带 --resume <会话号>，会话号取自输出的第一行。 */
+  /**
+   * 支持续接的假 AI：续接时参数里带 --resume <会话号>，会话号取自输出的第一行。
+   * 剧本里写了 usage 时第二行是用量，按"整个会话的累计值"报，和 Codex 一样。
+   */
   writeResumablePlugin(name: string): void {
     const base = [FAKE_AGENT, '--name', name, '--scenario', this.scenarioFile, '--emit-session'];
     fs.writeFileSync(
@@ -162,8 +167,13 @@ export default {
   resumes: true,
   build: (req) => ({ args: [...base, '--access', req.access, ...(req.resume ? ['--resume', req.resume] : [])], stdin: req.prompt }),
   parse: (raw) => {
-    const m = /^SESSION:([^ ]+?)[\\r\\n]+/.exec(raw.stdout);
+    const m = /^SESSION:([^ ]+?)[\\r\\n]+(USAGE:[^ ]+?[\\r\\n]+)?/.exec(raw.stdout);
     return { text: (m ? raw.stdout.slice(m[0].length) : raw.stdout).trim(), sessionId: m?.[1] };
+  },
+  meter: () => (line) => {
+    if (!line.startsWith('USAGE:')) return undefined;
+    const [input, cachedInput, output] = line.slice(6).split('/').map(Number);
+    return { input, cachedInput, output, sessionTotal: true };
   },
 };
 `,

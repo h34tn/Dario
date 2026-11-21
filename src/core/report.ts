@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Activity } from '../plugin.js';
 import type { RoleView } from './roles.js';
 import { exitCodeForJob, STATUS_LABEL, type Job } from './types.js';
-import { formatDuration } from './util.js';
+import { formatDuration, formatTokens } from './util.js';
 
 export function formatActivity(activity: Activity): string {
   if (activity.kind === 'say') return activity.text;
@@ -73,6 +73,8 @@ export interface JobJson {
     changed_files: string[];
     /** 这一步是否续接了该角色在本任务里已有的会话。 */
     resumed: boolean;
+    /** token 用量；工具不报用量时为 null。input 含命中缓存的部分 cached_input。 */
+    tokens: { input: number; cached_input: number; output: number } | null;
     attempts: Array<{ agent: string; outcome: string; reason: string | null }>;
   }>;
 }
@@ -103,6 +105,7 @@ export function jobToJson(job: Job): JobJson {
       duration_ms: s.durationMs,
       changed_files: s.changedFiles,
       resumed: s.resumed === true,
+      tokens: s.tokens ? { input: s.tokens.input, cached_input: s.tokens.cachedInput, output: s.tokens.output } : null,
       attempts: s.attempts.map((a) => ({ agent: a.agent, outcome: a.outcome, reason: a.reason ?? null })),
     })),
   };
@@ -124,7 +127,8 @@ export function formatSteps(job: Job): string {
     .map((s) => {
       const switched = s.agent ? s.attempts.filter((a) => a.agent !== s.agent && a.outcome !== 'ok') : [];
       const note = switched.length ? `（${switched.map((a) => `${a.agent} 不可用`).join('，')}，已换人）` : '';
-      return `  ${s.index + 1}. ${KIND_LABEL[s.kind] ?? s.kind} · ${s.role} · ${s.agent ?? '-'} · ${OUTCOME_LABEL[s.outcome] ?? s.outcome} · ${formatDuration(s.durationMs)}${note}`;
+      const tokens = s.tokens ? ` · 输入 ${formatTokens(s.tokens.input)} 输出 ${formatTokens(s.tokens.output)} token` : '';
+      return `  ${s.index + 1}. ${KIND_LABEL[s.kind] ?? s.kind} · ${s.role} · ${s.agent ?? '-'} · ${OUTCOME_LABEL[s.outcome] ?? s.outcome} · ${formatDuration(s.durationMs)}${tokens}${note}`;
     })
     .join('\n');
 }

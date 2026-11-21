@@ -132,7 +132,7 @@ export class Engine {
       context: req.context,
       // 带过来的会话在本任务里还没有上过场
       ...(req.sessions && {
-        sessions: Object.fromEntries(Object.entries(req.sessions).map(([roleId, s]) => [roleId, { agent: s.agent, sessionId: s.sessionId, step: -1 }])),
+        sessions: Object.fromEntries(Object.entries(req.sessions).map(([roleId, s]) => [roleId, { ...s, step: -1 }])),
       }),
       cursor: 0,
       steps: [],

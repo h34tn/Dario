@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { PassThrough, Writable } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
 import { cleanup, render } from 'ink-testing-library';
+import { stripVTControlCharacters } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ReplApp } from '../src/ui/ReplApp.js';
 import type { Engine } from '../src/core/engine.js';
@@ -16,10 +17,10 @@ vi.mock('ink', async importOriginal => ({
   ...await importOriginal<typeof import('ink')>(), useCursor: () => ({ setCursorPosition: cursor }),
 }));
 
-async function screen(rows?: RoleRow[]) {
+async function screen(rows?: RoleRow[], color = false) {
   const data = await setup({}, rows);
   const onExit = vi.fn();
-  const props = { session: data.session, color: false, symbols: pickSymbols({}), onExit, onError: vi.fn() };
+  const props = { session: data.session, color, symbols: pickSymbols({}), onExit, onError: vi.fn() };
   const view = render(<ReplApp {...props} />);
   await setImmediate();
   const contains = (text: string) => vi.waitFor(() => expect(view.lastFrame()).toContain(text));
@@ -251,4 +252,20 @@ it('初次挂载无法使用原始输入时报告界面不可用', async () => {
   const stdout = Object.assign(new Writable({ write(_chunk, _, cb) { cb(); } }), { isTTY: true, columns: 80, rows: 24 });
   await expect(runReplUi({ engine: engine as unknown as Engine, stdin: stdin as unknown as NodeJS.ReadStream,
     stdout: stdout as unknown as NodeJS.WriteStream, printLine: vi.fn(), env: {} })).rejects.toBeInstanceOf(UiUnavailableError);
+});
+
+it('着色时输入回显整行铺灰色底，当前步骤在耗时之后显示 token 用量', async () => {
+  const { view, session, emit, hold } = await screen(undefined, true);
+  const finish = hold();
+  session.submit('/to 实现 你好');
+  await vi.waitFor(() => {
+    const echo = view.frames.join('\n').split('\n').find(line => line.includes('你好') && line.includes('/to'))!;
+    expect(echo.startsWith('\x1b[48;5;237m')).toBe(true);
+    expect(stripVTControlCharacters(echo)).toBe('> /to 实现 你好'.padEnd(99 - 4));
+  });
+  emit({ jobId: 'J0001', kind: 'step_start', text: '', step });
+  emit({ jobId: 'J0001', kind: 'usage', text: '', step: { ...step, tokens: { input: 1200, cachedInput: 0, output: 88 } } });
+  await vi.waitFor(() => expect(stripVTControlCharacters(view.lastFrame()!)).toMatch(/00:\d\d · \^ 1\.2k v 88 tokens/));
+  finish();
+  await session.whenIdle();
 });

@@ -18,6 +18,21 @@ export type Activity =
   | { kind: 'think' };
 export type FailureKind = 'unavailable' | 'task_failed' | 'timeout';
 
+/** 一次运行到目前为止的 token 用量。 */
+export interface TokenUsage {
+  /** 各次请求发给模型的 token 之和，命中缓存的部分也算在内。 */
+  input: number;
+  /** input 里命中缓存的部分。 */
+  cachedInput: number;
+  /** 模型输出的 token，含推理。 */
+  output: number;
+  /**
+   * 这几个数是整个会话的累计值，而不是这一次运行的。只有工具只报累计值时才这样标，
+   * 续接时 Dario 会减去上一轮结束时的累计值。
+   */
+  sessionTotal?: boolean;
+}
+
 export interface InvokeRequest {
   access: Access;
   /** AI 的工作目录（绝对路径）。 */
@@ -93,6 +108,11 @@ export interface AgentPlugin {
   parse(raw: RawResult): AgentOutput;
   /** 把一行标准输出翻译成零到多条活动。只用于显示，不参与任何判断。可选。 */
   progress?(line: string): Activity[] | undefined;
+  /**
+   * 可选：统计 token 用量。每次运行调用一次，返回的函数逐行接收标准输出，
+   * 用量有变化时返回到目前为止的累计值，否则返回 undefined。只用于显示和记录，不参与任何判断。
+   */
+  meter?(): (line: string) => TokenUsage | undefined;
   /** 可选：自行判断失败类别。返回 undefined 时使用 Dario 的默认判断。 */
   classify?(raw: RawResult, output: AgentOutput): Classification | undefined;
 }
@@ -145,6 +165,8 @@ function toolActivity(name: string, input: Record<string, unknown>): Activity {
 
 /** 提取 Claude Code 和 CodeBuddy 的助手活动，保留内容块的顺序。 */
 export function streamJsonActivities(line: string): Activity[] {
+  // 分段输出的行占绝大多数，不含活动，不必解析
+  if (line.startsWith('{"type":"stream_event"')) return [];
   const record = jsonRecord(line);
   if (record?.type === 'system' && record.subtype === 'compact_boundary') {
     // 会话历史超过工具自己的上限，被它压缩成摘要
@@ -165,6 +187,83 @@ export function streamJsonActivities(line: string): Activity[] {
     }
   }
   return activities;
+}
+
+/**
+ * 统计 Claude Code 风格 stream-json 输出里主对话的 token 用量，按消息累加，运行中随时可读。
+ * 加了 --include-partial-messages 时每条消息结束都有准确的数；最后以 result 记录为准。
+ * inputIncludesCache：工具报的 input_tokens 是否已经包含命中缓存的部分（Claude Code 不含，CodeBuddy 含）。
+ */
+export function streamJsonMeter(opts: { inputIncludesCache: boolean }): (line: string) => TokenUsage | undefined {
+  const read = (value: unknown): TokenUsage | undefined => {
+    const u = object(value);
+    if (!u) return undefined;
+    const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const cached = n(u.cache_read_input_tokens);
+    const input = opts.inputIncludesCache ? n(u.input_tokens) : n(u.input_tokens) + n(u.cache_creation_input_tokens) + cached;
+    return { input, cachedInput: cached, output: n(u.output_tokens) };
+  };
+  const messages = new Map<string, TokenUsage>();
+  let current: string | undefined;
+  let final: TokenUsage | undefined;
+  let reported = '';
+
+  return (line) => {
+    // 分段输出的行很多，绝大多数不带用量，先用字符串判断挡掉
+    if (!line.includes('"usage"')) return undefined;
+    const record = jsonRecord(line);
+    if (!record) return undefined;
+    if (record.type === 'result') final = read(record.usage) ?? final;
+    // 子代理的消息不计入，与 result 记录的口径一致
+    else if (record.parent_tool_use_id == null) {
+      let id: string | undefined;
+      let usage: TokenUsage | undefined;
+      const event = object(record.event);
+      const message = object(record.type === 'assistant' ? record.message : event?.message);
+      if (record.type === 'assistant' || (record.type === 'stream_event' && event?.type === 'message_start')) {
+        id = typeof message?.id === 'string' ? message.id : undefined;
+        usage = read(message?.usage);
+        if (record.type === 'stream_event') current = id;
+      } else if (record.type === 'stream_event' && event?.type === 'message_delta') {
+        id = typeof record.api_message_id === 'string' ? record.api_message_id : current;
+        usage = read(event.usage);
+      }
+      if (id && usage) {
+        // 同一条消息的数只增不减：开头报的输出是占位值，有的工具开头报的输入是 0
+        const seen = messages.get(id);
+        messages.set(id, seen
+          ? { input: Math.max(seen.input, usage.input), cachedInput: Math.max(seen.cachedInput, usage.cachedInput), output: Math.max(seen.output, usage.output) }
+          : usage);
+      }
+    }
+    let total = final;
+    if (!total) {
+      total = { input: 0, cachedInput: 0, output: 0 };
+      for (const m of messages.values()) {
+        total.input += m.input;
+        total.cachedInput += m.cachedInput;
+        total.output += m.output;
+      }
+    }
+    // 有的工具在消息开头报的全是 0，等有了真实的数再显示
+    if (total.input === 0 && total.output === 0) return undefined;
+    const key = `${total.input}/${total.cachedInput}/${total.output}`;
+    if (key === reported) return undefined;
+    reported = key;
+    return { ...total };
+  };
+}
+
+/** Codex 只在一轮结束时报用量，而且报的是整个会话的累计值。 */
+export function codexMeter(): (line: string) => TokenUsage | undefined {
+  return (line) => {
+    if (!line.includes('"turn.completed"')) return undefined;
+    const record = jsonRecord(line);
+    const usage = record?.type === 'turn.completed' ? object(record.usage) : undefined;
+    if (!usage) return undefined;
+    const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return { input: n(usage.input_tokens), cachedInput: n(usage.cached_input_tokens), output: n(usage.output_tokens), sessionTotal: true };
+  };
 }
 
 /** 去掉已知外壳的启动参数，未识别的命令完整保留。 */

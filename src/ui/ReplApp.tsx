@@ -6,6 +6,7 @@ import { CommandMenu } from './CommandMenu.js';
 import { suggest } from './completion.js';
 import { editorReduce, editorSetValue, EMPTY_EDITOR, type EditorState } from './editor.js';
 import { CurrentStep, StepRow, visibleActivities } from './LiveJob.js';
+import { itemLines } from './lines.js';
 import { PlanPrompt } from './PlanPrompt.js';
 import { DisplayBoundary } from './RunApp.js';
 import type { HistoryItem, Session } from './session.js';
@@ -23,11 +24,14 @@ interface Props {
 }
 
 function Entry({ item, color, symbols }: Pick<Props, 'color' | 'symbols'> & { item: HistoryItem }) {
+  const { columns, wide } = useScreen();
   switch (item.type) {
     case 'step': return <StepRow step={item.step} now={0} symbols={symbols} color={color} />;
     case 'banner':
     case 'title': return <Text {...toneColor('title', color)}>{item.text}</Text>;
-    case 'input': return <Text><Text {...toneColor('role', color)}>&gt; </Text>{item.text}</Text>;
+    // 与全屏界面用同一套排版：整行铺灰色底，按当前宽度折行
+    case 'input': return <Box flexDirection="column">{itemLines(item, Math.max(1, columns - 1), { symbols, color, wide })
+      .map((line, i) => <Text key={i} wrap="truncate-end">{line}</Text>)}</Box>;
     case 'notice': return <Text {...toneColor('warn', color)}>{symbols.warn} {item.text}</Text>;
     case 'error': return <Text {...toneColor('fail', color)}>{symbols.fail} {item.text}</Text>;
     case 'text': return <Text>{item.text}</Text>;
