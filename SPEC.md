@@ -316,6 +316,7 @@ Dario 边收 AI 的标准输出边按行交给插件的 `progress(line)`，得�
 
 - 任何内置插件都不使用"跳过全部权限"的参数。
 - 三个内置插件都支持续接。`claude` 与 `codebuddy` 加 `--resume <会话号>`，会话号取自 `result` 记录的 `session_id`。`codex` 改用 `exec -C <目录> -s <沙箱方式> --skip-git-repo-check --color never resume <会话号> --json -o <结果文件> -`，会话号取自 `thread.started` 记录的 `thread_id`；沙箱方式必须写在 `resume` 之前才对这一轮生效。三家都实测过：以只读方式续接一个之前可写的会话，写文件会被拒绝。
+- `claude` 与 `codebuddy` 每一步的费用取 `result` 记录里只统计本次运行的 `model_usage_since_last_result`，按模型相加；没有这个字段时退回 `total_cost_usd`。续接会话时后者是整个会话的累计值，不能当作这一步的费用。
 - 默认放行的工具：读取、搜索、几条只读的 git 命令；可写方式另加文件编辑。需要放行更多命令（如跑测试）时在 `agents.yaml` 里配置。
 
 内置的 AI：`claude`、`codex`、`codebuddy`，以及 `deepseek`（`codebuddy` 插件加模型 `deepseek-v4-pro`）。

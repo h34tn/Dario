@@ -227,6 +227,23 @@ export function parseJsonLines(text: string): Array<Record<string, unknown>> {
 }
 
 /**
+ * 这一次运行的费用。续接会话时 total_cost_usd 是整个会话到目前为止的累计值，
+ * 所以优先用只统计本次运行的 model_usage_since_last_result；没有这个字段的工具或旧版本退回 total_cost_usd。
+ */
+function runCostUsd(result: Record<string, unknown>): number | undefined {
+  const since = object(result.model_usage_since_last_result);
+  if (since) {
+    let sum = 0;
+    for (const usage of Object.values(since)) {
+      const cost = object(usage)?.costUSD;
+      if (typeof cost === 'number') sum += cost;
+    }
+    return sum;
+  }
+  return typeof result.total_cost_usd === 'number' ? result.total_cost_usd : undefined;
+}
+
+/**
  * 解析 Claude Code 风格的 stream-json 输出：取最后一条 type 为 result 的记录。
  * Claude Code 与 CodeBuddy 都使用这种格式。
  */
@@ -238,7 +255,7 @@ export function parseStreamJsonResult(stdout: string): AgentOutput {
     return {
       text: typeof e.result === 'string' ? e.result : '',
       isError: e.is_error === true || (typeof e.subtype === 'string' && e.subtype !== 'success'),
-      costUsd: typeof e.total_cost_usd === 'number' ? e.total_cost_usd : undefined,
+      costUsd: runCostUsd(e),
       usage: e.usage,
       sessionId: typeof e.session_id === 'string' && e.session_id ? e.session_id : undefined,
     };

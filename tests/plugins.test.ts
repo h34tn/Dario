@@ -83,6 +83,23 @@ describe('内置插件：解析真实输出', () => {
     expect(out).toMatchObject({ text: '你好', isError: false, costUsd: 0.2875 });
   });
 
+  it('Claude Code 续接会话时费用只算这一次运行的，不取会话累计值', () => {
+    // 取自本机实测（Claude Code 2.1.330）：同一个会话的第一次运行和续接后的一次运行，已删去无关字段
+    const first =
+      '{"type":"result","subtype":"success","is_error":false,"result":"计划","session_id":"s1","total_cost_usd":0.3823668,' +
+      '"modelUsage":{"claude-fable-5-2":{"costUSD":0.3823668}},"model_usage_since_last_result":{"claude-fable-5-2":{"costUSD":0.3823668}}}';
+    const resumed =
+      '{"type":"result","subtype":"success","is_error":false,"result":"汇总","session_id":"s1","total_cost_usd":0.47694800000000004,' +
+      '"modelUsage":{"claude-fable-5-2":{"costUSD":0.47694800000000004}},"model_usage_since_last_result":{"claude-fable-5-2":{"costUSD":0.0945812}}}';
+    expect(claudePlugin.parse(raw({ stdout: first })).costUsd).toBe(0.3823668);
+    expect(claudePlugin.parse(raw({ stdout: resumed })).costUsd).toBe(0.0945812);
+    // 用到多个模型时相加；这一次运行没有产生用量时记 0，不退回累计值
+    const two = '{"type":"result","subtype":"success","result":"好","total_cost_usd":9,"model_usage_since_last_result":{"a":{"costUSD":0.25},"b":{"costUSD":0.5}}}';
+    expect(claudePlugin.parse(raw({ stdout: two })).costUsd).toBe(0.75);
+    const none = '{"type":"result","subtype":"success","result":"好","total_cost_usd":9,"model_usage_since_last_result":{}}';
+    expect(claudePlugin.parse(raw({ stdout: none })).costUsd).toBe(0);
+  });
+
   it('Codex 的 JSONL：取最终答复，配置警告不算失败', () => {
     expect(codexPlugin.parse(raw({ stdout: CODEX_STDOUT, resultFileText: '你好\n' }))).toMatchObject({ text: '你好' });
     expect(codexPlugin.parse(raw({ stdout: CODEX_STDOUT })).text).toBe('你好');
