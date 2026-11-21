@@ -2,6 +2,7 @@ import type { ProjectConfig } from './config.js';
 import { parsePlan, parseVerdict } from './plan.js';
 import {
   carriedPrompt,
+  parseBlocked,
   planBrief,
   planCarried,
   planFollowUp,
@@ -161,6 +162,14 @@ export class Orchestrator {
     const avoid = this.avoidFor(job, req.roleId);
     const rec = await this.deps.runner.run({ job, cwd: ws.cwd, avoid, confirmFallback: opts.confirmFallback, ...req });
     rec.changedFiles = await ws.changedSince(before);
+    // 角色报告必需的工具或服务用不了：这一步算没做成，任务就此停下并告知发起人。
+    // 会话仍然留着，问题解决后再下达任务可以接着做。
+    const blocked = rec.outcome === 'ok' ? parseBlocked(rec.text) : undefined;
+    if (blocked) {
+      rec.outcome = 'task_failed';
+      rec.reason = `必需的工具或服务用不了，已停下：${blocked}。恢复之后再下达一次任务（或让它继续），各角色会接着原来的会话做。`;
+      this.deps.emit({ jobId: job.id, kind: 'phase', text: `第 ${rec.index + 1} 步受阻，任务停下：${blocked}` });
+    }
     job.steps.push(rec);
     job.activePid = undefined;
 

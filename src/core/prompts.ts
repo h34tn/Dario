@@ -5,8 +5,22 @@ import { shortHash, truncate } from './util.js';
 
 const CONTEXT_CHARS = 4000;
 
+/** 角色因为必需的工具或服务用不了而停下时，在回复最后单独一行写的标记。编排器据此停止任务并告知发起人。 */
+export const BLOCKED_MARK = 'DARIO_BLOCKED';
+
+/** 取出回复里的受阻说明；没有标记时返回 undefined。多处出现时取最后一处。 */
+export function parseBlocked(text: string): string | undefined {
+  const hits = [...text.matchAll(/^[ \t>*`-]*DARIO_BLOCKED[:：][ \t]*(.*)$/gm)];
+  const last = hits.at(-1);
+  if (!last) return undefined;
+  return last[1]!.replace(/[`*]+$/, '').trim() || '没有写明原因';
+}
+
 function rules(access: Access, project: ProjectConfig): string {
-  const lines = ['- 不要执行 git commit、git push，不要切换或新建分支。'];
+  const lines = [
+    '- 不要执行 git commit、git push，不要切换或新建分支。',
+    `- 完成任务必需的工具或服务（例如某个 MCP 服务）连不上、用不了时，先多试几次：隔几秒重试，确认服务是否在运行，换同一服务里能达到目的的其他工具。各种办法都试过仍然不行就停下，不要改用别的途径凑出结果，也不要继续做依赖它的工作；说明哪个工具或服务用不了、试过什么，并在回复的最后单独写一行 \`${BLOCKED_MARK}: <一句话原因>\`。任务不依赖它、或者只是多了一个用不上的服务时，不要写这一行。`,
+  ];
   if (access === 'write') {
     lines.push('- 这一步由你自己做完：需要运行命令、调用工具、操作编辑器的就去做，不要把其中一部分留给人，也不要只给出让人照着做的步骤。');
     lines.push('- 某个工具或命令被拒绝时，换一种能达到同样目的的正当做法；确实做不了，在结果里写明被拒绝的是什么、原话是什么，不要想办法绕过限制。');
