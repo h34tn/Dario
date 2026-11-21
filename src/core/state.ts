@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -55,6 +56,22 @@ export class StateStore {
 
   private lock<T>(name: string, fn: () => T): T {
     return withLock(this.file('locks', `${name}.lock`), fn);
+  }
+
+  newImagePath(): string {
+    const dir = path.resolve(this.dir, 'images');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return path.join(dir, `${Date.now()}-${randomUUID()}.png`);
+  }
+
+  cleanOldImages(now = Date.now()): void {
+    const dir = this.file('images');
+    if (!fs.existsSync(dir)) return;
+    for (const file of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!file.isFile() || !/\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name)) continue;
+      const image = path.join(dir, file.name);
+      if (now - fs.statSync(image).mtimeMs > 7 * 86400000) fs.unlinkSync(image);
+    }
   }
 
   // ----- 任务 -----

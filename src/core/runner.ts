@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ProjectConfig } from './config.js';
 import type { AgentCatalog, AgentRunResult } from './ports.js';
+import { imageSection } from './prompts.js';
 import { formatActivity } from './report.js';
 import type { RoleBook } from './roles.js';
 import type { StateStore } from './state.js';
@@ -162,6 +163,7 @@ export class StepRunner {
 
       let tokens: StepTokens | undefined;
       const invoke = async (prompt: string, resumeId: string | undefined, runLabel: string): Promise<AgentRunResult> => {
+        if (!resumeId || slot?.step === -1) prompt += imageSection(req.job.images);
         const base = resumeId ? slot?.tokens : undefined;
         tokens = undefined;
         try {
@@ -175,6 +177,7 @@ export class StepRunner {
           access,
           cwd: req.cwd,
           prompt,
+          ...(req.job.images?.length && { images: req.job.images.map(image => image.path) }),
           timeoutMs: timeoutMinutes * 60000,
           workDir,
           label: runLabel,

@@ -40,6 +40,44 @@ const CODEX_STDOUT = [
 ].join('\n');
 
 describe('内置插件：命令行参数', () => {
+  it.each(['read-only', 'write'] as const)('附图时 %s 参数只追加去重目录或逐图参数，空数组保留原命令', access => {
+    const directory = path.resolve('图片集');
+    const images = [path.join(directory, '一.png'), path.join(directory, '二.png'), path.join(directory, '子目录', '三.jpg')];
+    for (const plugin of [claudePlugin, codebuddyPlugin]) {
+      const baseline = plugin.build(req({ access })).args;
+      const args = plugin.build(req({ access, images })).args;
+      expect(args).toEqual([baseline[0], '--add-dir', directory, path.join(directory, '子目录'), ...baseline.slice(1)]);
+      expect(args[4]).toMatch(/^--/);
+      expect(plugin.build(req({ access, images: [] })).args).toEqual(baseline);
+    }
+    for (const resume of [undefined, '会话号']) {
+      const baseline = codexPlugin.build(req({ access, resume })).args;
+      expect(codexPlugin.build(req({ access, resume, images })).args).toEqual([
+        ...baseline.slice(0, -1), ...images.flatMap(image => ['-i', image]), '-',
+      ]);
+      expect(codexPlugin.build(req({ access, resume, images: [] })).args).toEqual(baseline);
+    }
+  });
+
+  it('CodeBuddy 两种权限的默认清单仅在附图时放行 ViewImage，自定清单仍优先', async () => {
+    const box = new Sandbox();
+    try {
+      for (const allowedTools of [undefined, { readOnly: ['Read'], write: ['Edit'] }]) {
+        const port = new AgentHandle('假工具', { ...codebuddyPlugin, build(request) {
+          const invocation = codebuddyPlugin.build(request);
+          return { ...invocation, args: [FAKE_AGENT, '--name', '工具', '--scenario', box.scenarioFile, ...invocation.args] };
+        } }, { command: process.execPath, permissions: 'listed', allowedTools }, { env: box.env(), envPass: [], startupTimeoutSeconds: 2 });
+        for (const access of ['read-only', 'write'] as const) {
+          for (const images of [undefined, [path.join(box.dir, '图.png')]]) {
+            await port.run({ access, cwd: box.project, workDir: box.dir, label: '步骤', timeoutMs: 5000, prompt: '看图', images });
+            const args = box.calls().at(-1)!.argv;
+            expect(args.includes('ViewImage')).toBe(!!images && !allowedTools);
+            expect(args.includes('--add-dir')).toBe(!!images);
+          }
+        }
+      }
+    } finally { box.cleanup(); }
+  });
   for (const plugin of [claudePlugin, codebuddyPlugin, codexPlugin]) {
     it(`${plugin.displayName} 仅在指定强度时替换旧参数，保留其他参数`, () => {
       const flag = (effort: string) => plugin === codexPlugin ? ['-c', `model_reasoning_effort="${effort}"`] : ['--effort', effort];

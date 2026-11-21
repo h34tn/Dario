@@ -1,7 +1,7 @@
 import { GlyphContext, useScreen } from './screen.js';
 import { clip } from './text.js';
 import { Box, Static, Text, useInput } from 'ink';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ModelPrompt } from './ModelPrompt.js';
 import { CommandMenu, menuLayout } from './CommandMenu.js';
 import { suggest } from './completion.js';
@@ -11,7 +11,7 @@ import { itemLines } from './lines.js';
 import { FallbackPrompt } from './FallbackPrompt.js';
 import { PlanPrompt } from './PlanPrompt.js';
 import { DisplayBoundary } from './RunApp.js';
-import type { HistoryItem, Session } from './session.js';
+import { MAX_IMAGES, IMAGE_LIMIT_NOTICE, type HistoryItem, type Session } from './session.js';
 import { StatusBar } from './StatusBar.js';
 import { TextInput, type TextInputProps } from './TextInput.js';
 import { toneColor, type Symbols } from './theme.js';
@@ -41,7 +41,7 @@ function Entry({ item, color, symbols }: Pick<Props, 'color' | 'symbols'> & { it
 }
 
 /** 两种交互布局共用会话订阅、编辑快捷键与退出流程。 */
-export function useSessionEditor({ session, onExit, suspended }: Pick<Props, 'session' | 'onExit' | 'suspended'>) {
+export function useSessionEditor({ session, onExit, suspended }: Pick<Props, 'session' | 'onExit' | 'suspended'>, notify = session.notice) {
   const snap = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const [editor, setEditor] = useState(EMPTY_EDITOR);
   const current = useRef(editor);
@@ -98,6 +98,23 @@ export function useSessionEditor({ session, onExit, suspended }: Pick<Props, 'se
     setEditor(next);
     arm(false);
   }
+  const inputActive = !suspended && !snap.picker && !snap.plan && !snap.ask;
+  const generation = useRef(0);
+  useLayoutEffect(() => () => { generation.current++; }, [inputActive]);
+  async function pasteImage() {
+    const version = generation.current;
+    const atLimit = () => session.imagesIn([current.current.pasted, current.current.value].join('\n')).length >= MAX_IMAGES;
+    if (atLimit()) return notify(IMAGE_LIMIT_NOTICE);
+    const image = await session.readImage();
+    const { plan, ask, picker, exiting } = session.getSnapshot();
+    if (version !== generation.current || plan || ask || picker || exiting) return;
+    if (image.kind === 'error') return notify('粘贴图片失败：' + image.reason);
+    if (image.kind === 'none') return notify('剪贴板里没有图片');
+    if (atLimit()) return notify(IMAGE_LIMIT_NOTICE);
+    const tag = session.registerImage(image.path);
+    change(editorReduce(current.current, { type: 'insert', text: tag }));
+    notify('已粘贴图片 ' + tag + (image.width && image.height ? `（${image.width}×${image.height}）` : ''));
+  }
   useInput((input, key) => {
     const state = current.current;
     const ctrlC = key.ctrl && input === 'c';
@@ -108,16 +125,16 @@ export function useSessionEditor({ session, onExit, suspended }: Pick<Props, 'se
       else if (armed.current) session.requestExit('exit');
       else arm(true);
     }
-  }, { isActive: !suspended && !snap.picker && !snap.plan && !snap.ask });
+  }, { isActive: inputActive });
   const warningText = warning ? '再按一次 Ctrl+C 退出' + (snap.runningJobId ? '（正在运行的任务会被取消）' : '') : '';
   const suggestions = candidates(editor);
-  return { snap, editor, current, change, now, warningText, selected: Math.min(selected, suggestions.length - 1), onMenuKey, suggestions };
+  return { snap, editor, current, change, pasteImage, now, warningText, selected: Math.min(selected, suggestions.length - 1), onMenuKey, suggestions };
 }
 
 function Screen({ session, symbols, color, onExit, suspended }: Props) {
   const { columns, rows, wide, ellipsis } = useScreen();
   const limit = columns - 1;
-  const { snap, editor, current, change, now, warningText, selected, onMenuKey, suggestions } = useSessionEditor({ session, onExit, suspended });
+  const { snap, editor, current, change, pasteImage, now, warningText, selected, onMenuKey, suggestions } = useSessionEditor({ session, onExit, suspended });
   const active = !!snap.feed.current;
   // 极矮的窗口先缩短菜单，给状态栏、输入框、当前步骤和终端末行留位。
   const minimum = active ? 6 : 4;
@@ -140,11 +157,11 @@ function Screen({ session, symbols, color, onExit, suspended }: Props) {
       {snap.ask && <FallbackPrompt key={snap.ask.from[0]?.agent + '>' + snap.ask.to.agent} question={snap.ask} symbols={symbols} color={color}
         onDecide={approved => session.decideFallback(approved)} />}
       <StatusBar status={snap.status} queued={snap.queued} contextJobId={snap.contextJobId} color={color} />
-      <TextInput view={inputView} state={editor} currentState={current} onChange={change} onMenuKey={onMenuKey} onSubmit={text => session.submit(text)}
+      <TextInput onPasteImage={pasteImage} view={inputView} state={editor} currentState={current} onChange={change} onMenuKey={onMenuKey} onSubmit={text => session.submit(text)}
         isActive={!snap.plan && !snap.ask} row={stepRows + 1} color={color} />
       {warningText ? <Text {...toneColor('warn', color)}>{clip(warningText, limit, wide, ellipsis)}</Text>
         : suggestions.length ? <CommandMenu {...{ suggestions, selected, layout, color }} />
-        : <Text wrap="truncate-end" {...toneColor('dim', color)}>{clip('  / 指令   Shift+Enter 换行   Esc 中断当前任务   Ctrl+C 退出', limit, wide, ellipsis)}</Text>}
+        : <Text wrap="truncate-end" {...toneColor('dim', color)}>{clip('  / 指令   Alt+V 粘贴图片   Shift+Enter 换行   Esc 中断当前任务   Ctrl+C 退出', limit, wide, ellipsis)}</Text>}
     </>}
   </Box>;
 }

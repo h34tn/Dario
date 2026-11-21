@@ -48,7 +48,7 @@ function Screen({ session, symbols, color, onMouse, copy, readClipboard, onExit 
   const { rows, columns, wide, ellipsis } = useScreen();
   const limit = Math.max(0, columns - 1);
   const small = rows < 8 || columns < 40;
-  const { snap, editor, current, change, now, warningText, suggestions, selected, onMenuKey } = useSessionEditor({ session, onExit, suspended: small });
+  const { snap, editor, current, change, pasteImage, now, warningText, suggestions, selected, onMenuKey } = useSessionEditor({ session, onExit, suspended: small }, showNotice);
   const [expanded, expand] = useState<typeof snap.plan>();
   const [cache] = useState(createLineCache);
   const ctx = { symbols, color, wide };
@@ -120,9 +120,10 @@ function Screen({ session, symbols, color, onMouse, copy, readClipboard, onExit 
     }
     const { plan, ask, picker } = session.getSnapshot();
     if (request !== pasteGeneration.current || plan || ask || picker) return;
-    if (result.ok && result.text) change(editorReduce(current.current, { type: 'paste', text: result.text }));
+    if (result.ok && !result.text) return pasteImage();
+    if (result.ok) change(editorReduce(current.current, { type: 'paste', text: result.text }));
     if (id === generation.current) showNotice(!result.ok ? '粘贴失败：' + result.reason
-      : result.text ? '已粘贴 ' + graphemes(result.text).length + ' 个字符' : '剪贴板里没有文字');
+      : '已粘贴 ' + graphemes(result.text).length + ' 个字符');
   }
   async function copySelection(range: Selection) {
     const text = selectedText(lines, joins, range, wide);
@@ -268,13 +269,13 @@ function Screen({ session, symbols, color, onMouse, copy, readClipboard, onExit 
   const rule = paint('dim', symbols.rule.repeat(limit), color);
   const hint = snap.ask ? FALLBACK_HINT : snap.plan ? '执行吗？  y 执行   n 取消   d 查看每一步的完整任务说明'
     : warningText || (below ? '  ' + symbols.down + ' 下面还有 ' + below + ' 行   PgDn 向下翻   End 回到最新'
-      : '  / 指令   PgUp/PgDn 翻看   Shift+Enter 换行   Esc 中断当前任务   Ctrl+C 退出');
+      : '  / 指令   Alt+V 粘贴图片   PgUp/PgDn 翻看   Shift+Enter 换行   Esc 中断当前任务   Ctrl+C 退出');
   return <Box flexDirection="column">
     {Array.from({ length: height }, (_, i) => row(highlight(visible[i] ?? '', selectedColumns(selection, above + i), wide), i))}
     {stepLine !== undefined && <Text wrap="truncate-end">{stepLine}</Text>}
     {!!notice && <Text wrap="truncate-end">{' '.repeat(Math.max(0, limit - displayWidth(fit(notice), wide))) + paint('dim', fit(notice), color)}</Text>}
     <Text wrap="truncate-end">{rule}</Text>
-    <TextInput view={inputView} state={editor} currentState={current} onChange={change} onMenuKey={menuVisible ? onMenuKey : undefined} onSubmit={text => { follow(); session.submit(text); }}
+    <TextInput onPasteImage={pasteImage} view={inputView} state={editor} currentState={current} onChange={change} onMenuKey={menuVisible ? onMenuKey : undefined} onSubmit={text => { follow(); session.submit(text); }}
       row={height + stepHeight + Number(!!notice) + 1} isActive={!snap.plan && !snap.ask} color={color} />
     <Text wrap="truncate-end">{rule}</Text>
     {layout.height ? <CommandMenu {...{ suggestions, selected, layout, color }} />

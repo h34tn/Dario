@@ -64,6 +64,8 @@ export interface InvokeRequest {
   cwd: string;
   /** 完整的任务说明。 */
   prompt: string;
+  /** 本轮任务附带的本机图片绝对路径。 */
+  images?: string[];
   model?: string;
   effort?: string;
   /** 本次放行的工具清单；不支持该概念的工具忽略即可。 */
@@ -145,6 +147,8 @@ export interface AgentPlugin {
   resumes?: boolean;
   /** 该工具需要的环境变量名，支持以 * 结尾的前缀写法。 */
   envPass?: string[];
+  /** 仅在任务附图时追加到默认清单；用户自定清单仍优先。 */
+  imageTools?: string[];
   defaultAllowedTools?: { readOnly: string[]; write: string[] };
   build(req: InvokeRequest): Invocation;
   parse(raw: RawResult): AgentOutput;

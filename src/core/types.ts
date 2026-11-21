@@ -138,6 +138,7 @@ export interface JobResult {
 }
 
 export interface Job {
+  images?: { n: number; path: string }[];
   id: string;
   createdAt: string;
   updatedAt: string;

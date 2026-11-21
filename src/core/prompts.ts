@@ -46,6 +46,15 @@ function section(title: string, body: string | undefined): string {
   return body && body.trim() ? `\n\n# ${title}\n${body.trim()}` : '';
 }
 
+/** 每个会话在本任务里第一次上场时收到图片对照。 */
+export function imageSection(images: Job['images']): string {
+  if (!images?.length) return '';
+  return section('附带的图片', [
+    '发起人的任务附带了下面的图片，文字里的 [Image #N] 指的就是它们。用你查看图片的工具打开文件来看；看不了图片时如实说明，不要凭猜测描述图片内容。',
+    ...images.map(image => `- [Image #${image.n}]：${image.path}`),
+  ].join('\n'));
+}
+
 /** 已完成各步的摘要，附在后续步骤的任务说明里。after 给出时只取下标在它之后的步骤。 */
 export function priorSteps(job: Job, after = -1): string {
   const done = job.steps.filter((s) => s.index > after && s.kind !== 'plan' && s.outcome === 'ok');

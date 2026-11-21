@@ -15,6 +15,7 @@ export interface AgentRunRequest extends ModelSettings {
   access: Access;
   cwd: string;
   prompt: string;
+  images?: string[];
   timeoutMs: number;
   /** 存放本次运行原始输出的目录。 */
   workDir: string;

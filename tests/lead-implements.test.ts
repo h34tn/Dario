@@ -104,12 +104,14 @@ it('计划后主控换人，新的担当者收到可写的完整任务说明', a
   sb = new Sandbox({ git: true, resumable: true, roles: DEFAULT_TEST_ROLES.replace('[a1]', '[a1, a2]'), projectYaml: 'preamble: 标题约定' });
   sb.setScenario({ a1: [{ text: plan([own]) }], a2: [change, { text: '完成' }], a3: [{ text: verdict(true) }] });
   const { engine } = await createApp({ cwd: sb.project, env: sb.env() });
-  const first = await engine.submit({ task: '改标题', origin, context: '之前的结论' });
+  const images = [{ n: 1, path: engine.state.newImagePath() }];
+  const first = await engine.submit({ task: '改标题 [Image #1]', origin, images, context: '之前的结论' });
   engine.setRole('lead', 'a2', false);
   expect((await engine.approve(first.id)).status).toBe('done');
   expect(trace()[1]).toEqual(['a2', 'write', undefined]);
   const prompt = sb.calls()[1]!.prompt;
   for (const part of ['可以修改文件', '标题约定', '之前的结论', own.task, own.acceptance]) expect(prompt).toContain(part);
+  expect(prompt).toContain('- [Image #1]：' + images[0]!.path);
   expect(prompt).not.toContain('计划已确认');
 });
 

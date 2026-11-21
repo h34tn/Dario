@@ -62,9 +62,16 @@ export function editorReduce(state: EditorState, action: EditorAction, width = I
         historyIndex: undefined, draft: undefined };
     }
     case 'backspace':
-      if (cursor > 0) return replace(cursor - 1, cursor, '');
+      if (cursor > 0) {
+        const image = letters[cursor - 1] === ']' && /\[Image #[1-9]\d*\]$/.exec(letters.slice(0, cursor).join(''));
+        return replace(cursor - (image ? image[0].length : 1), cursor, '');
+      }
       return state.pasted ? { ...state, pasted: undefined } : state;
-    case 'delete': return cursor < letters.length ? replace(cursor, cursor + 1, '') : state;
+    case 'delete': {
+      if (cursor >= letters.length) return state;
+      const image = letters[cursor] === '[' && /^\[Image #[1-9]\d*\]/.exec(letters.slice(cursor).join(''));
+      return replace(cursor, cursor + (image ? image[0].length : 1), '');
+    }
     case 'left': return move(Math.max(0, cursor - 1));
     case 'right': return move(Math.min(letters.length, cursor + 1));
     case 'newline': return replace(cursor, cursor, '\n');

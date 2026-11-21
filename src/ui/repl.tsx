@@ -75,7 +75,7 @@ export async function finishInPlain(session: Session, opts: ReplOptions, error: 
 export async function runReplUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
   const { engine, stdin, stdout, env } = opts;
   const color = !!stdout.isTTY && !env.NO_COLOR;
-  const session = new Session({ engine, color, continueLast: opts.continueLast });
+  const session = new Session({ engine, color, env, continueLast: opts.continueLast });
   let app: ReturnType<typeof render> | undefined;
   let finish!: (result: Error | 'exit' | 'plain') => void;
   const ended = new Promise<Error | 'exit' | 'plain'>(resolve => { finish = resolve; });

@@ -1,5 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { copyText, readClipboard } from '../src/ui/clipboard.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { StateStore } from '../src/core/state.js';
+import { copyText, readClipboard, readClipboardImage } from '../src/ui/clipboard.js';
 
 afterEach(() => vi.useRealTimers());
 
@@ -51,7 +55,7 @@ it('OSC 52 按编码后的长度限制，恰好十万字节仍能发送', async 
 it.each([
   ['win32', '', 'powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw']],
-  ['darwin', '', 'pbpaste', []], ['linux', 'wayland-0', 'wl-paste', ['--no-newline']],
+  ['darwin', '', 'pbpaste', []], ['linux', 'wayland-0', 'wl-paste', ['--no-newline', '--type', 'text']],
   ['linux', '', 'xclip', ['-selection', 'clipboard', '-o']],
 ] as const)('%s 读取剪贴板并规范换行，显示环境为 %s', async (platform, display, command, args) => {
   const run = vi.fn().mockResolvedValue('甲\r\n👍🏽\r\n');
@@ -77,4 +81,105 @@ it('五秒后中止读取并报告超时', async () => {
   await vi.advanceTimersByTimeAsync(5000);
   expect(await result).toEqual({ ok: false, reason: '剪贴板命令超时' });
   expect(run).toHaveBeenCalledExactlyOnceWith('xclip', ['-selection', 'clipboard', '-o'], expect.objectContaining({ aborted: true }));
+});
+
+function imageStore() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dario-image-'));
+  const store = new StateStore(dir);
+  return { store, target: store.newImagePath(), cleanup: () => fs.rmSync(dir, { force: true, recursive: true }) };
+}
+
+it('通过环境变量传目标，Windows STA 脚本经 UTF-16LE 编码，识别位图、文件列表和空内容', async () => {
+  const { target, cleanup } = imageStore();
+  try {
+    const source = target + ' 中 文.GIF';
+    fs.writeFileSync(source, Buffer.from('47494638396102000300', 'hex'));
+    const run = vi.fn().mockImplementationOnce(async () => {
+      fs.writeFileSync(target, '位图');
+      return Buffer.from('image 480x200\r\n');
+    });
+    const read = () => readClipboardImage(() => target, { platform: 'win32', env: {}, run });
+    expect(await read()).toEqual({ kind: 'image', path: target, width: 480, height: 200 });
+    const [command, args, env] = run.mock.calls[0]!;
+    expect(command).toBe('powershell.exe');
+    expect(args.slice(0, -1)).toEqual(['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand']);
+    const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+    expect(script).toContain('$env:DARIO_IMAGE_OUT');
+    expect(script).not.toContain(target);
+    expect(env.DARIO_IMAGE_OUT).toBe(target);
+    run.mockResolvedValueOnce(Buffer.from('files x.txt|' + source + '|不存在.png\r\n'));
+    const file = target.slice(0, -4) + '.GIF';
+    expect(await read()).toEqual({ kind: 'image', path: file, width: 2, height: 3 });
+    expect(fs.readFileSync(file)).toEqual(fs.readFileSync(source));
+    for (const value of ['files a.txt', 'none']) {
+      run.mockResolvedValueOnce(Buffer.from(value));
+      expect(await read()).toEqual({ kind: 'none' });
+    }
+  } finally { cleanup(); }
+});
+
+it('图片路径不重名，清理只删修改时间超过七天的图片', () => {
+  const { store, target, cleanup } = imageStore();
+  try {
+    const boundary = store.newImagePath();
+    expect(path.isAbsolute(target)).toBe(true);
+    expect(boundary).not.toBe(target);
+    const now = Math.floor(Date.now() / 1000) * 1000;
+    const cutoff = now / 1000 - 7 * 86400;
+    for (const [file, time] of [[target, cutoff - 1], [boundary, cutoff], [target + '.txt', cutoff - 1]] as const) {
+      fs.writeFileSync(file, '');
+      fs.utimesSync(file, time, time);
+    }
+    store.cleanOldImages(now);
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.existsSync(boundary)).toBe(true);
+    expect(fs.existsSync(target + '.txt')).toBe(true);
+  } finally { cleanup(); }
+});
+
+it('远程取图不启动命令，本地超时中止，超大图片删除并说明原因', async () => {
+  const { target, cleanup } = imageStore();
+  try {
+    const run = vi.fn();
+    for (const key of ['SSH_TTY', 'SSH_CONNECTION']) {
+      expect(await readClipboardImage(() => target, { env: { [key]: '是' }, run })).toEqual({ kind: 'error', reason: '远程会话里读不到本机剪贴板里的图片' });
+    }
+    expect(run).not.toHaveBeenCalled();
+    vi.useFakeTimers();
+    run.mockImplementationOnce(() => new Promise(() => {}));
+    const result = readClipboardImage(() => target, { env: {}, platform: 'win32', run });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await result).toEqual({ kind: 'error', reason: '剪贴板命令超时' });
+    expect(run.mock.calls[0]![3].aborted).toBe(true);
+    vi.useRealTimers();
+    run.mockImplementationOnce(async () => {
+      fs.writeFileSync(target, '');
+      fs.truncateSync(target, 20 * 1024 * 1024 + 1);
+      return Buffer.from('image 1x1');
+    });
+    expect(await readClipboardImage(() => target, { env: {}, platform: 'win32', run })).toEqual({ kind: 'error', reason: '图片太大' });
+    expect(fs.existsSync(target)).toBe(false);
+  } finally { cleanup(); }
+});
+
+it.each([
+  ['darwin', '', 'osascript'], ['linux', 'wayland', 'wl-paste'], ['linux', '', 'xclip'],
+] as const)('%s 取图选择 %s 显示环境下的 %s，保留 PNG 二进制', async (platform, display, command) => {
+  const { target, cleanup } = imageStore();
+  try {
+    const png = Buffer.from('89504e470d0a1a0a0000000d494844520000000300000005', 'hex');
+    const run = vi.fn().mockImplementationOnce(async () => {
+      if (platform !== 'darwin') return png;
+      fs.writeFileSync(target, png);
+      return Buffer.alloc(0);
+    });
+    const options = { platform, env: { WAYLAND_DISPLAY: display }, run };
+    expect(await readClipboardImage(() => target, options)).toEqual({ kind: 'image', path: target, width: 3, height: 5 });
+    const args = command === 'osascript' ? ['-e', expect.stringContaining('«class PNGf»'), target]
+      : command === 'wl-paste' ? ['--type', 'image/png'] : ['-selection', 'clipboard', '-t', 'image/png', '-o'];
+    expect(run.mock.calls[0]!.slice(0, 2)).toEqual([command, args]);
+    expect(fs.readFileSync(target)).toEqual(png);
+    run.mockResolvedValueOnce(Buffer.from(platform === 'darwin' ? 'none' : ''));
+    expect(await readClipboardImage(() => target, options)).toEqual({ kind: 'none' });
+  } finally { cleanup(); }
 });

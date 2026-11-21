@@ -3,6 +3,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { claudePlugin, codebuddyPlugin, codexPlugin } from '../src/agents/builtin.js';
 import { createApp } from '../src/compose.js';
+import { jobToJson } from '../src/core/report.js';
 import { looksSessionLost, type InvokeRequest, type RawResult } from '../src/plugin.js';
 import { plan, Sandbox, verdict, type FakeCall } from './helpers.js';
 
@@ -74,6 +75,41 @@ describe('同一任务里续接角色的会话', () => {
   const resumeOf = (c: FakeCall): string | undefined => (c.argv.includes('--resume') ? c.argv[c.argv.indexOf('--resume') + 1] : undefined);
   const trace = (): string[] => sb.calls().map((c) => `${c.name}:${resumeOf(c) ?? '新开'}`);
   const writePlan = plan([{ role: 'coder', task: '实现功能 ABC', writes: true }]);
+
+  it('附图随每一步交给假 AI，各角色首次收到对照，跨任务续接时收到新的对照', async () => {
+    const engine = (await createApp({ cwd: sb.project, env: sb.env() })).engine;
+    const image = { n: 2, path: engine.state.newImagePath() };
+    fs.writeFileSync(image.path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/avkAAAAASUVORK5CYII=', 'base64'));
+    sb.setScenario({
+      a1: [{ text: writePlan }, { text: '汇总' }],
+      a2: [{ text: '实现', files: [{ path: 'a.txt', content: '好' }] }, { text: '直派完成' }, { text: '有图' }, { text: '无图' }],
+      a3: [{ text: verdict(true) }],
+    });
+    const request = { task: '看图 [Image #2]', images: [image], origin: { channel: 'terminal' as const, senderId: '测试' }, autoApprove: true };
+    const job = await engine.submit(request);
+    expect(job.status).toBe('done');
+    expect(engine.job(job.id).images).toEqual([image]);
+    expect(jobToJson(job)).not.toHaveProperty('images');
+    const direct = await engine.submit({ ...request, role: 'coder', sessions: job.sessions });
+    expect(direct.status).toBe('done');
+    expect(trace()).toEqual(['a1:新开', 'a2:新开', 'a3:新开', 'a1:a1-s0', 'a2:a2-s0']);
+    for (const [index, call] of sb.calls().entries()) {
+      expect(call.argv.slice(call.argv.indexOf('-i'), call.argv.indexOf('-i') + 2)).toEqual(['-i', image.path]);
+      if (index === 3) expect(call.prompt).not.toContain('# 附带的图片');
+      else {
+        expect(call.prompt).toContain('# 附带的图片');
+        expect(call.prompt).toContain('- [Image #2]：' + image.path);
+      }
+    }
+
+    // 两次直派都用全新会话和同一段任务文字，逐字对照无图时的说明与参数。
+    const withImage = await engine.submit({ ...request, role: 'coder' });
+    const withoutImage = await engine.submit({ ...request, role: 'coder', images: undefined });
+    expect([withImage.status, withoutImage.status]).toEqual(['done', 'done']);
+    const [attached, plain] = sb.calls().slice(-2);
+    expect(attached!.prompt.split('\n\n# 附带的图片\n')[0]).toBe(plain!.prompt);
+    expect(attached!.argv).toEqual([...plain!.argv, '-i', image.path]);
+  });
 
   it('返工、再审、汇总都续接各自角色的会话，只收到增量说明', async () => {
     sb.setScenario({

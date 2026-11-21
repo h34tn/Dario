@@ -341,3 +341,33 @@ it.each([['y', true], ['n', false]])('换人询问显示谁不可用和备选的
   expect(decision).toBe(expected);
   await ui.absent('改用备选');
 });
+
+it('Alt+V 的图片可整块删除、重新提交，跨 /new 递增，超出十张时停止读取', async () => {
+  const ui = await screen();
+  const read = vi.spyOn(ui.session, 'readImage').mockResolvedValue({ kind: 'image', path: '/a.png', width: 4, height: 8 });
+  const press = async (key: string) => { ui.key(key); await setImmediate(); };
+  await press('\x1bv');
+  expect(ui.log()).toContain('已粘贴图片 [Image #1]（4×8）');
+  await press('\x1bv');
+  await press('\x7f');
+  await press('\r');
+  await ui.session.whenIdle();
+  const expected = { task: '[Image #1]', images: [{ n: 1, path: '/a.png' }] };
+  expect(ui.engine.create).toHaveBeenLastCalledWith(expect.objectContaining(expected));
+  await press('\x1b[A');
+  await press('\r');
+  await ui.session.whenIdle();
+  expect(ui.engine.create).toHaveBeenCalledTimes(2);
+  expect(ui.engine.create).toHaveBeenLastCalledWith(expect.objectContaining(expected));
+  ui.session.submit('/new');
+  await press('\x1bv');
+  await ui.contains('> [Image #3]');
+  await press('\x01');
+  await press('\x1b[3~');
+  for (let i = 0; i < 11; i++) await press('\x1bv');
+  expect(ui.log()).toContain('一次输入最多带 10 张图片');
+  expect(read).toHaveBeenCalledTimes(13);
+  await press('\r');
+  await ui.session.whenIdle();
+  expect(ui.engine.create.mock.lastCall![0].images?.map(image => image.n)).toEqual([4,5,6,7,8,9,10,11,12,13]);
+});

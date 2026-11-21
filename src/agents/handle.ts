@@ -193,7 +193,9 @@ export class AgentHandle implements AgentPort {
     fs.rmSync(resultFile, { force: true });
     const tools = this.config.allowedTools;
     const defaults = this.plugin.defaultAllowedTools;
-    const allowedTools = req.access === 'write' ? (tools?.write ?? defaults?.write ?? []) : (tools?.readOnly ?? defaults?.readOnly ?? []);
+    const imageTools = req.images?.length ? this.plugin.imageTools ?? [] : [];
+    const accessKey = req.access === 'write' ? 'write' : 'readOnly';
+    const allowedTools = tools?.[accessKey] ?? [...(defaults?.[accessKey] ?? []), ...imageTools];
     const resume = this.resumes ? req.resume : undefined;
     // 只读角色的职责就是不动手，权限放开只对可写角色有意义
     const unrestricted = req.access === 'write' && (this.config.permissions ?? this.settings.permissions ?? 'full') === 'full';
@@ -204,6 +206,7 @@ export class AgentHandle implements AgentPort {
       access: req.access,
       cwd: req.cwd,
       prompt: req.prompt,
+      ...(req.images?.length && { images: req.images }),
       model,
       ...(effort && { effort }),
       allowedTools,

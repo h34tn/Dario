@@ -14,6 +14,7 @@ export interface TextInputProps {
   onMenuKey?: (key: 'up' | 'down' | 'tab' | 'enter') => boolean;
   prompt?: string;
   view?: ReturnType<typeof editorWindow>;
+  onPasteImage?: () => void;
   onNewline?: (key: string) => void;
   /** 输入框在动态输出区的行号，从零开始。 */
   row: number;
@@ -40,7 +41,7 @@ function editKey(input: string, key: Key): EditorAction | undefined {
   if (input) return { type: 'insert', text: input };
 }
 
-export function TextInput({ state, currentState, onChange, onSubmit, onMenuKey, prompt = '> ', view: suppliedView, onNewline, row, isActive = true, color }: TextInputProps) {
+export function TextInput({ state, currentState, onChange, onSubmit, onMenuKey, prompt = '> ', view: suppliedView, onPasteImage, onNewline, row, isActive = true, color }: TextInputProps) {
   // 同一批输入可能在父组件重画前连续到达。
   const local = useRef(state);
   const current = currentState ?? local;
@@ -56,6 +57,7 @@ export function TextInput({ state, currentState, onChange, onSubmit, onMenuKey, 
   const width = columns - 1 - promptWidth;
   const view = useMemo(() => suppliedView ?? editorWindow(state, width, wide), [suppliedView, state, width, wide]);
   useInput((input, key) => {
+    if (key.meta && !key.ctrl && input === 'v') { onPasteImage?.(); return; }
     const state = current.current;
     let newline: string | undefined;
     if (key.return && key.shift && !key.meta && !key.ctrl) newline = 'Shift+Enter';

@@ -170,6 +170,7 @@ export default {
   models: [{ id: 'light', efforts: ['low'] }, ...['custom', 'base', 'review', 'work'].map(id => ({ id }))],
   build: (req) => ({
     args: [...base, '--access', req.access, ...(req.resume ? ['--resume', req.resume] : []),
+      ...(req.images ?? []).flatMap(image => ['-i', image]),
       ...(req.model ? ['--model', req.model] : []), ...(req.effort ? ['--effort', req.effort] : [])],
     stdin: req.prompt,
   }),

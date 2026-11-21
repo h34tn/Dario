@@ -25,6 +25,7 @@ export interface EngineDeps {
 }
 
 export interface SubmitRequest {
+  images?: Job['images'];
   task: string;
   /** 角色名或别名；不填则交给主控。 */
   role?: string;
@@ -133,6 +134,7 @@ export class Engine {
       status: 'queued',
       mode: role ? 'direct' : 'lead',
       task,
+      ...(req.images?.length && { images: req.images.map(image => ({ ...image })) }),
       role,
       projectRoot: project.root,
       strategy: this.deps.strategy,

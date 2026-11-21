@@ -15,7 +15,7 @@ export async function runFullUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
   const { engine, stdin, stdout, env } = opts;
   const color = !!stdout.isTTY && !env.NO_COLOR;
   const symbols = pickSymbols(env);
-  const session = new Session({ engine, color, continueLast: opts.continueLast });
+  const session = new Session({ engine, color, env, continueLast: opts.continueLast });
   let mouse: ((event: Mouse) => void) | undefined;
   const onMouse: NonNullable<FullAppProps['onMouse']> = listener => {
     mouse = listener;

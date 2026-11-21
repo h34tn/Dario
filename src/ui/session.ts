@@ -12,6 +12,7 @@ import type { CompletionContext } from './completion.js';
 import { colorizeDiff, readDiff } from './diff.js';
 import { EMPTY_FEED, markStopping, reduceFeed, shortRole, type FeedState, type StepView } from './feed.js';
 import { formatConclusion } from './markdown.js';
+import { readClipboardImage, type ClipboardImage } from './clipboard.js';
 import { paint } from './theme.js';
 
 type TextKind = 'banner' | 'input' | 'title' | 'notice' | 'error' | 'text';
@@ -61,6 +62,7 @@ export interface SessionSnapshot {
 }
 
 export interface SessionOptions {
+  env?: NodeJS.ProcessEnv;
   engine: Engine;
   color: boolean;
   senderId?: string;
@@ -70,7 +72,10 @@ export interface SessionOptions {
   readDiff?: typeof readDiff;
 }
 
-type Work = Extract<Command, { kind: 'task' }> | { kind: 'approve'; jobId: string };
+export const MAX_IMAGES = 10;
+export const IMAGE_LIMIT_NOTICE = `一次输入最多带 ${MAX_IMAGES} 张图片`;
+
+type Work = (Extract<Command, { kind: 'task' }> & { images?: Job['images'] }) | { kind: 'approve'; jobId: string };
 
 function resultCard(job: Job, color: boolean) {
   const tone = job.status === 'done' ? 'done' : job.status === 'awaiting_approval' ? 'warn' : 'fail';
@@ -92,6 +97,7 @@ export class Session {
   private snapshot: SessionSnapshot;
   private off?: () => void;
   private readonly queue: Work[] = [];
+  private readonly images = new Map<number, string>();
   private working = false;
   private readonly waiters = new Set<() => void>();
   private answer?: (approved: boolean) => void;
@@ -141,7 +147,28 @@ export class Session {
     this.append('error', error instanceof DarioError ? error.message : `出错：${error instanceof Error ? error.message : String(error)}`);
   }
 
+  notice = (text: string) => this.append('notice', text);
+
+  readImage(): Promise<ClipboardImage> {
+    return readClipboardImage(() => this.engine.state.newImagePath(), { env: this.opts.env });
+  }
+
+  registerImage(path: string): string {
+    const n = this.images.size + 1;
+    this.images.set(n, path);
+    return `[Image #${n}]`;
+  }
+
+  imagesIn(text: string): NonNullable<Job['images']> {
+    const numbers = new Set(Array.from(text.matchAll(/\[Image #([1-9]\d*)\]/g), match => Number(match[1])));
+    return [...numbers].flatMap(n => {
+      const path = this.images.get(n);
+      return path ? [{ n, path }] : [];
+    });
+  }
+
   async start() {
+    try { this.engine.state.cleanOldImages(); } catch { /* 清理失败仍可进入界面。 */ }
     this.append('banner', `Dario · ${this.snapshot.status.project}        输入任务直接交给主控，/ 开头是指令，/help 查看全部`);
     this.off = this.engine.onProgress(event => {
       if (event.jobId !== this.snapshot.runningJobId) return;
@@ -342,7 +369,7 @@ export class Session {
     const engine = this.engine;
     switch (cmd.kind) {
       case 'invalid': return this.append('error', cmd.message);
-      case 'help': return this.append('text', [HELP_TEXT, '/diff                  查看上一个任务的改动',
+      case 'help': return this.append('text', [HELP_TEXT, 'Alt+V                  粘贴剪贴板里的图片', '/diff                  查看上一个任务的改动',
         '/continue [任务号]     接上这个项目上一次的会话；给出任务号则从那个任务接着做',
         '/new                   清空会话上文，各角色的 AI 会话重新开始', '/plain                 切换到逐行交互', '/exit                  退出'].join('\n'));
       case 'roles': return this.append('text', formatRoles(await engine.rolesView(), engine.roles.fallback, engine.roles.modelLabel));
@@ -373,7 +400,11 @@ export class Session {
         else this.append('notice', '当前没有正在运行的任务。');
         return;
       case 'approve': return cmd.jobId ? this.enqueue({ kind: 'approve', jobId: cmd.jobId }) : this.append('error', '用法：/approve <任务号>');
-      case 'task': return this.enqueue(cmd);
+      case 'task': {
+        const images = this.imagesIn(cmd.text);
+        if (images.length > MAX_IMAGES) return this.notice(IMAGE_LIMIT_NOTICE);
+        return this.enqueue({ ...cmd, ...(images.length && { images }) });
+      }
       case 'pause':
       case 'resume': return this.append('notice', '这个指令只在常驻运行的渠道里有意义。');
     }
@@ -510,6 +541,7 @@ export class Session {
       done = await this.engine.approve(work.jobId, { confirmFallback: this.confirmFallback });
     } else {
       const job = this.engine.create({ task: work.text, role: work.role,
+        ...(work.images && { images: work.images }),
         ...(this.context && { context: this.context, contextJob: this.snapshot.contextJobId }),
         ...(this.roleSessions && { sessions: this.roleSessions }),
         origin: { channel: 'terminal', senderId: this.opts.senderId ?? os.userInfo().username } });

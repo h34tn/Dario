@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
   claudeQuotaReader,
   codexQuotaReader,
@@ -45,7 +46,8 @@ function claudeStyleArgs(req: InvokeRequest): string[] {
   // 可写方式默认全部放行（bypassPermissions）：任务要由角色自己做完，需要什么工具都能用；
   // 用户把权限设为按清单放行时用 acceptEdits，只有清单里的工具能用。
   const mode = req.access === 'read-only' ? 'dontAsk' : req.unrestricted ? 'bypassPermissions' : 'acceptEdits';
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', mode];
+  const directories = [...new Set(req.images?.map(image => path.dirname(image)))];
+  const args = ['-p', ...(directories.length ? ['--add-dir', ...directories] : []), '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', mode];
   // 续接只带回对话历史，权限与工具清单仍按这一次的参数生效
   // 只读时不加载任何 MCP 服务：用户或项目自己的设置里放行过的 MCP 工具（例如在编辑器里执行代码）
   // 不受下面两份清单约束，只读角色会借它动手干活。要用这些工具的工作应当分派给可写的角色。
@@ -125,6 +127,7 @@ export const codebuddyPlugin: AgentPlugin = defineAgent({
   streams: true,
   resumes: true,
   envPass: ['CODEBUDDY_*'],
+  imageTools: ['ViewImage'],
   defaultAllowedTools: { readOnly: READ_TOOLS, write: ['Read', 'Grep', 'Glob', ...EDIT_TOOLS, ...EXEC_TOOLS] },
   build: (req) => ({ args: claudeStyleArgs(req), stdin: req.prompt }),
   parse: (raw) => parseStreamJsonResult(raw.stdout),
@@ -173,6 +176,7 @@ export const codexPlugin: AgentPlugin = defineAgent({
     if (req.model) args.push('-m', req.model);
     args.push(...extraArgs(req, true));
     // 末尾的 - 表示任务说明从标准输入读取
+    for (const image of req.images ?? []) args.push('-i', image);
     args.push('-');
     return { args, stdin: req.prompt };
   },

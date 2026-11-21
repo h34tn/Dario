@@ -20,6 +20,7 @@ vi.mock('ink', async importOriginal => ({
 
 async function screen(columns = 100, rows = 30, wide = false, color = false) {
   const data = await setup();
+  const image = vi.spyOn(data.session, 'readImage').mockResolvedValue({ kind: 'none' });
   let frame = '';
   const stdout = Object.assign(new Writable({ write(chunk, _, done) {
     if (chunk.toString().includes('\n')) frame = chunk.toString();
@@ -44,7 +45,7 @@ async function screen(columns = 100, rows = 30, wide = false, color = false) {
   const contains = (text: string) => vi.waitFor(() => expect(frame).toContain(text));
   const key = async (value: string) => { stdin.write(value); await setImmediate(); };
   const wheel = (direction: Mouse) => listeners.forEach(fn => fn(direction));
-  return { ...data, mouse: wheel, copy, check, contains, key, wheel, stdout, props, view, onExit, symbols, lines: () => frame.split('\n') };
+  return { ...data, image, mouse: wheel, copy, check, contains, key, wheel, stdout, props, view, onExit, symbols, lines: () => frame.split('\n') };
 }
 
 it.each([[100, 30], [60, 20], [40, 12]])('%i 列 %i 行时历史贴顶，输入框上下有横线，状态栏固定在末行', async (columns, rows) => {
@@ -219,6 +220,8 @@ it.each([['y', true], ['n', false], ['\x1b', false], ['\x03', false]] as const)(
   await ui.contains('1. 实现  改文件  第一行');
   ui.mouse({ type: 'rightPress', col: 3, row: 27 });
   expect(ui.props.readClipboard).not.toHaveBeenCalled();
+  await ui.key('\x1bv');
+  expect(ui.image).not.toHaveBeenCalled();
   const decide = vi.spyOn(ui.session, 'decidePlan');
   await ui.key('字');
   await ui.key('d');
@@ -311,6 +314,8 @@ it.each([['y', true], ['n', false], ['\x1b', false]])('换人询问显示在历�
   await ui.check(lines => expect(lines.at(-2)).toBe('改用备选继续吗？  y 继续   n 停止任务'));
   ui.mouse({ type: 'rightPress', col: 1, row: 17 });
   expect(ui.props.readClipboard).not.toHaveBeenCalled();
+  await ui.key('\x1bv');
+  expect(ui.image).not.toHaveBeenCalled();
   // 询问期间输入框不接收文字
   await ui.key('x');
   await ui.check(lines => expect(lines.at(-4)).toBe('>'));
@@ -364,6 +369,8 @@ it('角色选择先显示已有名称，各家并发返回后刷新当前屏并�
   }));
   ui.session.submit('/model');
   await ui.contains('原名称');
+  await ui.key('\x1bv');
+  expect(ui.image).not.toHaveBeenCalled();
   expect(ui.engine.roles.listModels.mock.calls.flat()).toEqual(['claude', 'codex']);
   await ui.key('\x1b[B');
   finish();
@@ -551,7 +558,7 @@ it('右键仅在输入框和边线上读取，等待期间按最新光标插入�
   await ui.contains('已粘贴 3 个字符');
   expect(ui.lines().slice(15, 17)).toEqual(['> 前甲', '  👍🏽后']);
   click(17);
-  await ui.contains('剪贴板里没有文字');
+  await ui.contains('剪贴板里没有图片');
   read.mockResolvedValueOnce({ ok: false, reason: '测试原因' });
   click(18);
   await ui.contains('粘贴失败：测试原因');
@@ -575,4 +582,21 @@ it('增强键盘下方向键编辑，Alt 组合忽略，中文、粘贴、Esc �
   await ui.check(lines => expect(lines.at(-4)).toBe('>'));
   await ui.key('\x1b[99;5u');
   await ui.contains('再按一次 Ctrl+C');
+});
+
+it('右键缺文字时取图，等待中继续输入并移动光标，三种取图结果共用提示行', async () => {
+  const ui = await screen(100, 20);
+  let finish!: (image: Awaited<ReturnType<typeof ui.session.readImage>>) => void;
+  ui.image.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  ui.mouse({ type: 'rightPress', col: 3, row: 17 });
+  await ui.key('前后');
+  await ui.key('\x1b[D');
+  finish({ kind: 'image', width: 480, height: 200, path: '/图.png' });
+  await ui.contains('已粘贴图片 [Image #1]（480×200）');
+  expect(ui.lines()).toContain('> 前[Image #1]后');
+  ui.image.mockResolvedValueOnce({ kind: 'error', reason: '图片太大' });
+  await ui.key('\x1bv');
+  await ui.contains('粘贴图片失败：图片太大');
+  await ui.key('\x1bv');
+  await ui.contains('剪贴板里没有图片');
 });
