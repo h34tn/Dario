@@ -158,6 +158,15 @@ describe('鉴权与去重', () => {
     expect(rig.channel.texts()).toContain('慢慢看完了');
   });
 
+  it('成员可查询角色的型号；查询失败返回工具原因，写设置需要管理员权限', async () => {
+    rig.channel.send('/model 实现');
+    await rig.router.idle();
+    expect(rig.channel.texts()).toContain('没能取到型号清单：插件没有提供型号清单');
+    rig.channel.send('/model 实现 --reset');
+    await rig.router.idle();
+    expect(rig.channel.texts()).toContain('需要管理员权限');
+  });
+
   it('非管理员不能换人，管理员可以', async () => {
     rig.channel.send('/role coder a3');
     await rig.router.idle();

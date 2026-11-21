@@ -283,3 +283,57 @@ it.each([['y', true], ['n', false], ['\x1b', false]])('换人询问显示在历�
   expect(decision).toBe(expected);
   await ui.check(lines => expect(lines.join('\n')).not.toContain('改用备选'));
 });
+
+it('型号选择显示角色、读取提示、实时清单及查询失败原因', async () => {
+  const ui = await screen();
+  const roles = await ui.engine.rolesView();
+  ui.engine.rolesView.mockResolvedValue(roles.map(role => ({ ...role,
+    candidates: role.candidates.map(c => ({ ...c, model: '实际型号' })),
+  })));
+  ui.session.submit('/model');
+  await ui.contains('设置哪个角色？');
+  let finish!: () => void;
+  ui.engine.roles.listModels.mockImplementationOnce(() => new Promise(resolve => {
+    finish = () => resolve({ models: [{ id: '新型号', label: '测试标签', resolved: '实际型号' }] });
+  }));
+  await ui.key('\r');
+  await ui.contains('正在读取型号清单');
+  finish();
+  await ui.contains('测试标签  新型号  ● 当前');
+  expect(ui.lines().join('')).not.toContain('不在清单里');
+  await ui.key('\x1b');
+  await ui.contains('设置哪个角色？');
+  ui.engine.roles.listModels.mockResolvedValueOnce({ models: [{ id: '内置型号' }], error: '超时' });
+  await ui.key('\r');
+  await ui.contains('没能取到型号清单：超时');
+  expect(ui.lines().join('')).not.toContain('内置型号');
+});
+
+it('角色选择先显示已有名称，各家并发返回后刷新当前屏并保留光标', async () => {
+  const ui = await screen();
+  const roles = await ui.engine.rolesView();
+  ui.engine.rolesView.mockResolvedValue(roles.map(role => ({ ...role,
+    candidates: role.candidates.map(c => ({ ...c, model: 'base' })),
+  })));
+  let label = '原名称';
+  ui.engine.roles.modelLabel = (agent, model) => agent === 'codex' ? label : model;
+  let finish!: () => void;
+  ui.engine.roles.listModels.mockClear();
+  let fail!: () => void;
+  ui.engine.roles.listModels.mockImplementationOnce(() => new Promise((_, reject) => {
+    fail = () => reject(new Error('清单查询失败'));
+  }));
+  ui.engine.roles.listModels.mockImplementationOnce(() => new Promise(resolve => {
+    finish = () => { label = '新名称'; resolve({ models: [] }); };
+  }));
+  ui.session.submit('/model');
+  await ui.contains('原名称');
+  expect(ui.engine.roles.listModels.mock.calls.flat()).toEqual(['claude', 'codex']);
+  await ui.key('\x1b[B');
+  finish();
+  await ui.contains('新名称');
+  fail();
+  await setImmediate();
+  expect(ui.lines().join('')).not.toContain('清单查询失败');
+  expect(ui.session.getSnapshot().picker).toMatchObject({ step: 'roles', roleIndex: 1 });
+});

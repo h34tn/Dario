@@ -94,7 +94,11 @@ export class StepRunner {
       const keys = from.map((f) => `${f.agent}>${to}`);
       if (keys.every((k) => approved.includes(k))) return 'yes';
       if (!req.confirmFallback) return 'cannot';
-      const model = (id: string): string | undefined => catalog.get(id)?.model;
+      const settings = (id: string) => {
+        const { model, effort } = roles.modelFor(req.roleId, id);
+        const modelLabel = model && roles.modelLabel(id, model);
+        return { model, effort, ...(modelLabel !== model && { modelLabel }) };
+      };
       const asked = Date.now();
       let ok = false;
       try {
@@ -102,8 +106,8 @@ export class StepRunner {
           jobId: req.job.id,
           role: req.roleId,
           roleLabel,
-          from: from.map((f) => ({ agent: f.agent, model: model(f.agent), reason: f.reason })),
-          to: { agent: to, model: model(to) },
+          from: from.map(f => ({ ...f, ...settings(f.agent) })),
+          to: { agent: to, ...settings(to) },
         });
       } finally {
         waited += Date.now() - asked;
@@ -165,7 +169,9 @@ export class StepRunner {
         } catch {
           // 记录失败不影响执行
         }
+        const { model, effort } = roles.modelFor(req.roleId, agent);
         const out = await port.run({
+          model, effort,
           access,
           cwd: req.cwd,
           prompt,

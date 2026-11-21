@@ -2,7 +2,8 @@
  * 核心对外的两个接口：AI 目录与渠道。核心只依赖这里的类型，
  * 具体的适配器和渠道在核心之外实现并注入。
  */
-import type { Access, Activity, FailureKind, QuotaWindow, TokenUsage } from '../plugin.js';
+import type { Access, Activity, FailureKind, ModelChoice, QuotaWindow, TokenUsage } from '../plugin.js';
+import type { ModelSettings } from './config.js';
 
 export interface AgentDetect {
   installed: boolean;
@@ -10,7 +11,7 @@ export interface AgentDetect {
   path?: string;
 }
 
-export interface AgentRunRequest {
+export interface AgentRunRequest extends ModelSettings {
   access: Access;
   cwd: string;
   prompt: string;
@@ -46,6 +47,16 @@ export interface AgentRunResult {
   command?: string[];
 }
 
+export function findModel<T extends ModelChoice>(models: T[], model?: string): T | undefined {
+  if (!model) return undefined;
+  return models.find(m => m.id === model) ?? models.find(m => m.resolved === model);
+}
+
+export interface ModelList {
+  models: ModelChoice[];
+  error?: string;
+}
+
 export interface AgentPort {
   id: string;
   displayName: string;
@@ -55,6 +66,10 @@ export interface AgentPort {
   /** 是否支持续接会话。 */
   resumes: boolean;
   model?: string;
+  effort?: string;
+  roles?: Record<string, ModelSettings>;
+  efforts?: string[];
+  listModels(): Promise<ModelList>;
   /** 该 AI 自己的时限，优先于角色和项目的时限。 */
   timeoutMinutes?: number;
   detect(): Promise<AgentDetect>;

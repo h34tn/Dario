@@ -4,7 +4,8 @@ export { Engine, type AgentView, type EngineDeps, type HealthResult, type Submit
 export { ChannelRouter, type RouterOptions } from './core/router.js';
 export { parseCommand, type Command } from './core/commands.js';
 export { loadProjectConfig, loadUserConfig, resolveHome } from './core/config.js';
-export type { ProjectConfig, RoleDef, RolesConfig, UserConfig } from './core/config.js';
+export type { CandidateView, EffectiveModel, ModelTarget, RoleView } from './core/roles.js';
+export type { ModelSettings, ProjectConfig, RoleDef, RolesConfig, UserConfig } from './core/config.js';
 export type { AgentCatalog, AgentPort, ChannelPort, InboundMessage } from './core/ports.js';
 export { formatJob, formatRoles, jobToJson, redact, type JobJson } from './core/report.js';
 export { exitCodeForJob } from './core/types.js';

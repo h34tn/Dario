@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdout } from 'ink';
 import { stripVTControlCharacters } from 'node:util';
 import { useEffect, useMemo, useReducer, useState } from 'react';
+import { ModelPrompt } from './ModelPrompt.js';
 import { CommandMenu } from './CommandMenu.js';
 import { createLineCache, FALLBACK_HINT, fallbackLines, planLines, stepText, wrapAnsi } from './lines.js';
 import { useSessionEditor } from './ReplApp.js';
@@ -103,6 +104,8 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
   }
   if (small) return <Box flexDirection="column">{Array.from({ length: rows }, (_, i) =>
     row(i ? '' : fit('窗口太小，请放大窗口，或按 Ctrl+C 退出'), i))}</Box>;
+
+  if (snap.picker) return <ModelPrompt color={color} picker={snap.picker} onKey={key => void session.modelKey(key)} />;
 
   const rule = paint('dim', symbols.rule.repeat(limit), color);
   const hint = snap.ask ? FALLBACK_HINT : snap.plan ? '执行吗？  y 执行   n 取消   d 查看每一步的完整任务说明'

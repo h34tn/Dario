@@ -53,12 +53,31 @@ dario role 执行者 --reset        # 恢复
 某家 AI 达到限额、登录失效或过载时，Dario 默认自动换成候选里的下一家。想先被问一句再换，把项目 `.dario/roles.yaml` 最后一行改成 `fallback: ask`：
 
 ```
-! 主控的担当者 claude（claude-fable-5-2） 不可用（You've hit your limit · resets 6pm）。
-  改用备选 codex（gpt-6.2-astra） 继续这个任务吗？
+! 主控的担当者 claude（Fable 5.2[high]） 不可用（You've hit your limit · resets 6pm）。
+  改用备选 codex（GPT-6.2-Astra[medium]） 继续这个任务吗？
 改用备选继续吗？  y 继续   n 停止任务
 ```
 
 同一个任务里同一对换人只问一次。脚本里用 `--yes` 表示事先同意；既没法询问又没加 `--yes` 时不换人，任务停下并说明原因。
+
+### 给角色选型号和强度
+
+`/model` 只调整角色当前担当的 AI。换 AI 用 `/role`。在全屏或行内界面输入 `/model` 选角色，或用 `/model 执行者` 直接选型号。上下键选型号，左右键调强度，Enter 保存，Esc 返回。逐行交互和飞书会打印同样的设置，指定角色时列出工具当前提供的型号。
+
+```
+/model 执行者 high                # 只调强度
+/model 主控 opus high             # 写本机角色设置（主控由 Claude 担当时）
+/model 主控 opus high --save      # 写项目角色表建议
+/model 主控 opus high --default   # 写本机这家 AI 的默认值
+/model 主控 --reset               # 删除本机对这个角色、这家 AI 的设置
+dario model 主控 opus --effort high
+```
+
+界面用 `显示名[强度]` 展示当前设置，例如 `Fable 5.2[high]`。型号清单每行先显示名称，再列出标识，同名型号可按标识区分。选中哪一行，就把该行的标识原样写入配置并传给工具。手写的标识也可以匹配工具返回的实际型号，例如 `claude-fable-5-2` 可以匹配别名 `fable`。
+
+每次成功取得清单都会更新 `~/.dario/state/models.json` 中这家 AI 的显示名对照。全屏和行内界面启动时在后台分别查询角色表里用到的 AI。不带角色运行 `dario model` 或 `/model` 会并发查询当前担当者，每家只查一次。文本列表等查询结束后对齐各列；选择界面先显示已有名称，再随查询结果刷新。查看指定角色的清单、保存设置和执行 `dario check` 时也会刷新。查询失败会保留上次的对照；`dario roles`、`dario agents` 直接读取对照，缺少显示名时显示标识。
+
+型号与强度分别按本机角色设置 → 项目建议 → 本机 AI 默认 → 工具默认取值。在选择界面保存“默认”强度会删除本机角色层的强度，继承项目、AI 或工具的默认设置。指令里省略强度会保留同层已有值。保存型号或用 `dario role … --save` 保存候选首位时，只改配置中相应的条目，其他行保留原格式。清单外的型号不能通过指令保存，查询失败时仍可只改强度。任务运行期间保存的设置从下一步起生效。
 
 给脚本或其他 AI 调用：
 
@@ -115,11 +134,11 @@ dario input-test               # 检查中文输入法和粘贴在你的终端�
 | 项目的 `.dario/` | `roles.yaml` | 角色表，随仓库提交，团队共用 |
 | | `dispatch-rules.md` | 主控按什么规则分派 |
 | | `project.yaml` | 允许改动的目录、时限、返工轮数、开工前是否先拉取等 |
-| 本机的 `~/.dario/` | `agents.yaml` | 各家 AI 的命令路径、模型、放行的工具、要加载的插件 |
+| 本机的 `~/.dario/` | `agents.yaml` | 各家 AI 的命令路径、默认及按角色的型号与强度、放行的工具、要加载的插件 |
 | | `channels.yaml`、`access.yaml` | 渠道设置与名单 |
 | | `state/` | 任务记录、审计日志 |
 
-项目里的配置只能按名字引用 AI，不能写命令；命令只认本机配置。所以克隆别人的仓库再运行 Dario，不会执行对方指定的程序。
+项目配置按名字引用 AI，可以为角色建议型号和强度。命令与参数的拼法由插件和本机配置决定。所以克隆别人的仓库再运行 Dario，不会执行对方指定的程序。
 
 ### 各角色能用哪些工具
 
@@ -178,17 +197,35 @@ sync_before_task: pull     # off（默认）、pull、pull-autostash
 
 每个任务开始前 Dario 先 `git fetch`，本地落后时 `git pull --rebase`，结果在进度里说明。工作区有未提交的改动又落后于远端时：`pull` 不替你暂存，任务不开始并说明情况；`pull-autostash` 用 `--autostash` 自动暂存、拉取后放回。拉取出现冲突时任务不开始：本地提交与远端冲突会撤销这次拉取，放回暂存时冲突则把改动留在 `git stash` 里。连不上远端、当前分支没有远端分支时只提醒，在本地代码上继续。
 
-### 换模型、停用某家
+### 按角色设置型号和强度、停用某家
+
+本机的 `~/.dario/agents.yaml` 可以给同一家 AI 设置默认值，再单独调整某个角色：
 
 ```yaml
 agents:
   claude:
     model: sonnet
+    effort: high
+    roles:
+      reviewer: { effort: medium }  # 审核者单独选强度，型号继续按优先级取值
   codebuddy:
     enabled: false
   deepseek:            # 内置：CodeBuddy 插件 + DeepSeek 模型
     model: deepseek-v4.1-flash
 ```
+
+项目可以在 `.dario/roles.yaml` 为候选 AI 建议型号和强度：
+
+```yaml
+roles:
+  reviewer:
+    candidates: [claude, codex]
+    access: read-only
+    models:
+      claude: { model: opus, effort: xhigh }
+```
+
+两个示例一起使用时，审核者调用 Claude 会使用项目建议的 `opus` 和本机设置的 `medium`。型号和强度各自按「本机角色设置 → 角色表建议 → 本机 AI 默认值 → 工具默认值」取值。运行步骤和刷新界面时直接使用配置。执行 `dario check` 会向工具重新查询型号，列出清单外的型号、不支持的强度和可选档位。型号自己的档位优先，空档位表示该型号不支持设置强度。配置里已有的清单外型号执行时仍原样使用；工具没返回清单时，强度按插件档位核对。已有的 `extra_args` 强度参数在没有配置强度时继续生效。
 
 ## 接入新的 AI
 
@@ -236,7 +273,7 @@ export default {
   resumes: true,                    // 可选：支持续接会话
   envPass: ['MYTOOL_*'],
   build(req) {
-    // req: access, cwd, prompt, model, allowedTools, resultFile, options, resume
+    // req: access, cwd, prompt, model, effort, allowedTools, resultFile, options, resume
     const args = ['run', '--json', req.access === 'write' ? '--allow-write' : '--read-only'];
     // 续接时 req.resume 是上一次 parse 给出的会话号；读写权限仍按这一次的 req.access 给
     if (req.resume) args.push('--resume', req.resume);

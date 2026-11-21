@@ -1,3 +1,4 @@
+import { displayWidth } from './display-width.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Activity, QuotaWindow } from '../plugin.js';
@@ -89,8 +90,30 @@ export function clip(text: string, maxChars: number, fullFile: string): string {
   return `${text.slice(0, maxChars)}\n\n…（内容过长已截断，全文共 ${text.length} 字，保存在本机 ${fullFile}）`;
 }
 
-function agentName(a: { agent: string; model?: string }): string {
-  return a.model ? `${a.agent}（${a.model}）` : a.agent;
+export type ModelLabel = (agent: string, model: string) => string;
+
+export function formatModel(agent: string, model?: string, effort?: string, label?: ModelLabel): string {
+  return (model ? label?.(agent, model) ?? model : agent) + (effort ? `[${effort}]` : '');
+}
+
+export function formatModelTable(views: RoleView[], label?: ModelLabel, wide = false): string[] {
+  const sources = { local: '本机', project: '项目', default: '默认', tool: '工具默认' };
+  const rows = views.map(view => {
+    const name = view.alias[0] ?? view.id;
+    const c = view.candidates.find(c => c.agent === view.holder);
+    return c ? [name, c.agent, formatModel(c.agent, c.model, c.effort, label), sources[c.modelSource]]
+      : [name, '无可用 AI'];
+  });
+  const widths = [0, 0, 0];
+  for (const row of rows) {
+    row.slice(0, -1).forEach((cell, i) => { widths[i] = Math.max(widths[i]!, displayWidth(cell, wide)); });
+  }
+  return rows.map(row => row.map((cell, i) => i === row.length - 1 ? cell
+    : cell + ' '.repeat(widths[i]! - displayWidth(cell, wide) + 3)).join(''));
+}
+
+function agentName(a: { agent: string; model?: string; modelLabel?: string; effort?: string }, label?: ModelLabel): string {
+  return a.model || a.effort ? `${a.agent}（${formatModel(a.agent, a.modelLabel ?? a.model, a.effort, label)}）` : a.agent;
 }
 
 /** 换人之前问发起人的话：谁不可用、为什么、打算改用谁，都带上具体的模型。两行，第二行是问题本身。 */
@@ -211,14 +234,15 @@ const STATE_LABEL: Record<string, string> = {
   unavailable: '暂时不可用',
 };
 
-export function formatRoles(views: RoleView[], fallback: string): string {
+export function formatRoles(views: RoleView[], fallback: string, label?: ModelLabel): string {
   const lines: string[] = [];
   for (const v of views) {
     const name = v.alias[0] ? `${v.alias[0]}（${v.id}）` : v.id;
-    const holder = v.holder ?? '无可用 AI';
+    const current = v.candidates.find(c => c.agent === v.holder);
+    const holder = current ? agentName(current, label) : '无可用 AI';
     const pinned = v.override ? `，已临时指定 ${v.override}` : '';
     lines.push(`${name} · ${v.access === 'write' ? '可写' : '只读'} · 当前担当：${holder}${pinned}`);
-    lines.push(`  候选：${v.candidates.map((c) => `${c.agent}[${STATE_LABEL[c.state] ?? c.state}]`).join(' → ')}`);
+    lines.push(`  候选：${v.candidates.map((c) => `${agentName(c, label)}[${STATE_LABEL[c.state] ?? c.state}]`).join(' → ')}`);
   }
   lines.push('', `不可用时：${fallback === 'auto' ? '自动换下一家' : fallback === 'ask' ? '先询问，同意后换下一家' : '只报告，不自动换人'}`);
   return lines.join('\n');

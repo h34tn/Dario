@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { stringify } from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
 import { claudePlugin, codebuddyPlugin, codexPlugin } from '../src/agents/builtin.js';
-import { classify } from '../src/agents/handle.js';
+import { AgentHandle, classify } from '../src/agents/handle.js';
 import { pluginFromManifest } from '../src/agents/manifest.js';
 import { looksUnavailable, type InvokeRequest, type RawResult } from '../src/plugin.js';
 import { Sandbox } from './helpers.js';
@@ -40,6 +40,83 @@ const CODEX_STDOUT = [
 ].join('\n');
 
 describe('内置插件：命令行参数', () => {
+  for (const plugin of [claudePlugin, codebuddyPlugin, codexPlugin]) {
+    it(`${plugin.displayName} 仅在指定强度时替换旧参数，保留其他参数`, () => {
+      const flag = (effort: string) => plugin === codexPlugin ? ['-c', `model_reasoning_effort="${effort}"`] : ['--effort', effort];
+      const other = ['-c', 'unrelated=true'];
+      const old = [...flag('low'), ...other, ...flag('medium')];
+      const baseline = plugin.build(req()).args;
+      const insertion = plugin === codexPlugin ? baseline.length - 1 : baseline.indexOf('--allowedTools');
+      const expected = (extra: string[]) => [...baseline.slice(0, insertion), ...extra, ...baseline.slice(insertion)];
+      expect(plugin.build(req({ options: { extra_args: old } })).args).toEqual(expected(old));
+      expect(plugin.build(req({ effort: 'high', options: { extra_args: old } })).args).toEqual(expected([...other, ...flag('high')]));
+    });
+  }
+
+  it('型号查询解析可见的 Codex 型号、各自档位', () => {
+    const codex = codexPlugin.modelsQuery!;
+    expect(codex.args).toEqual(['debug', 'models']);
+    const model = { slug: 'gpt-6.2-astra', display_name: 'GPT-6.2-Astra', visibility: 'list',
+      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }] };
+    expect(codex.parse(JSON.stringify({ models: [model, { ...model, visibility: 'hide' }] }))).toEqual([
+      { id: model.slug, label: model.display_name, efforts: ['low', 'medium'] },
+    ]);
+    expect(codex.parse('{')).toEqual([]);
+  });
+
+  it('初始化回复保留 Claude 别名、解析后的型号和空档位，CodeBuddy 使用名称', () => {
+    const response = (models: unknown[]) => JSON.stringify({ type: 'control_response', response: {
+      subtype: 'success', request_id: 'dario-models', response: { commands: [], models, account: {} },
+    } });
+    const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'];
+    const claude = claudePlugin.modelsQuery!;
+    const buddy = codebuddyPlugin.modelsQuery!;
+    expect(claude.args).toEqual([...args, '--strict-mcp-config']);
+    expect(buddy.args).toEqual(args);
+    for (const plugin of [claudePlugin, codebuddyPlugin, codexPlugin]) expect(plugin.models).toBeUndefined();
+    for (const query of [claude, buddy]) {
+      expect(query.stdin).toBe('{"type":"control_request","request_id":"dario-models","request":{"subtype":"initialize"}}\n');
+    }
+    const sample = response([
+      { value: 'default', resolvedModel: 'claude-opus-5-5' },
+      { value: 'opus', resolvedModel: 'claude-opus-5-5', displayName: 'Opus 5.5', supportsEffort: true, supportedEffortLevels: ['low', 'max'] },
+      { value: 'claude-haiku-4-5-20251001', resolvedModel: 'claude-haiku-4-5-20251001', supportsThinkingOff: true },
+    ]);
+    expect(claude.parse(sample)).toEqual([
+      { id: 'opus', label: 'Opus 5.5', resolved: 'claude-opus-5-5', efforts: ['low', 'max'] },
+      { id: 'claude-haiku-4-5-20251001', efforts: [] },
+    ]);
+    expect(claude.parse('其他行\n' + sample)).toEqual([]);
+    expect(claude.parse('不是 JSON')).toEqual([]);
+    expect(buddy.parse(response([{ id: 'hy4std', name: 'Hy4' }, { id: 'glm-5.3', name: 'GLM-5.3' }]))).toEqual([
+      { id: 'hy4std', label: 'Hy4' }, { id: 'glm-5.3', label: 'GLM-5.3' },
+    ]);
+  });
+
+  it('并发查询共用一次命令，结束后重新执行，原样写入标准输入并报告失败原因', async () => {
+    const box = new Sandbox();
+    try {
+      box.setScenario({ models: [
+        { text: '[{"id":"first"}]' }, { text: '[{"id":"second"}]' }, { text: '[]' },
+        { text: '解析异常' }, { exit: 2 }, { hang: true },
+      ] });
+      const port = new AgentHandle('test', {
+        ...claudePlugin, models: [{ id: 'static' }], modelsQuery: {
+          args: [FAKE_AGENT, '--name', 'models', '--scenario', box.scenarioFile], stdin: '初始化\n', parse: JSON.parse,
+        },
+      }, { command: process.execPath }, { env: box.env(), envPass: [], startupTimeoutSeconds: 2 });
+      const first = { models: [{ id: 'first' }] };
+      expect(await Promise.all([port.listModels(), port.listModels()])).toEqual([first, first]);
+      expect(await port.listModels()).toEqual({ models: [{ id: 'second' }] });
+      for (const reason of [/没有返回型号清单/, /读取型号清单/, /退出码 2/, /命令超时/]) {
+        expect(await port.listModels()).toEqual({ models: [{ id: 'static' }], error: expect.stringMatching(reason) });
+      }
+      expect(box.calls().map(call => call.prompt)).toEqual(Array(6).fill('初始化\n'));
+    } finally {
+      box.cleanup();
+    }
+  }, 35000);
+
   it('Claude Code 只读：dontAsk，不加载 MCP，放行清单内的工具，并明确禁止编辑类工具', () => {
     const inv = claudePlugin.build(req({ model: 'sonnet' }));
     expect(inv.stdin).toBe('任务说明');

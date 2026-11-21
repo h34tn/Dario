@@ -1,8 +1,10 @@
+import type { RoleView } from '../core/roles.js';
+import { findModel, type ModelList } from '../core/ports.js';
 import os from 'node:os';
 import path from 'node:path';
-import { HELP_TEXT, parseCommand, type Command } from '../core/commands.js';
+import { HELP_TEXT, refreshHolderModels, runModel, parseCommand, type Command } from '../core/commands.js';
 import type { AgentView, Engine } from '../core/engine.js';
-import { formatJob, formatQuota, formatRoles, quotaPercent } from '../core/report.js';
+import { formatJob, formatQuota, formatModel, formatRoles, quotaPercent } from '../core/report.js';
 import { STATUS_LABEL, type FallbackQuestion, type Job, type Plan } from '../core/types.js';
 import type { SavedSession } from '../core/state.js';
 import { DarioError, ellipsis, formatLocalTime, nowIso } from '../core/util.js';
@@ -18,7 +20,30 @@ export type HistoryItem = { [K in TextKind]: { id: number; type: K; text: string
 
 export interface StatusView {
   project: string;
-  roles: Array<{ label: string; holder?: string; model?: string; quotaPercent?: number; degraded: boolean; priority: boolean }>;
+  roles: Array<{ label: string; holder?: string; model?: string; modelId?: string; effort?: string; quotaPercent?: number; degraded: boolean; priority: boolean }>;
+}
+
+interface RolePicker {
+  roles: RoleView[];
+  modelLabel: Engine['roles']['modelLabel'];
+  roleIndex: number;
+  direct: boolean;
+  message?: string;
+}
+export type ModelPicker = RolePicker & ({ step: 'roles' } | {
+  step: 'models';
+  loading: boolean;
+  saving?: boolean;
+  list: ModelList;
+  outside?: string;
+  modelIndex: number;
+  toolEfforts: string[];
+  effort?: string;
+});
+export type ModelKey = 'up' | 'down' | 'left' | 'right' | 'enter' | 'back';
+
+export function pickerEfforts(p: Extract<ModelPicker, { step: 'models' }>) {
+  return p.toolEfforts.length ? p.list.models[p.modelIndex]?.efforts ?? p.toolEfforts : [];
 }
 
 export interface SessionSnapshot {
@@ -26,6 +51,7 @@ export interface SessionSnapshot {
   feed: FeedState;
   runningJobId?: string;
   queued: number;
+  picker?: ModelPicker;
   plan?: Plan;
   /** 正在等发起人回答的换人询问。 */
   ask?: FallbackQuestion;
@@ -81,6 +107,8 @@ export class Session {
   /** 探测期间到达的额度事件优先于本次探测的快照。 */
   private pendingQuotas?: Map<string, NonNullable<AgentView['quota']>>;
   private resetTimer?: NodeJS.Timeout;
+  private pickerVersion = 0;
+  private disposed = false;
   private statusVersion = 0;
   private files: string[] = [];
   private completion: CompletionContext = { roles: [], agents: [] };
@@ -143,7 +171,7 @@ export class Session {
     if (saved && this.opts.continueLast) this.restore(saved);
     else if (saved) this.append('notice', `上一次会话停在 ${saved.jobId}（${formatLocalTime(saved.savedAt)}）：${ellipsis(saved.task, 50)}。输入 /continue 接着做。`);
     else if (this.opts.continueLast) this.append('notice', '这个项目没有可以接着做的会话，从头开始。');
-    await this.refreshStatus();
+    await this.refreshStatus(true);
   }
 
   /** 存档读写失败不影响干活：读不到当作没有，写不了就不存。 */
@@ -179,7 +207,7 @@ export class Session {
     } catch { return undefined; }
   }
 
-  private async refreshStatus() {
+  private async refreshStatus(loadModels = false) {
     const version = ++this.statusVersion;
     const pending = this.pendingQuotas = new Map<string, NonNullable<AgentView['quota']>>();
     try {
@@ -193,13 +221,32 @@ export class Session {
       const roles = views.map(view => {
         const first = view.candidates[0];
         const holder = this.actual.get(view.id) ?? view.holder;
-        return { label: shortRole(this.roleLabel(view.id)), holder, model: holder ? agents?.get(holder)?.model : undefined,
+        const choice = view.candidates.find(c => c.agent === holder);
+        const model = holder && choice && (choice.model || choice.effort) ? formatModel(holder, choice.model, choice.effort, this.engine.roles.modelLabel) : undefined;
+        return { label: shortRole(this.roleLabel(view.id)), holder, model, modelId: choice?.model, effort: choice?.effort,
           degraded: first?.state !== 'ok' || holder !== first.agent, priority: priorityIds.has(view.id) };
       });
       this.completion = { ...this.completion, roles: views.map(({ id, alias }) => ({ id, alias })) };
       this.updateStatusQuotas(roles);
+      if (loadModels) {
+        const candidates = new Set(views.flatMap(v => v.candidates.map(c => c.agent)));
+        for (const agent of candidates) {
+          void this.engine.roles.listModels(agent).then(list => {
+            if (!list.error) this.refreshModelLabels(agent);
+          }).catch(() => { /* 后台查询失败时保留原来的显示名。 */ });
+        }
+      }
     } catch { /* 探测失败时保留上次的状态。 */ }
     finally { if (version === this.statusVersion) this.pendingQuotas = undefined; }
+  }
+
+  private refreshModelLabels(agent: string) {
+    if (this.disposed) return;
+    const status = this.snapshot.status;
+    const roles = status.roles.map(role => role.holder === agent && role.modelId
+      ? { ...role, model: formatModel(agent, role.modelId, role.effort, this.engine.roles.modelLabel) }
+      : role);
+    this.update({ status: { ...status, roles } });
   }
 
   private updateStatusQuotas(roles: StatusView['roles']) {
@@ -223,6 +270,7 @@ export class Session {
   }
 
   dispose() {
+    this.disposed = true;
     this.off?.();
     this.statusVersion++;
     clearTimeout(this.resetTimer);
@@ -259,13 +307,17 @@ export class Session {
       case 'help': return this.append('text', [HELP_TEXT, '/diff                  查看上一个任务的改动',
         '/continue              接上这个项目上一次的会话（退出前做到哪，接着做）',
         '/new                   清空会话上文，各角色的 AI 会话重新开始', '/plain                 切换到逐行交互', '/exit                  退出'].join('\n'));
-      case 'roles': return this.append('text', formatRoles(await engine.rolesView(), engine.roles.fallback));
+      case 'roles': return this.append('text', formatRoles(await engine.rolesView(), engine.roles.fallback, engine.roles.modelLabel));
       case 'agents':
         for (const a of await engine.agentsView()) {
           const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : a.unavailable ? `暂时不可用（${a.unavailable}）` : '可用';
-          this.append('text', `${a.id}${a.model ? `（${a.model}）` : ''}：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
+          this.append('text', `${a.id}${a.model || a.effort ? `（${formatModel(a.id, a.model, a.effort, engine.roles.modelLabel)}）` : ''}：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
         }
         return;
+      case 'model':
+        if (!cmd.value && !cmd.effort && !cmd.reset) return this.openModels(cmd.role);
+        this.append('text', await runModel(engine, cmd));
+        return this.refreshStatus();
       case 'role':
         this.append('text', cmd.reset ? engine.resetRole(cmd.role) : engine.setRole(cmd.role, cmd.agent!, cmd.save));
         return this.refreshStatus();
@@ -286,6 +338,94 @@ export class Session {
       case 'task': return this.enqueue(cmd);
       case 'pause':
       case 'resume': return this.append('notice', '这个指令只在常驻运行的渠道里有意义。');
+    }
+  }
+
+  private async openModels(name?: string) {
+    if (this.snapshot.plan || this.snapshot.ask) return;
+    const version = ++this.pickerVersion;
+    const roles = await this.engine.rolesView();
+    if (version !== this.pickerVersion) return;
+    const id = name && this.engine.roles.resolve(name);
+    const roleIndex = name ? roles.findIndex(r => r.id === id) : 0;
+    if (roleIndex < 0) return this.append('error', `没有这个角色：${name}`);
+    const picker: ModelPicker = { step: 'roles', roles, roleIndex, modelLabel: this.engine.roles.modelLabel, direct: !!name };
+    this.update({ picker });
+    if (name) await this.selectModelRole(picker);
+    else void refreshHolderModels(this.engine, roles, agent => {
+      if (!this.disposed && version === this.pickerVersion) this.refreshModelLabels(agent);
+    });
+  }
+
+  private async selectModelRole(p: RolePicker) {
+    const role = p.roles[p.roleIndex];
+    const current = role?.candidates.find(c => c.agent === role.holder);
+    if (!current || !role) {
+      const why = role?.candidates.map(c => c.note).filter(Boolean).join('、');
+      const message = '角色目前没有可用的 AI' + (why ? '：' + why : '。');
+      if (p.direct) this.append('error', message);
+      this.update({ picker: p.direct ? undefined : { ...p, step: 'roles', message } });
+      return;
+    }
+    const loading: ModelPicker = { ...p, message: undefined, step: 'models', loading: true, list: { models: [] },
+      modelIndex: 0, toolEfforts: this.engine.roles.efforts(current.agent) };
+    this.update({ picker: loading });
+    const list = await this.engine.roles.listModels(current.agent).catch(error => ({ models: [], error: String(error) }));
+    if (!list.error) this.refreshModelLabels(current.agent);
+    if (this.snapshot.picker !== loading) return;
+    const models = list.error ? [] : [...list.models];
+    const match = findModel(models, current.model);
+    const outside = match ? undefined : current.model;
+    if (outside) {
+      const label = this.engine.roles.modelLabel(current.agent, outside);
+      models.unshift({ id: outside, ...(label !== outside && { label }) });
+    }
+    const picker = { ...loading, loading: false, list: { ...list, models }, outside,
+      modelIndex: match ? models.indexOf(match) : 0 };
+    this.update({ picker: { ...picker, effort: pickerEfforts(picker).includes(current.effort ?? '') ? current.effort : undefined } });
+  }
+
+  async modelKey(key: ModelKey) {
+    const p = this.snapshot.picker;
+    if (!p || (p.step === 'models' && p.saving)) return;
+    if (key === 'back') {
+      this.update({ picker: p.step === 'models' && !p.direct
+        ? { step: 'roles', roles: p.roles, modelLabel: p.modelLabel, roleIndex: p.roleIndex, direct: false } : undefined });
+      return;
+    }
+    const delta = key === 'up' || key === 'left' ? -1 : 1;
+    if (p.step === 'roles') {
+      if (key === 'enter') return this.selectModelRole(p);
+      if (key === 'up' || key === 'down') this.update({ picker: { ...p, message: undefined,
+        roleIndex: Math.max(0, Math.min(p.roles.length - 1, p.roleIndex + delta)) } });
+      return;
+    }
+    if (p.loading) return;
+    if (key === 'up' || key === 'down') {
+      const next = { ...p, message: undefined, modelIndex: Math.max(0, Math.min(p.list.models.length - 1, p.modelIndex + delta)) };
+      if (!pickerEfforts(next).includes(next.effort ?? '')) next.effort = undefined;
+      this.update({ picker: next });
+    } else if (key === 'left' || key === 'right') {
+      const choices = [undefined, ...pickerEfforts(p)];
+      this.update({ picker: { ...p, message: undefined, effort: choices[(choices.indexOf(p.effort) + delta + choices.length) % choices.length] } });
+    } else if (key === 'enter') {
+      const model = p.list.models[p.modelIndex]?.id;
+      const settings = { ...(model && model !== p.outside && { model }), effort: p.effort ?? null };
+      if (!model && !p.toolEfforts.length && !settings.effort) {
+        this.update({ picker: { ...p, message: '没有可保存的型号或强度。' } });
+        return;
+      }
+      const saving = { ...p, saving: true };
+      this.update({ picker: saving });
+      try {
+        const message = await this.engine.setModel(p.roles[p.roleIndex]!.id, settings, 'local');
+        if (this.snapshot.picker === saving) this.update({ picker: undefined });
+        this.append('text', message);
+        await this.refreshStatus();
+      } catch (error) {
+        if (this.snapshot.picker === saving) this.update({ picker: { ...p, message: error instanceof Error ? error.message : String(error) } });
+        else this.error(error);
+      }
     }
   }
 
@@ -342,7 +482,8 @@ export class Session {
         if (!record.plan || this.snapshot.feed.stopping) return Promise.resolve(false);
         return new Promise(resolve => {
           this.answer = resolve;
-          this.update({ plan: record.plan });
+          this.pickerVersion++;
+          this.update({ plan: record.plan, picker: undefined });
         });
       } });
     }
@@ -368,7 +509,8 @@ export class Session {
     if (this.snapshot.feed.stopping) return Promise.resolve(false);
     return new Promise(resolve => {
       this.answerFallback = resolve;
-      this.update({ ask: question });
+      this.pickerVersion++;
+      this.update({ ask: question, picker: undefined });
     });
   };
 

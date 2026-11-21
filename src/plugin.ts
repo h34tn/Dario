@@ -65,6 +65,7 @@ export interface InvokeRequest {
   /** 完整的任务说明。 */
   prompt: string;
   model?: string;
+  effort?: string;
   /** 本次放行的工具清单；不支持该概念的工具忽略即可。 */
   allowedTools: string[];
   /**
@@ -115,7 +116,18 @@ export interface AgentOutput {
 
 export type Classification = { outcome: 'ok' } | { outcome: FailureKind; reason: string };
 
+export interface ModelChoice {
+  id: string;
+  resolved?: string;
+  label?: string;
+  efforts?: string[];
+}
+
 export interface AgentPlugin {
+  /** 支持的强度，从低到高。型号可以另给自己的档位。 */
+  efforts?: string[];
+  models?: ModelChoice[];
+  modelsQuery?: { args: string[]; stdin?: string; parse(stdout: string): ModelChoice[] };
   apiVersion: typeof PLUGIN_API_VERSION;
   /** 插件标识，小写字母、数字、连字符。 */
   id: string;

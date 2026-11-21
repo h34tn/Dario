@@ -28,6 +28,18 @@ async function screen(rows?: RoleRow[], color = false) {
   return { ...data, props, view, contains, absent, key: (key: string) => view.stdin.write(key) };
 }
 
+it('行内选择界面接收方向键和回车，保存后回到输入框', async () => {
+  const ui = await screen();
+  ui.session.submit('/model 实现');
+  await ui.contains('选择模型');
+  await ui.contains('常规');
+  ui.key('\x1b[C');
+  await ui.contains('[low]');
+  ui.key('\r');
+  await ui.contains('Esc 中断当前任务');
+  expect(ui.engine.setModel).toHaveBeenCalledWith('coder', { model: '常规', effort: 'low' }, 'local');
+});
+
 it('收起后保留历史和输入草稿，恢复时显示原有内容', async () => {
   const { props, view, key, contains, session } = await screen();
   key('草稿');

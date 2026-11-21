@@ -5,7 +5,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 describe('状态栏：换人之后显示实际上场的 AI', () => {
   it('任务运行中换了人，状态栏立即跟着变；任务结束后回到角色表的担当者', async () => {
-    const { session, snap, emit, hold } = await setup(undefined, undefined, [{ id: 'claude', model: 'claude-x' }, { id: 'codex', model: 'gpt-x' }]);
+    const { session, snap, emit, hold } = await setup(undefined, undefined, [{ id: 'claude', model: 'claude-x' }, { id: 'codex', model: 'gpt-x', effort: 'high' }]);
     const lead = () => snap().status.roles.find(r => r.label === '主控')!;
     expect(lead()).toMatchObject({ holder: 'claude', model: 'claude-x', degraded: false });
 
@@ -20,7 +20,7 @@ describe('状态栏：换人之后显示实际上场的 AI', () => {
     // claude 不可用，换成 codex：这一步由 codex 重新开始
     emit({ jobId: 'J0001', kind: 'fallback', step: { ...step, agent: 'codex' }, text: '计划：交给 codex' });
     await tick();
-    expect(lead()).toMatchObject({ holder: 'codex', model: 'gpt-x', degraded: true });
+    expect(lead()).toMatchObject({ holder: 'codex', model: 'gpt-x[high]', degraded: true });
 
     finish();
     await session.whenIdle();
@@ -81,4 +81,17 @@ it('停留在界面时主窗口重置后不再显示数字', async () => {
     expect(engine.agentsView).toHaveBeenCalledTimes(1);
     session.dispose();
   } finally { vi.useRealTimers(); }
+});
+
+it('同一家 AI 担当两个角色时，状态栏分别使用候选在该角色下的型号与强度', async () => {
+  const { engine, session, snap } = await setup(undefined, undefined, [{ id: 'codex', model: '工具默认型号' }]);
+  const views = await engine.rolesView();
+  engine.rolesView.mockResolvedValue(views.map(role => ({
+    ...role, candidates: role.candidates.map(c => c.agent === 'codex' ? {
+      ...c, model: role.id === 'coder' ? '执行型号' : '测试型号', effort: role.id === 'coder' ? 'high' : 'low',
+    } : c),
+  })));
+  session.submit('/health');
+  await vi.waitFor(() => expect(snap().status.roles.filter(r => r.holder === 'codex').map(r => r.model))
+    .toEqual(['执行型号[high]', '测试型号[low]']));
 });

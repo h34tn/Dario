@@ -1,9 +1,9 @@
 import path from 'node:path';
-import { HELP_TEXT, parseCommand, requiresAdmin, type Command } from './commands.js';
+import { HELP_TEXT, runModel, parseCommand, requiresAdmin, type Command } from './commands.js';
 import type { AccessEntry } from './config.js';
 import type { Engine } from './engine.js';
 import type { ChannelPort, InboundMessage } from './ports.js';
-import { clip, formatJob, formatRoles, redact } from './report.js';
+import { clip, formatModel, formatJob, formatRoles, redact } from './report.js';
 import { ACTIVE_STATUSES, STATUS_LABEL, type Job, type ProgressEvent } from './types.js';
 import { DarioError, ellipsis, shortHash, sleep, truncate } from './util.js';
 
@@ -179,12 +179,12 @@ export class ChannelRouter {
         this.reply(m, HELP_TEXT);
         return;
       case 'roles':
-        this.reply(m, formatRoles(await this.engine.rolesView(), this.engine.roles.fallback));
+        this.reply(m, formatRoles(await this.engine.rolesView(), this.engine.roles.fallback, this.engine.roles.modelLabel));
         return;
       case 'agents': {
         const lines = (await this.engine.agentsView()).map((a) => {
           const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : a.unavailable ? `暂时不可用（${a.unavailable}）` : '可用';
-          return `${a.id}${a.model ? `（${a.model}）` : ''}：${st}`;
+          return `${a.id}${a.model || a.effort ? `（${formatModel(a.id, a.model, a.effort, this.engine.roles.modelLabel)}）` : ''}：${st}`;
         });
         this.reply(m, lines.join('\n'));
         return;
@@ -196,6 +196,9 @@ export class ChannelRouter {
       case 'resume':
         this.paused = false;
         this.reply(m, '已恢复接收新任务。');
+        return;
+      case 'model':
+        this.reply(m, await runModel(this.engine, cmd));
         return;
       case 'role':
         this.reply(m, cmd.reset ? this.engine.resetRole(cmd.role) : this.engine.setRole(cmd.role, cmd.agent!, cmd.save));

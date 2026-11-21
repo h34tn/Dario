@@ -1,9 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import type { QuotaWindow } from '../plugin.js';
+import type { ModelChoice, QuotaWindow } from '../plugin.js';
+import { findModel } from './ports.js';
 import type { Job, RoleSession } from './types.js';
 import { normPath, nowIso, readJson, shortHash, withLock, writeJsonAtomic } from './util.js';
+
+type ModelName = Pick<ModelChoice, 'id' | 'label' | 'resolved'>;
 
 interface SavedQuota {
   observedAt: string;
@@ -178,6 +181,21 @@ export class StateStore {
         delete all[agent];
         writeJsonAtomic(this.healthFile(), all);
       }
+    });
+  }
+
+  private modelNames() {
+    return readJson<Record<string, { observedAt: string; models: ModelName[] }>>(this.file('models.json'), {});
+  }
+
+  modelLabel(agent: string, model: string): string {
+    return findModel(this.modelNames()[agent]?.models ?? [], model)?.label || model;
+  }
+
+  saveModels(agent: string, choices: ModelChoice[]): void {
+    const models = choices.map(({ id, label, resolved }) => ({ id, label, resolved }));
+    this.lock('models', () => {
+      writeJsonAtomic(this.file('models.json'), { ...this.modelNames(), [agent]: { observedAt: nowIso(), models } });
     });
   }
 

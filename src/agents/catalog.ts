@@ -84,7 +84,13 @@ export async function buildCatalog(user: UserConfig, env: NodeJS.ProcessEnv = pr
     if (!plugin) {
       throw new ConfigError(`agents.yaml 里的 ${id} 使用了不存在的插件 ${pluginId}。可用插件：${[...plugins.keys()].join('、')}`);
     }
-    handles.set(id, new AgentHandle(id, plugin, cfg, settings));
+    // 型号设置可在运行期间写回；担当者从同一份本机配置取最新值。
+    handles.set(id, new AgentHandle(id, plugin, {
+      ...cfg,
+      get model() { return user.agents[id]?.model ?? BUILTIN_AGENTS[id]?.model; },
+      get effort() { return user.agents[id]?.effort; },
+      get roles() { return user.agents[id]?.roles; },
+    }, settings));
   }
 
   return {

@@ -2,6 +2,7 @@ import { GlyphContext, useScreen } from './screen.js';
 import { clip } from './text.js';
 import { Box, Static, Text, useInput } from 'ink';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { ModelPrompt } from './ModelPrompt.js';
 import { CommandMenu } from './CommandMenu.js';
 import { suggest } from './completion.js';
 import { editorReduce, editorSetValue, EMPTY_EDITOR, type EditorState } from './editor.js';
@@ -84,7 +85,7 @@ export function useSessionEditor({ session, onExit, suspended }: Pick<Props, 'se
       else if (armed.current) session.requestExit('exit');
       else arm(true);
     }
-  }, { isActive: !suspended && !snap.plan && !snap.ask });
+  }, { isActive: !suspended && !snap.picker && !snap.plan && !snap.ask });
   const warningText = warning ? '再按一次 Ctrl+C 退出' + (snap.runningJobId ? '（正在运行的任务会被取消）' : '') : '';
   return { snap, editor, current, change, now, warningText, suggestions: suggest(editor.value, session.completionContext()) };
 }
@@ -103,7 +104,8 @@ function Screen({ session, symbols, color, onExit, suspended }: Props) {
 
   return <Box flexDirection="column">
     <Static items={snap.history}>{item => <Entry key={item.id} {...{ item, color, symbols }} />}</Static>
-    {!suspended && (snap.plan || snap.ask || rows >= minRows) && <>
+    {!suspended && snap.picker && <ModelPrompt color={color} picker={snap.picker} onKey={key => void session.modelKey(key)} />}
+    {!suspended && !snap.picker && (snap.plan || snap.ask || rows >= minRows) && <>
       <CurrentStep feed={snap.feed} {...{ activityLines, now, color, symbols }} truncate />
       {snap.plan && <PlanPrompt key={snap.runningJobId} plan={snap.plan} roleLabel={session.roleLabel} color={color}
         onDecide={approved => session.decidePlan(approved)} />}

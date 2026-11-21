@@ -14,7 +14,8 @@ import {
   DEFAULT_ROLES_YAML,
 } from '../core/defaults.js';
 import { describePlan } from '../core/orchestrator.js';
-import { formatFallbackQuestion, formatJob, formatQuota, formatRoles, formatSteps, jobToJson } from '../core/report.js';
+import { parseModel, runModel } from '../core/commands.js';
+import { formatModel, formatFallbackQuestion, formatJob, formatQuota, formatRoles, formatSteps, jobToJson } from '../core/report.js';
 import type { Engine } from '../core/engine.js';
 import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job, type ProgressEvent } from '../core/types.js';
 import { ConfigError, DarioError, ellipsis, formatLocalTime } from '../core/util.js';
@@ -51,6 +52,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
   dario roles                      查看角色表
   dario role <角色> <AI> [--save]  临时指定担当者；--save 同时写回项目角色表
   dario role <角色> --reset        取消临时指定
+  dario model [角色] [型号] [强度]  交互指令 /model；可用 --effort <档位>、--save、--default、--reset
   dario agents                     列出各家 AI
   dario health [AI]                实际调用一次，确认可用（会消耗额度）
   dario jobs                       最近的任务
@@ -77,7 +79,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
 
 退出码：0 完成 · 1 任务失败 · 2 用法或配置错误 · 3 没有可用的 AI · 4 计划等待确认 · 5 取消或超时`;
 
-const SUBCOMMANDS = new Set(['roles', 'role', 'agents', 'health', 'jobs', 'job', 'approve', 'cancel', 'init', 'check', 'serve', 'input-test', 'help']);
+const SUBCOMMANDS = new Set(['roles', 'role', 'model', 'agents', 'health', 'jobs', 'job', 'approve', 'cancel', 'init', 'check', 'serve', 'input-test', 'help']);
 
 interface Parsed {
   plain: boolean;
@@ -89,6 +91,8 @@ interface Parsed {
   print: boolean;
   format: 'text' | 'json';
   yes: boolean;
+  modelFlags: string[];
+  effort?: string;
   save: boolean;
   reset: boolean;
   project?: string;
@@ -97,7 +101,7 @@ interface Parsed {
 }
 
 function parseArgs(argv: string[]): Parsed {
-  const p: Parsed = { positionals: [], plain: false, inline: false, print: false, verbose: false, format: 'text', yes: false, save: false, reset: false, help: false, version: false };
+  const p: Parsed = { positionals: [], modelFlags: [], plain: false, inline: false, print: false, verbose: false, format: 'text', yes: false, save: false, reset: false, help: false, version: false };
   const need = (i: number, flag: string): string => {
     const v = argv[i];
     if (v === undefined) throw new ConfigError(`${flag} 后面缺少取值。`);
@@ -121,8 +125,14 @@ function parseArgs(argv: string[]): Parsed {
       if (v !== 'text' && v !== 'json') throw new ConfigError('--output-format 只能是 text 或 json。');
       p.format = v;
     } else if (a === '-y' || a === '--yes') p.yes = true;
-    else if (a === '--save') p.save = true;
-    else if (a === '--reset') p.reset = true;
+    else if (a === '--save') { p.save = true; p.modelFlags.push(a); }
+    else if (a === '--reset') { p.reset = true; p.modelFlags.push(a); }
+    else if (a === '--default') p.modelFlags.push(a);
+    else if (a === '--effort') {
+      if (p.effort !== undefined) throw new ConfigError('--effort 只能指定一次。');
+      p.effort = need(++i, a);
+      if (!p.effort || p.effort.startsWith('-')) throw new ConfigError('--effort 后面缺少档位。');
+    }
     else if (a === '--project') p.project = need(++i, '--project');
     else if (a === '-h' || a === '--help') p.help = true;
     else if (a === '-v' || a === '--version') p.version = true;
@@ -167,9 +177,10 @@ async function cmdCheck(io: CliIO, p: Parsed): Promise<number> {
 
   io.stdout('\nAI：');
   const agents = await engine.agentsView();
+  const modelProblems = await engine.roles.modelProblems();
   for (const a of agents) {
     const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : '已安装';
-    io.stdout(`  ${a.id}（插件 ${a.plugin}${a.model ? `，模型 ${a.model}` : ''}）：${st}${a.version ? ` · ${a.version}` : ''}${a.path ? ` · ${a.path}` : ''}`);
+    io.stdout(`  ${a.id}（插件 ${a.plugin}${a.model || a.effort ? `，模型 ${formatModel(a.id, a.model, a.effort, engine.roles.modelLabel)}` : ''}）：${st}${a.version ? ` · ${a.version}` : ''}${a.path ? ` · ${a.path}` : ''}`);
   }
 
   const known = new Set(agents.map((a) => a.id));
@@ -178,10 +189,11 @@ async function cmdCheck(io: CliIO, p: Parsed): Promise<number> {
     for (const c of v.candidates) if (!known.has(c.agent)) problems.push(`角色 ${v.id} 的候选 ${c.agent} 在本机没有配置`);
     if (!v.holder) problems.push(`角色 ${v.id} 目前没有可用的 AI`);
   }
+  problems.push(...modelProblems);
   const s = project.settings;
   if (!engine.roles.has(s.leadRole)) problems.push(`项目设置的主控角色 ${s.leadRole} 不在角色表中`);
   if (!engine.roles.has(s.reviewRole)) problems.push(`项目设置的审查角色 ${s.reviewRole} 不在角色表中（改了文件的任务将不会自动审查）`);
-  io.stdout(`\n角色表：\n${formatRoles(views, engine.roles.fallback)}`);
+  io.stdout(`\n角色表：\n${formatRoles(views, engine.roles.fallback, engine.roles.modelLabel)}`);
 
   const feishu = user.channels.feishu;
   if (feishu?.enabled) {
@@ -370,6 +382,7 @@ async function dispatch(argv: string[], io: CliIO): Promise<number> {
   }
   const first = p.positionals[0];
   const sub = first && SUBCOMMANDS.has(first) && !p.to && !p.print ? first : undefined;
+  if (sub !== 'model' && (p.effort || p.modelFlags.includes('--default'))) throw new ConfigError('--effort 和 --default 只用于 dario model。');
   if (p.help || sub === 'help') {
     io.stdout(USAGE);
     return 0;
@@ -392,8 +405,14 @@ async function dispatch(argv: string[], io: CliIO): Promise<number> {
   const { engine } = await createApp({ cwd: io.cwd, env: io.env, projectRoot: p.project });
   switch (sub) {
     case 'roles':
-      io.stdout(formatRoles(await engine.rolesView(), engine.roles.fallback));
+      io.stdout(formatRoles(await engine.rolesView(), engine.roles.fallback, engine.roles.modelLabel));
       return 0;
+    case 'model': {
+      const cmd = parseModel([...args, ...p.modelFlags], p.effort);
+      if (cmd.kind === 'invalid') throw new ConfigError(cmd.message.replaceAll('/model', 'dario model'));
+      io.stdout(await runModel(engine, cmd));
+      return 0;
+    }
     case 'role': {
       const [role, agent] = args;
       if (!role) throw new ConfigError('用法：dario role <角色> <AI> [--save]，或 dario role <角色> --reset');
@@ -408,7 +427,7 @@ async function dispatch(argv: string[], io: CliIO): Promise<number> {
     case 'agents': {
       for (const a of await engine.agentsView()) {
         const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : a.unavailable ? `暂时不可用（${a.unavailable}）` : '可用';
-        io.stdout(`${a.id}（插件 ${a.plugin}${a.model ? `，模型 ${a.model}` : ''}）：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
+        io.stdout(`${a.id}（插件 ${a.plugin}${a.model || a.effort ? `，模型 ${formatModel(a.id, a.model, a.effort, engine.roles.modelLabel)}` : ''}）：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
       }
       return 0;
     }

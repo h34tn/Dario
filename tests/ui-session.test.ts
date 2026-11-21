@@ -208,7 +208,7 @@ it('状态栏按角色表顺序列出全部担当者，标记优先保留的角�
   expect(snap().status).toBe(status);
 });
 
-it('首屏按担当者匹配型号，临时换人后更新，读取 AI 信息失败时回退到名字', async () => {
+it('首屏按担当者匹配型号，临时换人后更新，额度探测失败仍保留角色型号', async () => {
   const { session, snap, engine } = await setup({}, DEFAULT_ROWS, [
     { id: 'claude', model: 'claude-fable-5-2' }, { id: 'codex' }, { id: '另一家', model: '另一型号' },
   ]);
@@ -218,9 +218,11 @@ it('首屏按担当者匹配型号，临时换人后更新，读取 AI 信息失
   session.submit('/role coder 另一家');
   await vi.waitFor(() => expect(snap().status.roles[1]).toMatchObject({ holder: '另一家', model: '另一型号' }));
 
+  const previous = snap().status;
   engine.agentsView.mockRejectedValueOnce(new Error('无法读取 AI'));
   session.submit('/health');
-  await vi.waitFor(() => expect(snap().status.roles.every(r => r.model === undefined)).toBe(true));
+  await vi.waitFor(() => expect(snap().status).not.toBe(previous));
+  expect(snap().status.roles[1]?.model).toBe('另一型号');
   expect(snap().status.roles.map(r => r.holder)).toEqual(['claude', '另一家', 'codex', 'claude', 'claude']);
   session.submit('任务');
   await session.whenIdle();

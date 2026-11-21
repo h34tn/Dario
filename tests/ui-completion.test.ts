@@ -6,7 +6,7 @@ const ctx = { roles: [{ id: 'coder', alias: ['实现'] }], agents: ['claude', 'c
 const values = (line: string) => suggest(line, ctx).map(s => s.value);
 
 it('按顺序限制六条指令并按是否带参数补空格', () => {
-  expect(values('/')).toEqual(['/to ', '/roles', '/role ', '/agents', '/health ', '/status ']);
+  expect(values('/')).toEqual(['/to ', '/roles', '/role ', '/model ', '/agents', '/health ']);
   expect(values('/r')).toEqual(['/roles', '/role ']);
   expect(values('任务')).toEqual([]);
 });
@@ -14,6 +14,7 @@ it('按顺序限制六条指令并按是否带参数补空格', () => {
 it('角色别名优先，名字和提示互为别名，任务正文不补全', () => {
   expect(suggest('/to ', ctx)).toEqual([{ label: '实现', hint: 'coder', value: '/to 实现 ' },
     { label: 'coder', hint: '实现', value: '/to coder ' }]);
+  expect(values('/model 实')).toEqual(['/model 实现 ']);
   expect(values('/to 实')).toEqual(['/to 实现 ']);
   expect(values('/role CO')).toEqual(['/role coder ']);
   expect(values('/to 实现 ')).toEqual([]);

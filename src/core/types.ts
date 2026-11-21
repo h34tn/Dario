@@ -188,9 +188,9 @@ export interface FallbackQuestion {
   role: string;
   roleLabel: string;
   /** 不可用的那几家，按候选顺序；通常只有一家。 */
-  from: Array<{ agent: string; model?: string; reason: string }>;
+  from: Array<{ agent: string; model?: string; modelLabel?: string; effort?: string; reason: string }>;
   /** 打算改用的备选。 */
-  to: { agent: string; model?: string };
+  to: { agent: string; model?: string; modelLabel?: string; effort?: string };
 }
 
 export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity' | 'usage' | 'quota';

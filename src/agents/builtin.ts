@@ -11,15 +11,27 @@ import {
   streamJsonMeter,
   type AgentPlugin,
   type InvokeRequest,
+  type ModelChoice,
 } from '../plugin.js';
 
 /**
  * 本机配置里追加的参数：extra_args 两种方式都加；write_args 只在可写方式加，read_only_args 只在只读方式加。
  * 分开是因为有的设置只该给一种方式，例如放行某个 MCP 服务只给可写、关掉它只给只读。
  */
-function extraArgs(req: InvokeRequest): string[] {
+function extraArgs(req: InvokeRequest, codex = false): string[] {
   const list = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
-  return [...list(req.options.extra_args), ...list(req.access === 'write' ? req.options.write_args : req.options.read_only_args)];
+  const extra = list(req.options.extra_args);
+  const accessArgs = list(req.access === 'write' ? req.options.write_args : req.options.read_only_args);
+  if (!req.effort) return [...extra, ...accessArgs];
+  const args: string[] = [];
+  for (let i = 0; i < extra.length; i++) {
+    const arg = extra[i]!;
+    const oldEffort = codex ? arg === '-c' && /^model_reasoning_effort=/.test(extra[i + 1] ?? '') : arg === '--effort';
+    if (oldEffort) i++;
+    else args.push(arg);
+  }
+  const effortArgs = codex ? ['-c', `model_reasoning_effort="${req.effort}"`] : ['--effort', req.effort];
+  return [...args, ...accessArgs, ...effortArgs];
 }
 
 const READ_TOOLS = ['Read', 'Grep', 'Glob', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)'];
@@ -47,9 +59,40 @@ function claudeStyleArgs(req: InvokeRequest): string[] {
   return args;
 }
 
+const initializeArgs = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'];
+const initializeRequest = '{"type":"control_request","request_id":"dario-models","request":{"subtype":"initialize"}}\n';
+
+function initializedModels(stdout: string): Record<string, unknown>[] {
+  try {
+    const record = JSON.parse(stdout);
+    const reply = record?.response;
+    if (record?.type !== 'control_response' || reply?.subtype !== 'success' || reply.request_id !== 'dario-models') return [];
+    const models = reply.response?.models;
+    return Array.isArray(models) ? models.filter(m => m && typeof m === 'object') : [];
+  } catch {
+    return [];
+  }
+}
+
 export const claudePlugin: AgentPlugin = defineAgent({
   apiVersion: PLUGIN_API_VERSION,
   id: 'claude',
+  efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  modelsQuery: {
+    args: [...initializeArgs, '--strict-mcp-config'],
+    stdin: initializeRequest,
+    parse(stdout) {
+      return initializedModels(stdout).flatMap(({ value, displayName, resolvedModel, supportsEffort, supportedEffortLevels }) => {
+        if (typeof value !== 'string' || !value || value === 'default') return [];
+        const choice: ModelChoice = { id: value };
+        if (typeof displayName === 'string') choice.label = displayName;
+        if (typeof resolvedModel === 'string' && resolvedModel !== value) choice.resolved = resolvedModel;
+        if (supportsEffort !== true) choice.efforts = [];
+        else if (Array.isArray(supportedEffortLevels)) choice.efforts = supportedEffortLevels.filter(level => typeof level === 'string');
+        return [choice];
+      });
+    },
+  },
   progress: streamJsonActivities,
   displayName: 'Claude Code',
   defaultCommand: 'claude',
@@ -67,6 +110,15 @@ export const claudePlugin: AgentPlugin = defineAgent({
 export const codebuddyPlugin: AgentPlugin = defineAgent({
   apiVersion: PLUGIN_API_VERSION,
   id: 'codebuddy',
+  efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  modelsQuery: {
+    args: initializeArgs,
+    stdin: initializeRequest,
+    parse(stdout) {
+      return initializedModels(stdout).flatMap(({ id, name }) =>
+        typeof id === 'string' && id ? [{ id, ...(typeof name === 'string' && { label: name }) }] : []);
+    },
+  },
   progress: streamJsonActivities,
   displayName: 'CodeBuddy',
   defaultCommand: 'codebuddy',
@@ -80,9 +132,28 @@ export const codebuddyPlugin: AgentPlugin = defineAgent({
   meter: () => streamJsonMeter({ inputIncludesCache: true }),
 });
 
+function parseCodexModels(stdout: string): ModelChoice[] {
+  try {
+    const { models } = JSON.parse(stdout);
+    if (!Array.isArray(models)) return [];
+    return models.filter(m => m?.visibility === 'list' && typeof m.slug === 'string' && m.slug).map(m => ({
+      id: m.slug,
+      ...(typeof m.display_name === 'string' && { label: m.display_name }),
+      ...(Array.isArray(m.supported_reasoning_levels) && {
+        efforts: m.supported_reasoning_levels.map((level: { effort?: unknown } | null) => level?.effort)
+          .filter((effort: unknown) => typeof effort === 'string'),
+      }),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export const codexPlugin: AgentPlugin = defineAgent({
   apiVersion: PLUGIN_API_VERSION,
   id: 'codex',
+  efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  modelsQuery: { args: ['debug', 'models'], parse: parseCodexModels },
   progress: codexActivities,
   quota: codexQuotaReader,
   meter: codexMeter,
@@ -100,7 +171,7 @@ export const codexPlugin: AgentPlugin = defineAgent({
     if (req.resume) args.push('resume', req.resume);
     args.push('--json', '-o', req.resultFile);
     if (req.model) args.push('-m', req.model);
-    args.push(...extraArgs(req));
+    args.push(...extraArgs(req, true));
     // 末尾的 - 表示任务说明从标准输入读取
     args.push('-');
     return { args, stdin: req.prompt };

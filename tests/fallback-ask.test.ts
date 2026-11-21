@@ -19,7 +19,7 @@ const origin = { channel: 'terminal', senderId: '测试' };
 
 let sb: Sandbox;
 beforeEach(() => {
-  sb = new Sandbox({ git: true, roles: ASK_ROLES, agentsExtra: { agents: { a2: { model: 'model-a2' }, a3: { model: 'model-a3' } } } });
+  sb = new Sandbox({ git: true, resumable: true, roles: ASK_ROLES, agentsExtra: { agents: { a2: { model: 'model-a2' }, a3: { model: 'model-a3' } } } });
 });
 afterEach(() => sb?.cleanup());
 
@@ -29,18 +29,22 @@ const names = (): string[] => sb.calls().map((c) => c.name);
 describe('fallback: ask —— 换人之前先问', () => {
   it('问题里带着谁不可用、原因和备选的具体模型；同意后由备选继续', async () => {
     sb.setScenario({ a2: [LIMIT], a3: [{ text: 'a3 做完了' }] });
+    sb.writeRoles(ASK_ROLES.replace('access: write', 'access: write, models: { a2: { model: coder-a2, effort: high }, a3: { model: coder-a3, effort: low } }'));
     const confirmFallback = vi.fn(async (_q: FallbackQuestion) => true);
-    const job = await (await engine()).submit({ task: '任务', role: 'coder', origin, confirmFallback });
+    const app = await engine();
+    app.state.saveModels('a2', [{ id: 'coder-a2', label: '型号甲' }]);
+    app.state.saveModels('a3', [{ id: 'coder-a3', label: '型号乙' }]);
+    const job = await app.submit({ task: '任务', role: 'coder', origin, confirmFallback });
     expect(confirmFallback).toHaveBeenCalledExactlyOnceWith({
       jobId: job.id,
       role: 'coder',
       roleLabel: '实现（coder）',
-      from: [{ agent: 'a2', model: 'model-a2', reason: "You've hit your usage limit · resets 6pm" }],
-      to: { agent: 'a3', model: 'model-a3' },
+      from: [{ agent: 'a2', model: 'coder-a2', modelLabel: '型号甲', effort: 'high', reason: "You've hit your usage limit · resets 6pm" }],
+      to: { agent: 'a3', model: 'coder-a3', modelLabel: '型号乙', effort: 'low' },
     });
     expect(formatFallbackQuestion(confirmFallback.mock.calls[0]![0])).toEqual([
-      "实现的担当者 a2（model-a2） 不可用（You've hit your usage limit · resets 6pm）。",
-      '改用备选 a3（model-a3） 继续这个任务吗？',
+      "实现的担当者 a2（型号甲[high]） 不可用（You've hit your usage limit · resets 6pm）。",
+      '改用备选 a3（型号乙[low]） 继续这个任务吗？',
     ]);
     expect(job.status).toBe('done');
     expect(job.result?.conclusion).toBe('a3 做完了');

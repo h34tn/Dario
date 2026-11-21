@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { QuotaWindow } from '../plugin.js';
-import type { ProjectConfig, UserConfig } from './config.js';
+import type { ModelUpdate, ProjectConfig, UserConfig } from './config.js';
 import { HEALTH_PROMPT } from './defaults.js';
 import { Orchestrator, type RunOptions } from './orchestrator.js';
 import type { AgentCatalog } from './ports.js';
 import { killProcessTree } from './proc.js';
-import { RoleBook, type RoleView } from './roles.js';
+import { formatModel } from './report.js';
+import { RoleBook, type ModelTarget, type RoleView } from './roles.js';
 import { StepRunner } from './runner.js';
 import type { StateStore } from './state.js';
 import { ACTIVE_STATUSES, type Job, type Origin, type ProgressEvent, type RoleSession, type Strategy } from './types.js';
@@ -43,6 +44,7 @@ export interface AgentView {
   displayName: string;
   plugin: string;
   model?: string;
+  effort?: string;
   enabled: boolean;
   installed: boolean;
   version?: string;
@@ -66,7 +68,7 @@ export class Engine {
   private readonly orchestrator: Orchestrator;
 
   constructor(private readonly deps: EngineDeps) {
-    this.roles = new RoleBook(deps.project, deps.catalog, deps.state);
+    this.roles = new RoleBook(deps.project, deps.catalog, deps.state, deps.user);
     const emit = (e: ProgressEvent): void => {
       for (const fn of this.listeners) fn(e);
     };
@@ -286,6 +288,7 @@ export class Engine {
         displayName: port.displayName,
         plugin: port.pluginId,
         model: port.model,
+        effort: port.efforts?.length ? port.effort : undefined,
         enabled: port.enabled,
         installed: detect.installed,
         version: detect.version,
@@ -337,6 +340,27 @@ export class Engine {
       return `${this.roles.label(roleId)} 改由 ${agent} 担当，已写回 ${file}`;
     }
     return `${this.roles.label(roleId)} 临时改由 ${agent} 担当（只在本机生效）`;
+  }
+
+  private async modelHolder(role: string) {
+    const id = this.roles.resolve(role);
+    if (!id) throw new ConfigError(`没有这个角色：${role}。可用角色：${this.roles.ids().join('、')}`);
+    const agent = (await this.roles.order(id)).usable[0];
+    if (!agent) throw new ConfigError(`角色 ${id} 目前没有可用的 AI`);
+    return { id, agent };
+  }
+
+  async setModel(role: string, settings: ModelUpdate, target: ModelTarget = 'local'): Promise<string> {
+    const { id, agent } = await this.modelHolder(role);
+    const { file, notice } = await this.roles.saveModel(id, agent, settings, target);
+    const { model, effort } = this.roles.modelFor(id, agent);
+    return `${this.roles.get(id).alias[0] ?? id}（${agent}）改为 ${formatModel(agent, model, effort, this.roles.modelLabel)}，已写入 ${file}，下一步起生效。${notice}`;
+  }
+
+  async resetModel(role: string): Promise<string> {
+    const { id, agent } = await this.modelHolder(role);
+    const { file } = await this.roles.saveModel(id, agent, undefined, 'local');
+    return `${this.roles.get(id).alias[0] ?? id}（${agent}）已清除 ${file} 里的本机角色设置，下一步起生效。`;
   }
 
   resetRole(role: string): string {

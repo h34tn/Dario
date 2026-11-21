@@ -1,7 +1,23 @@
 /** 指令解析。所有渠道（终端交互、飞书等）共用同一套。 */
 
+import type { Engine } from './engine.js';
+import { findModel } from './ports.js';
+import { formatModelTable } from './report.js';
+import { ConfigError } from './util.js';
+import type { ModelTarget, RoleView } from './roles.js';
+
+export interface ModelCommand {
+  kind: 'model';
+  role?: string;
+  value?: string;
+  effort?: string;
+  target: ModelTarget;
+  reset: boolean;
+}
+
 export type Command =
   | { kind: 'task'; text: string; role?: string }
+  | ModelCommand
   | { kind: 'roles' }
   | { kind: 'agents' }
   | { kind: 'help' }
@@ -20,6 +36,7 @@ export const HELP_TEXT = [
   '/roles                 查看角色表',
   '/role <角色> <AI>      临时指定担当者（加 --save 写回项目角色表）',
   '/role <角色> reset     取消临时指定',
+  '/model [角色] [型号] [强度]  查看或设置型号（--save、--default、--reset）',
   '/agents                列出各家 AI',
   '/health [AI]           实际调用一次，确认可用',
   '/status [任务号]       查看任务',
@@ -45,6 +62,7 @@ export function parseCommand(input: string): Command {
       if (!role || !task) return { kind: 'invalid', message: '用法：/to <角色> <任务>' };
       return { kind: 'task', role, text: task };
     }
+    case 'model': return parseModel(words);
     case 'roles':
       return { kind: 'roles' };
     case 'agents':
@@ -79,7 +97,64 @@ export function parseCommand(input: string): Command {
   }
 }
 
+export function parseModel(words: string[], effort?: string): ModelCommand | Extract<Command, { kind: 'invalid' }> {
+  const flags = words.filter(w => w.startsWith('-'));
+  const args = words.filter(w => !w.startsWith('-'));
+  const [role, value, level] = args;
+  const flag = flags[0];
+  const reset = flag === '--reset';
+  const hasSetting = !!(value || effort);
+  const badFlag = flags.length > 1 || (flag && !['--save', '--default', '--reset'].includes(flag));
+  const badTarget = flag && (!role || (reset ? hasSetting : !hasSetting));
+  if (badFlag || badTarget || args.length > 3 || (effort && (!role || level))) {
+    return { kind: 'invalid', message: '用法：/model [角色 [型号] [强度] [--save | --default]]，或 /model <角色> --reset' };
+  }
+  return { kind: 'model', role, value, effort: effort ?? level, reset,
+    target: flag === '--save' ? 'project' : flag === '--default' ? 'default' : 'local' };
+}
+
+/** 每个担当者只查一次，各家独立刷新显示名。 */
+export async function refreshHolderModels(engine: Engine, views: RoleView[], refreshed?: (agent: string) => void) {
+  const holders = new Set(views.flatMap(view => view.holder ? [view.holder] : []));
+  await Promise.allSettled([...holders].map(async agent => {
+    const list = await engine.roles.listModels(agent);
+    if (!list.error) refreshed?.(agent);
+  }));
+}
+
+export async function runModel(engine: Engine, cmd: ModelCommand): Promise<string> {
+  if (cmd.reset) return engine.resetModel(cmd.role!);
+  const views = await engine.rolesView();
+  if (!cmd.role) {
+    await refreshHolderModels(engine, views);
+    return formatModelTable(views, engine.roles.modelLabel).join('\n');
+  }
+  const id = engine.roles.resolve(cmd.role);
+  const role = views.find(v => v.id === id);
+  if (!role) throw new ConfigError(`没有这个角色：${cmd.role}`);
+  if (!role.holder) throw new ConfigError(`角色 ${role.id} 目前没有可用的 AI`);
+  if (cmd.value || cmd.effort) {
+    let effortOnly = !cmd.effort && !!cmd.value && engine.roles.efforts(role.holder).includes(cmd.value);
+    // 只给了一个词、又不在工具的通用档位里：它可能是当前型号独有的档位（例如 Codex 部分型号的 ultra）。
+    // 以工具此刻返回的清单为准：先当型号找，找不到再看是不是当前型号自己的档位
+    if (!effortOnly && !cmd.effort && cmd.value) {
+      const list = await engine.roles.listModels(role.holder);
+      if (!list.error && !findModel(list.models, cmd.value)) {
+        const current = role.candidates.find(c => c.agent === role.holder)?.model;
+        effortOnly = !!findModel(list.models, current)?.efforts?.includes(cmd.value);
+      }
+    }
+    const settings = effortOnly ? { effort: cmd.value } : { model: cmd.value, effort: cmd.effort };
+    return engine.setModel(role.id, settings, cmd.target);
+  }
+  const list = await engine.roles.listModels(role.holder);
+  const current = formatModelTable([role], engine.roles.modelLabel)[0]!;
+  if (list.error) return current + '\n没能取到型号清单：' + list.error;
+  const choices = list.models.map(m => `${m.label || m.id}  ${m.id}`).join('\n') || '无';
+  return current + '\n可选的型号：\n' + choices;
+}
+
 /** 管理员才能执行的指令。 */
 export function requiresAdmin(cmd: Command): boolean {
-  return cmd.kind === 'role' || cmd.kind === 'health' || cmd.kind === 'pause' || cmd.kind === 'resume';
+  return (cmd.kind === 'model' && !!(cmd.value || cmd.effort || cmd.reset)) || cmd.kind === 'role' || cmd.kind === 'health' || cmd.kind === 'pause' || cmd.kind === 'resume';
 }

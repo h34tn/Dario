@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { editYamlFile } from './yaml-edit.js';
 import { z } from 'zod';
 import type { Access } from '../plugin.js';
 import { DEFAULT_DISPATCH_RULES, DEFAULT_PROJECT_YAML, DEFAULT_ROLES_YAML } from './defaults.js';
@@ -9,7 +10,10 @@ import { ConfigError, normPath, readText } from './util.js';
 
 // ---------- 类型 ----------
 
+export type ModelSettings = z.infer<typeof modelSettingsSchema>;
+
 export interface RoleDef {
+  models?: Record<string, ModelSettings>;
   id: string;
   alias: string[];
   description?: string;
@@ -52,6 +56,8 @@ export interface AgentInstanceConfig {
   plugin?: string;
   command?: string;
   model?: string;
+  effort?: string;
+  roles?: Record<string, ModelSettings>;
   allowedTools?: { readOnly?: string[]; write?: string[] };
   envPass?: string[];
   timeoutMinutes?: number;
@@ -102,8 +108,28 @@ export interface UserConfig {
 
 // ---------- 结构校验 ----------
 
+export interface ModelUpdate {
+  model?: string;
+  effort?: string | null;
+}
+
+export const modelSettingsSchema = z.object({
+  model: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,99}$/, '型号格式不正确').optional(),
+  effort: z.string().regex(/^[a-z]{2,16}$/, '强度须为 2 至 16 个小写字母').optional(),
+}).strict();
+
+/** 一次写完本次设置，缺省字段沿用原值。 */
+export function writeModelSettings(file: string, keys: string[], settings?: ModelUpdate): void {
+  const changes = settings
+    ? Object.entries(settings).filter(([, value]) => value !== undefined)
+      .map(([key, value]) => ({ keys: [...keys, key], value }))
+    : [{ keys, value: null }];
+  editYamlFile(file, changes, keys[0] === 'agents');
+}
+
 const roleSchema = z
   .object({
+    models: z.record(modelSettingsSchema).optional(),
     alias: z.array(z.string().min(1)).default([]),
     description: z.string().optional(),
     candidates: z.array(z.string().min(1)).min(1),
@@ -137,7 +163,8 @@ const agentSchema = z
   .object({
     plugin: z.string().optional(),
     command: z.string().optional(),
-    model: z.string().optional(),
+    ...modelSettingsSchema.shape,
+    roles: z.record(modelSettingsSchema).optional(),
     allowed_tools: z
       .object({ read_only: z.array(z.string()).optional(), write: z.array(z.string()).optional() })
       .strict()
@@ -258,6 +285,7 @@ export function parseRoles(data: unknown, file: string, projectLevel: boolean): 
   for (const [id, r] of Object.entries(parsed.roles)) {
     roles[id] = {
       id,
+      models: r.models,
       alias: r.alias,
       description: r.description,
       candidates: r.candidates,
@@ -349,6 +377,8 @@ export function loadUserConfig(home: string): UserConfig {
       plugin: c.plugin,
       command: c.command,
       model: c.model,
+      effort: c.effort,
+      roles: c.roles,
       allowedTools: c.allowed_tools ? { readOnly: c.allowed_tools.read_only, write: c.allowed_tools.write } : undefined,
       envPass: c.env_pass,
       timeoutMinutes: c.timeout_minutes,

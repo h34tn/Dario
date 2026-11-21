@@ -152,7 +152,7 @@ export class Sandbox {
    * 支持续接的假 AI：续接时参数里带 --resume <会话号>，会话号取自输出的第一行。
    * 剧本里写了 usage 时第二行是用量，按"整个会话的累计值"报，和 Codex 一样。
    */
-  writeResumablePlugin(name: string): void {
+  writeResumablePlugin(name: string, modelQueryName?: string): void {
     const base = [FAKE_AGENT, '--name', name, '--scenario', this.scenarioFile, '--emit-session'];
     fs.writeFileSync(
       path.join(this.home, 'plugins', `${name}.mjs`),
@@ -165,7 +165,14 @@ export default {
   versionArgs: ${JSON.stringify([FAKE_AGENT, '--name', name, '--version'])},
   streams: false,
   resumes: true,
-  build: (req) => ({ args: [...base, '--access', req.access, ...(req.resume ? ['--resume', req.resume] : [])], stdin: req.prompt }),
+  efforts: ['low', 'high'],
+  ${modelQueryName ? `modelsQuery: { args: ${JSON.stringify([FAKE_AGENT, '--name', modelQueryName, '--scenario', this.scenarioFile])}, parse: JSON.parse },` : ''}
+  models: [{ id: 'light', efforts: ['low'] }, ...['custom', 'base', 'review', 'work'].map(id => ({ id }))],
+  build: (req) => ({
+    args: [...base, '--access', req.access, ...(req.resume ? ['--resume', req.resume] : []),
+      ...(req.model ? ['--model', req.model] : []), ...(req.effort ? ['--effort', req.effort] : [])],
+    stdin: req.prompt,
+  }),
   parse: (raw) => {
     const m = /^SESSION:([^ ]+?)[\\r\\n]+(USAGE:[^ ]+?[\\r\\n]+)?/.exec(raw.stdout);
     return { text: (m ? raw.stdout.slice(m[0].length) : raw.stdout).trim(), sessionId: m?.[1] };

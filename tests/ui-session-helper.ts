@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import type { AgentView, Engine } from '../src/core/engine.js';
+import type { ModelList } from '../src/core/ports.js';
 import type { Job, ProgressEvent } from '../src/core/types.js';
 import { Session, type SessionOptions } from '../src/ui/session.js';
 
@@ -18,16 +19,24 @@ export const DEFAULT_ROWS: RoleRow[] = [
   state: id === 'coder' ? 'unavailable' : 'ok' }));
 
 export async function setup(options?: Partial<SessionOptions>, rows: RoleRow[] = DEFAULT_ROWS,
-  agents: Array<Pick<AgentView, 'id' | 'model' | 'quota'>> = [{ id: 'codex' }], extra: Record<string, unknown> = {}) {
+  agents: Array<Pick<AgentView, 'id' | 'model' | 'effort' | 'quota'>> = [{ id: 'codex' }], extra: Record<string, unknown> = {}) {
   const views = rows.map(({ id, label, holder, access, state }) => ({ id, alias: [label], holder, access,
-    candidates: [{ agent: holder ?? 'a9', state }] }));
+    candidates: [...new Set([holder ?? 'a9', ...agents.map(a => a.id)])].map(agent => {
+      const choice = agents.find(a => a.id === agent);
+      return { agent, state, model: choice?.model, effort: choice?.effort, modelSource: choice?.model ? 'default' : 'tool', effortSource: 'tool' };
+    }) }));
   const listeners = new Set<(e: ProgressEvent) => void>();
   let count = 0;
   const job = { id: 'J0001', task: '任务', status: 'done', steps: [], changedFiles: [], warnings: [],
     result: { conclusion: '**成功**', changedFiles: ['a.ts'], warnings: ['留意'], branch: '分支' } } as unknown as Job;
   const engine = {
     project: { root: '/项目/rise', settings: { leadRole: 'lead', reviewRole: 'review' } },
-    roles: { label: (id: string) => views.find(v => v.id === id)?.alias[0] ?? id, fallback: 'auto' },
+    roles: { label: (id: string) => views.find(v => v.id === id)?.alias[0] ?? id, fallback: 'auto',
+      resolve: (name: string) => views.find(v => v.id === name || v.alias.includes(name))?.id,
+      modelLabel: (_agent: string, model: string) => model,
+      efforts: () => ['low', 'high'],
+      listModels: vi.fn<() => Promise<ModelList>>(async () => ({ models: [{ id: '常规' }, { id: '轻量', efforts: [] }] })) },
+    setModel: vi.fn<Engine['setModel']>(async () => '已保存型号'), resetModel: vi.fn(async () => '已清除型号'),
     rolesView: vi.fn(async () => views),
     agentsView: vi.fn(async () => agents.map(a => ({ ...a, installed: true, enabled: true, version: '版本' }))),
     onProgress(fn: (event: ProgressEvent) => void) { listeners.add(fn); return () => listeners.delete(fn); },

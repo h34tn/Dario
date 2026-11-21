@@ -13,6 +13,7 @@ const commands = [
   ['/to <角色> <任务>', '直接交给指定角色'],
   ['/roles', '查看角色表'],
   ['/role <角色> <AI>', '临时指定担当者'],
+  ['/model [角色] [型号] [强度]', '查看或设置角色的型号和强度'],
   ['/agents', '列出各家 AI'],
   ['/health [AI]', '实际调用一次，确认可用'],
   ['/status [任务号]', '查看任务'],
@@ -35,7 +36,7 @@ export function suggest(line: string, ctx: CompletionContext): Suggestion[] {
 
   const prefix = args.at(-1)!.toLowerCase();
   let options: Suggestion[];
-  if ((command === '/to' || command === '/role') && args.length === 1) {
+  if ((command === '/to' || command === '/model' || command === '/role') && args.length === 1) {
     const names = ctx.roles.flatMap(({ id, alias }) => alias.map(label => ({ label, hint: id })))
       .concat(ctx.roles.map(({ id, alias }) => ({ label: id, hint: alias[0] ?? '' })));
     options = names.map(item => ({ ...item, value: `${command} ${item.label} ` }));

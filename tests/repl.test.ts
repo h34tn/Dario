@@ -32,6 +32,13 @@ describe('交互方式', () => {
     expect(sb.calls()).toHaveLength(1);
   });
 
+  it('逐行交互直接打印角色设置与实时清单，设置强度后 /roles 随之更新', async () => {
+    sb = new Sandbox({ resumable: true });
+    const text = await session(['/model 实现', '/model 实现 light low', '/roles']);
+    expect(text).toContain('可选的型号：\nlight');
+    expect(text).toContain('当前担当：a2（light[low]）');
+  });
+
   it('逐行交互的 /agents 在每家 AI 的行末显示额度', async () => {
     const disabled = { enabled: false };
     sb = new Sandbox({ agentsExtra: { agents: {

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentInstanceConfig, WritePermissions } from '../core/config.js';
-import type { AgentDetect, AgentPort, AgentRunRequest, AgentRunResult } from '../core/ports.js';
+import type { AgentDetect, AgentPort, AgentRunRequest, AgentRunResult, ModelList } from '../core/ports.js';
 import { realPath } from '../core/util.js';
 import { looksSessionLost, looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type QuotaReader, type QuotaWindow, type RawResult, type TokenUsage } from '../plugin.js';
 import { buildEnv, runProcess, SYSTEM_ENV, which } from './spawn.js';
@@ -128,6 +128,34 @@ export class AgentHandle implements AgentPort {
     return this.config.model;
   }
 
+  get effort() { return this.config.effort; }
+  get efforts() { return this.plugin.efforts; }
+  get roles() { return this.config.roles; }
+
+  private pendingModels?: Promise<ModelList>;
+
+  listModels(): Promise<ModelList> {
+    return this.pendingModels ??= this.queryModels().finally(() => { this.pendingModels = undefined; });
+  }
+
+  private async queryModels(): Promise<ModelList> {
+    const models = this.plugin.models ?? [];
+    const query = this.plugin.modelsQuery;
+    if (!query) return models.length ? { models } : { models, error: '插件没有提供型号清单' };
+    try {
+      const out = await runProcess({
+        command: this.command, args: query.args, stdin: query.stdin, cwd: process.cwd(), env: this.envFor(), timeoutMs: 20000,
+      });
+      if (out.timedOut) return { models, error: '命令超时（20 秒）' };
+      if (out.spawnError) return { models, error: `命令无法启动：${out.spawnError}` };
+      if (out.exitCode !== 0) return { models, error: `查询命令失败（退出码 ${out.exitCode ?? '无'}）` };
+      const choices = query.parse(out.stdout);
+      return choices.length ? { models: choices } : { models, error: '没有返回型号清单' };
+    } catch {
+      return { models, error: '未能读取型号清单' };
+    }
+  }
+
   get timeoutMinutes(): number | undefined {
     return this.config.timeoutMinutes;
   }
@@ -170,11 +198,14 @@ export class AgentHandle implements AgentPort {
     // 只读角色的职责就是不动手，权限放开只对可写角色有意义
     const unrestricted = req.access === 'write' && (this.config.permissions ?? this.settings.permissions ?? 'full') === 'full';
 
+    const model = req.model ?? this.model;
+    const effort = req.effort ?? this.effort;
     const invocation = this.plugin.build({
       access: req.access,
       cwd: req.cwd,
       prompt: req.prompt,
-      model: this.config.model,
+      model,
+      ...(effort && { effort }),
       allowedTools,
       resultFile,
       options: this.config.options ?? {},

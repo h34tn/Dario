@@ -1,9 +1,9 @@
 import os from 'node:os';
 import readline from 'node:readline';
-import { HELP_TEXT, parseCommand } from '../core/commands.js';
+import { HELP_TEXT, runModel, parseCommand } from '../core/commands.js';
 import type { Engine } from '../core/engine.js';
 import { describePlan } from '../core/orchestrator.js';
-import { formatFallbackQuestion, formatJob, formatQuota, formatRoles } from '../core/report.js';
+import { formatFallbackQuestion, formatJob, formatQuota, formatModel, formatRoles } from '../core/report.js';
 import { STATUS_LABEL, type FallbackQuestion } from '../core/types.js';
 import { DarioError, ellipsis } from '../core/util.js';
 
@@ -63,13 +63,16 @@ export async function runRepl(
             out(`${HELP_TEXT}\n/exit                  退出`);
             break;
           case 'roles':
-            out(formatRoles(await engine.rolesView(), engine.roles.fallback));
+            out(formatRoles(await engine.rolesView(), engine.roles.fallback, engine.roles.modelLabel));
             break;
           case 'agents':
             for (const a of await engine.agentsView()) {
               const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : a.unavailable ? `暂时不可用（${a.unavailable}）` : '可用';
-              out(`${a.id}${a.model ? `（${a.model}）` : ''}：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
+              out(`${a.id}${a.model || a.effort ? `（${formatModel(a.id, a.model, a.effort, engine.roles.modelLabel)}）` : ''}：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
             }
+            break;
+          case 'model':
+            out(await runModel(engine, cmd));
             break;
           case 'role':
             out(cmd.reset ? engine.resetRole(cmd.role) : engine.setRole(cmd.role, cmd.agent!, cmd.save));

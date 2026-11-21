@@ -1,14 +1,22 @@
-import fs from 'node:fs';
-import { parseDocument } from 'yaml';
-import type { ProjectConfig, RoleDef } from './config.js';
-import type { AgentCatalog } from './ports.js';
+import path from 'node:path';
+import { editYamlFile } from './yaml-edit.js';
+import { modelSettingsSchema, writeModelSettings, type ModelSettings, type ModelUpdate, type ProjectConfig, type RoleDef, type UserConfig } from './config.js';
+import { findModel, type AgentCatalog, type AgentPort, type ModelList } from './ports.js';
 import type { StateStore } from './state.js';
 import type { Attempt } from './types.js';
-import { ConfigError, normPath, writeFileAtomic } from './util.js';
+import { ConfigError, normPath } from './util.js';
 
 export type CandidateState = 'ok' | 'unknown' | 'disabled' | 'not_installed' | 'unavailable';
 
-export interface CandidateView {
+export type ModelTarget = 'local' | 'project' | 'default';
+type ModelSource = ModelTarget | 'tool';
+
+export interface EffectiveModel extends ModelSettings {
+  modelSource: ModelSource;
+  effortSource: ModelSource;
+}
+
+export interface CandidateView extends EffectiveModel {
   agent: string;
   state: CandidateState;
   note?: string;
@@ -33,6 +41,7 @@ export class RoleBook {
     private readonly project: ProjectConfig,
     private readonly catalog: AgentCatalog,
     private readonly state: StateStore,
+    private readonly user: UserConfig,
   ) {}
 
   get fallback(): 'auto' | 'manual' | 'ask' {
@@ -73,7 +82,42 @@ export class RoleBook {
     return { list, override };
   }
 
-  private async inspect(agent: string): Promise<CandidateView> {
+  modelFor(roleId: string, agentId: string): EffectiveModel {
+    const port = this.catalog.get(agentId);
+    const layers: [ModelTarget, ModelSettings | undefined][] = [
+      ['local', port?.roles?.[roleId]],
+      ['project', this.get(roleId).models?.[agentId]],
+      ['default', port],
+    ];
+    const result: EffectiveModel = { modelSource: 'tool', effortSource: 'tool' };
+    for (const [source, settings] of layers) {
+      if (!result.model && settings?.model) {
+        result.model = settings.model;
+        result.modelSource = source;
+      }
+      if (!result.effort && port?.efforts?.length && settings?.effort) {
+        result.effort = settings.effort;
+        result.effortSource = source;
+      }
+    }
+    return result;
+  }
+
+  efforts(agentId: string): string[] {
+    return this.catalog.get(agentId)?.efforts ?? [];
+  }
+
+  modelLabel = (agent: string, model: string): string => this.state.modelLabel(agent, model);
+
+  async listModels(agentId: string) {
+    const port = this.catalog.get(agentId);
+    if (!port) throw new ConfigError(`本机没有配置这个 AI：${agentId}`);
+    const list = await port.listModels();
+    if (!list.error) this.state.saveModels(agentId, list.models);
+    return list;
+  }
+
+  private async inspect(agent: string): Promise<Pick<CandidateView, 'agent' | 'state' | 'note'>> {
     const port = this.catalog.get(agent);
     if (!port) return { agent, state: 'unknown', note: '本机没有配置这个 AI' };
     if (!port.enabled) return { agent, state: 'disabled', note: '已在本机配置里停用' };
@@ -122,7 +166,7 @@ export class RoleBook {
     for (const role of Object.values(this.project.roles.roles)) {
       const { list, override } = this.sequence(role);
       const candidates: CandidateView[] = [];
-      for (const agent of list) candidates.push(await this.inspect(agent));
+      for (const agent of list) candidates.push({ ...await this.inspect(agent), ...this.modelFor(role.id, agent) });
       views.push({
         id: role.id,
         alias: role.alias,
@@ -154,16 +198,125 @@ export class RoleBook {
   /** 把某个 AI 写回项目角色表的候选首位，保留文件里的注释。 */
   saveAsDefault(roleId: string, agent: string): string {
     this.get(roleId);
-    const file = this.project.rolesFile;
-    if (!file || !this.project.hasProjectDir || !normPath(file).startsWith(`${normPath(this.project.root)}/`)) {
-      throw new ConfigError('当前项目没有自己的角色表，无法写回。先在项目里运行 `dario init`。');
-    }
-    const doc = parseDocument(fs.readFileSync(file, 'utf8'));
+    const file = this.projectFile();
     const current = this.get(roleId).candidates;
     const next = [agent, ...current.filter((c) => c !== agent)];
-    doc.setIn(['roles', roleId, 'candidates'], doc.createNode(next, { flow: true }));
-    writeFileAtomic(file, doc.toString());
+    editYamlFile(file, [{ keys: ['roles', roleId, 'candidates'], value: next }]);
     this.project.roles.roles[roleId]!.candidates = next;
     return file;
   }
+
+  private projectFile(): string {
+    const file = this.project.rolesFile;
+    if (!file || !this.project.hasProjectDir || path.resolve(file) !== path.join(this.project.root, '.dario', 'roles.yaml') ||
+        !normPath(file).startsWith(`${normPath(this.project.root)}/`)) {
+      throw new ConfigError('当前项目没有自己的角色表，无法写回。先在项目里运行 `dario init`。');
+    }
+    return file;
+  }
+
+  async saveModel(roleId: string, agent: string, update: ModelUpdate | undefined, target: ModelTarget): Promise<{ file: string; notice: string }> {
+    const role = this.get(roleId);
+    const port = this.catalog.get(agent)!;
+    const project = target === 'project';
+    const file = project ? this.projectFile() : path.join(this.user.home, 'agents.yaml');
+    const keys = project ? ['roles', roleId, 'models', agent] : ['agents', agent];
+    if (target === 'local') keys.push('roles', roleId);
+    let notice = '';
+    const clearEffort = update?.effort === null && target === 'local';
+    let settings: ModelSettings | undefined;
+    if (update) {
+      const targetModel = update.model ?? (target === 'local' ? port.roles?.[roleId]?.model : undefined)
+        ?? (target !== 'default' ? role.models?.[agent]?.model : undefined) ?? port.model;
+      const list = await this.listModels(agent);
+      const choices = effortChoices(port, list, targetModel);
+      const parsed = modelSettingsSchema.safeParse(clearEffort ? { ...update, effort: undefined } : update);
+      if (!parsed.success) {
+        const errors = parsed.error.issues.map(i => `${[...keys, ...i.path].join('.')}：${i.message}`);
+        if (parsed.error.issues.some(i => i.path[0] === 'effort')) {
+          errors.push(`可选档位：${choices.join('、') || '无'}`);
+        }
+        throw new ConfigError(`${file}：${errors.join('；')}`);
+      }
+      // 显式传入 undefined 与未提供该字段的含义相同。
+      settings = Object.fromEntries(Object.entries(parsed.data).filter(([, value]) => value !== undefined));
+      if (!settings.model && !settings.effort && !clearEffort) throw new ConfigError('请给出型号或强度。');
+      const { model } = settings;
+      if (model && list.error) throw new ConfigError(`没能取到型号清单：${list.error}。无法核对型号。`);
+      if (list.error) notice = '没能取到型号清单，已按工具档位校验强度。';
+      if (model && !findModel(list.models, model)) {
+        const names = list.models.slice(0, 10).map(m => `${m.label || m.id}（${m.id}）`).join('、') || '无';
+        const total = list.models.length > 10 ? `（共 ${list.models.length} 个）` : '';
+        throw new ConfigError(`${agent} 返回的型号清单里没有 ${model}。可选型号：${names}${total}`);
+      }
+      if (settings.effort && !choices.includes(settings.effort)) {
+        throw new ConfigError(effortProblem(roleId, agent, settings.effort, choices));
+      }
+    }
+    writeModelSettings(file, keys, clearEffort ? { ...settings, effort: null } : settings);
+    if (project) {
+      const entries = role.models ??= {};
+      entries[agent] = { ...entries[agent], ...settings };
+    } else {
+      const entries = this.user.agents;
+      if (!Object.hasOwn(entries, agent)) entries[agent] = {};
+      const entry = entries[agent]!;
+      if (target === 'default') Object.assign(entry, settings);
+      else if (settings) {
+        const roles = entry.roles ??= {};
+        roles[roleId] = { ...roles[roleId], ...settings };
+        if (clearEffort) delete roles[roleId]!.effort;
+      } else if (entry.roles) {
+        delete entry.roles[roleId];
+        if (!Object.keys(entry.roles).length) delete entry.roles;
+      }
+    }
+    return { file, notice };
+  }
+
+  async modelProblems(): Promise<string[]> {
+    const problems = new Set<string>();
+    for (const port of this.catalog.list()) {
+      const entries: { role: string; settings: ModelSettings; model?: string }[] = [
+        { role: '默认', settings: port },
+      ];
+      for (const [role, settings] of Object.entries(port.roles ?? {})) {
+        entries.push({ role, settings, model: this.project.roles.roles[role]?.models?.[port.id]?.model ?? port.model });
+      }
+      for (const role of Object.values(this.project.roles.roles)) {
+        const settings = role.models?.[port.id];
+        if (settings) entries.push({ role: role.id, settings, model: port.model });
+        if (settings || port.roles?.[role.id]) {
+          const { model, effort } = this.modelFor(role.id, port.id);
+          entries.push({ role: role.id, settings: { effort }, model });
+        }
+      }
+      if (!entries.some(({ settings }) => settings.model || settings.effort)) continue;
+      const list = await this.listModels(port.id);
+      for (const { role, settings, model } of entries) {
+        if (!list.error && settings.model && !findModel(list.models, settings.model)) {
+          problems.add(`角色 ${role}：${missingModel(port.id, settings.model)}`);
+        }
+        const choices = effortChoices(port, list, settings.model ?? model);
+        if (settings.effort && !choices.includes(settings.effort)) {
+          problems.add(effortProblem(role, port.id, settings.effort, choices));
+        }
+      }
+    }
+    return [...problems];
+  }
+}
+
+function effortChoices(port: AgentPort, list: ModelList, model?: string): string[] {
+  if (!port.efforts?.length) return [];
+  if (list.error) return port.efforts;
+  return findModel(list.models, model)?.efforts ?? port.efforts;
+}
+
+function missingModel(agent: string, model: string): string {
+  return `注意：${agent} 返回的型号清单里没有 ${model}。`;
+}
+
+function effortProblem(role: string, agent: string, effort: string, choices: string[]): string {
+  return `角色 ${role} 的 AI ${agent} 不支持强度 ${effort}，可选档位：${choices.join('、') || '无'}`;
 }

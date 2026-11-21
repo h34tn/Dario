@@ -1,15 +1,11 @@
-import stringWidth from 'string-width';
+import { displayWidth } from '../core/display-width.js';
+export { displayWidth };
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 /** 按用户看到的一个字切分，保留表情和组合字符。 */
 export function graphemes(text: string): string[] {
   return Array.from(segmenter.segment(text), part => part.segment);
-}
-
-/** 终端显示宽度，wide 为真时宽度不定的字符按两格算。 */
-export function displayWidth(text: string, wide = false): number {
-  return stringWidth(text, { ambiguousIsNarrow: !wide });
 }
 
 function fittingPrefix(text: string, max: number, wide: boolean): string {
