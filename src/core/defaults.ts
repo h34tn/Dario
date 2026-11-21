@@ -87,6 +87,7 @@ agents: {}
   #   model: sonnet                      # 模型
   #   timeout_minutes: 30
   #   enabled: true
+  #   free: true                         # 免费模型，额度固定按 0% 显示，不采集
   #   allowed_tools:                     # 放行的工具清单；不写时可写方式放行读取、搜索、文件编辑和命令执行
   #     read_only: [Read, Grep, Glob]
   #     write: [Read, Grep, Glob, Edit, Write, Bash, PowerShell, mcp__某个服务]

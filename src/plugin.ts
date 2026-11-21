@@ -5,6 +5,10 @@
  * 进程树终止、环境变量名单与换人都由 Dario 统一负责。
  */
 
+import { open, readdir } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
 export const PLUGIN_API_VERSION = 1 as const;
 
 export type Access = 'read-only' | 'write';
@@ -31,6 +35,27 @@ export interface TokenUsage {
    * 续接时 Dario 会减去上一轮结束时的累计值。
    */
   sessionTotal?: boolean;
+}
+
+/** 工具自己报告的一个限额窗口。 */
+export interface QuotaWindow {
+  /** 工具报告的窗口标识。 */
+  id: string;
+  /** 已用百分数（0–100，超额时大于 100）。 */
+  usedPercent: number;
+  /** 窗口长度，单位为分钟。 */
+  windowMinutes?: number;
+  /** 窗口的重置时刻，ISO 8601 字符串。 */
+  resetsAt?: string;
+  /** 标记当前起约束作用的窗口。 */
+  primary?: true;
+}
+
+export interface QuotaReader {
+  /** 逐行读取标准输出，有额度报告时返回全部窗口。 */
+  onLine?(line: string): QuotaWindow[] | undefined;
+  /** 运行结束后读取会话记录，有额度报告时返回全部窗口。 */
+  afterRun?(info: { sessionId?: string; env: NodeJS.ProcessEnv }): Promise<QuotaWindow[] | undefined> | QuotaWindow[] | undefined;
 }
 
 export interface InvokeRequest {
@@ -118,6 +143,8 @@ export interface AgentPlugin {
    * 用量有变化时返回到目前为止的累计值，否则返回 undefined。只用于显示和记录，不参与任何判断。
    */
   meter?(): (line: string) => TokenUsage | undefined;
+  /** 每次运行创建一次，只采集工具自己报告的额度。 */
+  quota?(): QuotaReader;
   /** 可选：自行判断失败类别。返回 undefined 时使用 Dario 的默认判断。 */
   classify?(raw: RawResult, output: AgentOutput): Classification | undefined;
 }
@@ -136,6 +163,84 @@ function jsonRecord(line: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function quotaReset(seconds: unknown): string | undefined {
+  if (typeof seconds !== 'number') return undefined;
+  const date = new Date(seconds * 1000);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+export function claudeQuotaReader(): QuotaReader {
+  return {
+    onLine(line) {
+      if (!line.includes('"rate_limit_event"')) return undefined;
+      const record = jsonRecord(line);
+      if (record?.type !== 'rate_limit_event') return undefined;
+      const info = object(record.rate_limit_info);
+      if (!info) return undefined;
+      const primary = info.rateLimitType;
+      const entries = object(info.unifiedWindows) ?? (typeof primary === 'string' ? { [primary]: info } : {});
+      const windows: QuotaWindow[] = [];
+      for (const [id, value] of Object.entries(entries)) {
+        const data = object(value);
+        if (typeof data?.utilization !== 'number' || !Number.isFinite(data.utilization * 100)) continue;
+        const windowMinutes = id === 'five_hour' ? 300 : id.startsWith('seven_day') ? 10080 : undefined;
+        const resetsAt = quotaReset(data.resetsAt);
+        windows.push({
+          id, usedPercent: Number((data.utilization * 100).toPrecision(15)),
+          ...(windowMinutes && { windowMinutes }), ...(resetsAt && { resetsAt }), ...(id === primary && { primary: true }),
+        });
+      }
+      return windows.length ? windows : undefined;
+    },
+  };
+}
+
+function codexWindows(limits: Record<string, unknown>): QuotaWindow[] | undefined {
+  const windows: QuotaWindow[] = [];
+  for (const id of ['primary', 'secondary']) {
+    const data = object(limits[id]);
+    if (typeof data?.used_percent !== 'number' || !Number.isFinite(data.used_percent)) continue;
+    const resetsAt = quotaReset(data.resets_at);
+    windows.push({
+      id, usedPercent: data.used_percent,
+      ...(typeof data.window_minutes === 'number' && { windowMinutes: data.window_minutes }),
+      ...(resetsAt && { resetsAt }), ...(id === 'primary' && { primary: true }),
+    });
+  }
+  return windows.length ? windows : undefined;
+}
+
+export function codexQuotaReader(): QuotaReader {
+  return {
+    async afterRun({ sessionId, env }) {
+      if (!sessionId) return undefined;
+      const root = path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
+      try {
+        const entries = await readdir(root, { recursive: true, withFileTypes: true });
+        const file = entries.find(e => e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith(`-${sessionId}.jsonl`));
+        if (!file) return undefined;
+        const handle = await open(path.join(file.parentPath, file.name), 'r');
+        let windows: QuotaWindow[] | undefined;
+        try {
+          for await (const line of handle.readLines()) {
+            if (!line.includes('"rate_limits"')) continue;
+            const record = jsonRecord(line);
+            const payload = object(record?.payload);
+            if (record?.type !== 'event_msg' || !payload || !Object.hasOwn(payload, 'rate_limits')) continue;
+            const limits = object(payload.rate_limits);
+            windows = limits ? codexWindows(limits) : undefined;
+          }
+        } finally {
+          await handle.close();
+        }
+        return windows;
+      } catch {
+        return undefined;
+      }
+    },
+  };
 }
 
 function toolActivity(name: string, input: Record<string, unknown>): Activity {

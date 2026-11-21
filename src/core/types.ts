@@ -1,4 +1,4 @@
-import type { Access, Activity, FailureKind } from '../plugin.js';
+import type { Access, Activity, FailureKind, QuotaWindow } from '../plugin.js';
 
 export type { Access, FailureKind };
 
@@ -193,7 +193,7 @@ export interface FallbackQuestion {
   to: { agent: string; model?: string };
 }
 
-export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity' | 'usage';
+export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity' | 'usage' | 'quota';
 
 export interface ProgressStepInfo {
   index: number;
@@ -210,6 +210,7 @@ export interface ProgressStepInfo {
 export interface ProgressEvent {
   jobId: string;
   kind: ProgressKind;
+  quota?: { agent: string; windows: QuotaWindow[] };
   text: string;
   step?: ProgressStepInfo;
   /** 换人时，多个被放弃的 AI 用顿号连接。 */

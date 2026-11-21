@@ -14,7 +14,7 @@ import {
   DEFAULT_ROLES_YAML,
 } from '../core/defaults.js';
 import { describePlan } from '../core/orchestrator.js';
-import { formatFallbackQuestion, formatJob, formatRoles, formatSteps, jobToJson } from '../core/report.js';
+import { formatFallbackQuestion, formatJob, formatQuota, formatRoles, formatSteps, jobToJson } from '../core/report.js';
 import type { Engine } from '../core/engine.js';
 import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job, type ProgressEvent } from '../core/types.js';
 import { ConfigError, DarioError, ellipsis, formatLocalTime } from '../core/util.js';
@@ -354,7 +354,7 @@ async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, re
 
 function printProgress(e: ProgressEvent, p: Parsed, io: CliIO, labelPlan = false): void {
   // token 用量只在动态界面里显示
-  if (e.kind === 'usage') return;
+  if (e.kind === 'usage' || e.kind === 'quota') return;
   if (e.kind === 'activity') {
     if (p.verbose && p.format === 'text') io.stderr(`[${e.jobId}]     ${e.text}`);
     return;
@@ -408,7 +408,7 @@ async function dispatch(argv: string[], io: CliIO): Promise<number> {
     case 'agents': {
       for (const a of await engine.agentsView()) {
         const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : a.unavailable ? `暂时不可用（${a.unavailable}）` : '可用';
-        io.stdout(`${a.id}（插件 ${a.plugin}${a.model ? `，模型 ${a.model}` : ''}）：${st}${a.version ? ` · ${a.version}` : ''}`);
+        io.stdout(`${a.id}（插件 ${a.plugin}${a.model ? `，模型 ${a.model}` : ''}）：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
       }
       return 0;
     }

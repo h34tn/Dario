@@ -174,6 +174,9 @@ export class StepRunner {
           label: runLabel,
           resume: resumeId,
           onActivity: (activity) => emit({ jobId: req.job.id, kind: 'activity', step, activity, text: formatActivity(activity) }),
+          onQuota: (windows) => {
+            if (state.saveQuota(agent, windows)) emit({ jobId: req.job.id, kind: 'quota', step, quota: { agent, windows }, text: '' });
+          },
           onUsage: (usage) => {
             tokens = stepTokens(usage, base);
             emit({ jobId: req.job.id, kind: 'usage', step: { ...step, tokens }, text: '' });

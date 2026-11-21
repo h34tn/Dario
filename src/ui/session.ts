@@ -1,8 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import { HELP_TEXT, parseCommand, type Command } from '../core/commands.js';
-import type { Engine } from '../core/engine.js';
-import { formatJob, formatRoles } from '../core/report.js';
+import type { AgentView, Engine } from '../core/engine.js';
+import { formatJob, formatQuota, formatRoles, quotaPercent } from '../core/report.js';
 import { STATUS_LABEL, type FallbackQuestion, type Job, type Plan } from '../core/types.js';
 import type { SavedSession } from '../core/state.js';
 import { DarioError, ellipsis, formatLocalTime, nowIso } from '../core/util.js';
@@ -18,7 +18,7 @@ export type HistoryItem = { [K in TextKind]: { id: number; type: K; text: string
 
 export interface StatusView {
   project: string;
-  roles: Array<{ label: string; holder?: string; model?: string; degraded: boolean; priority: boolean }>;
+  roles: Array<{ label: string; holder?: string; model?: string; quotaPercent?: number; degraded: boolean; priority: boolean }>;
 }
 
 export interface SessionSnapshot {
@@ -77,6 +77,10 @@ export class Session {
   /** 当前任务里各角色实际上场的 AI：换人之后状态栏要显示真正在干活的那家，而不是角色表的首选。任务结束时清空。 */
   private readonly actual = new Map<string, string>();
   private contextVersion = 0;
+  private quotas = new Map<string, AgentView['quota']>();
+  /** 探测期间到达的额度事件优先于本次探测的快照。 */
+  private pendingQuotas?: Map<string, NonNullable<AgentView['quota']>>;
+  private resetTimer?: NodeJS.Timeout;
   private statusVersion = 0;
   private files: string[] = [];
   private completion: CompletionContext = { roles: [], agents: [] };
@@ -112,6 +116,14 @@ export class Session {
     this.append('banner', `Dario · ${this.snapshot.status.project}        输入任务直接交给主控，/ 开头是指令，/help 查看全部`);
     this.off = this.engine.onProgress(event => {
       if (event.jobId !== this.snapshot.runningJobId) return;
+      if (event.kind === 'quota' && event.quota) {
+        const { agent, windows } = event.quota;
+        const quota = { free: false, windows };
+        this.quotas.set(agent, quota);
+        this.pendingQuotas?.set(agent, quota);
+        this.updateStatusQuotas(this.snapshot.status.roles);
+        return;
+      }
       const who = event.step;
       if (who?.agent && (event.kind === 'step_start' || event.kind === 'fallback') && this.actual.get(who.role) !== who.agent) {
         this.actual.set(who.role, who.agent);
@@ -163,30 +175,58 @@ export class Session {
     try {
       const agents = await this.engine.agentsView();
       if (version === this.statusVersion) this.completion = { ...this.completion, agents: agents.map(a => a.id) };
-      return new Map(agents.map(a => [a.id, a.model]));
+      return new Map(agents.map(a => [a.id, a]));
     } catch { return undefined; }
   }
 
   private async refreshStatus() {
     const version = ++this.statusVersion;
+    const pending = this.pendingQuotas = new Map<string, NonNullable<AgentView['quota']>>();
     try {
-      const [views, models] = await Promise.all([this.engine.rolesView(), this.loadAgents(version)]);
+      const [views, agents] = await Promise.all([this.engine.rolesView(), this.loadAgents(version)]);
+      if (version !== this.statusVersion) return;
+      this.quotas = new Map(Array.from(agents?.values() ?? [], a => [a.id, a.quota]));
+      for (const [agent, quota] of pending) this.quotas.set(agent, quota);
       const { leadRole, reviewRole } = this.engine.project.settings;
       const writer = views.find(v => v.access === 'write' && v.id !== leadRole && v.id !== reviewRole);
       const priorityIds = new Set([leadRole, writer?.id, reviewRole]);
       const roles = views.map(view => {
         const first = view.candidates[0];
         const holder = this.actual.get(view.id) ?? view.holder;
-        return { label: shortRole(this.roleLabel(view.id)), holder, model: holder ? models?.get(holder) : undefined,
+        return { label: shortRole(this.roleLabel(view.id)), holder, model: holder ? agents?.get(holder)?.model : undefined,
           degraded: first?.state !== 'ok' || holder !== first.agent, priority: priorityIds.has(view.id) };
       });
-      if (version !== this.statusVersion) return;
       this.completion = { ...this.completion, roles: views.map(({ id, alias }) => ({ id, alias })) };
-      this.update({ status: { project: this.snapshot.status.project, roles } });
+      this.updateStatusQuotas(roles);
     } catch { /* 探测失败时保留上次的状态。 */ }
+    finally { if (version === this.statusVersion) this.pendingQuotas = undefined; }
   }
 
-  dispose() { this.off?.(); }
+  private updateStatusQuotas(roles: StatusView['roles']) {
+    clearTimeout(this.resetTimer);
+    const now = new Date();
+    let nextReset = Infinity;
+    const updated = roles.map(role => {
+      const quota = role.holder ? this.quotas.get(role.holder) : undefined;
+      for (const window of quota?.windows ?? []) {
+        if (!window.resetsAt) continue;
+        const reset = Date.parse(window.resetsAt);
+        if (reset > now.getTime()) nextReset = Math.min(nextReset, reset);
+      }
+      return { ...role, quotaPercent: quotaPercent(quota, now) };
+    });
+    if (Number.isFinite(nextReset)) {
+      this.resetTimer = setTimeout(() => this.updateStatusQuotas(this.snapshot.status.roles),
+        Math.min(nextReset - now.getTime(), 2_147_483_647)).unref();
+    }
+    this.update({ status: { ...this.snapshot.status, roles: updated } });
+  }
+
+  dispose() {
+    this.off?.();
+    this.statusVersion++;
+    clearTimeout(this.resetTimer);
+  }
 
   submit(raw: string) {
     if (this.exitKind) return;
@@ -223,7 +263,7 @@ export class Session {
       case 'agents':
         for (const a of await engine.agentsView()) {
           const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : a.unavailable ? `暂时不可用（${a.unavailable}）` : '可用';
-          this.append('text', `${a.id}${a.model ? `（${a.model}）` : ''}：${st}${a.version ? ` · ${a.version}` : ''}`);
+          this.append('text', `${a.id}${a.model ? `（${a.model}）` : ''}：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
         }
         return;
       case 'role':

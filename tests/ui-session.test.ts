@@ -149,7 +149,7 @@ it('查看、设置、检查、批准和取消指令分别传到对应引擎接�
   for (const cmd of ['/roles', '/agents', '/status', '/status J0001', '/role coder codex', '/role coder reset',
     '/health codex', '/help', '/未知', '/pause', '/cancel', '/approve', '/approve J0003']) session.submit(cmd);
   await session.whenIdle();
-  for (const part of ['当前担当：codex', 'codex：可用 · 版本', 'J0001 完成 · 任务', '[J0001] 完成', '已指定', '已恢复',
+  for (const part of ['当前担当：codex', 'codex：可用 · 版本 · 额度未知', 'J0001 完成 · 任务', '[J0001] 完成', '已指定', '已恢复',
     '正在检查，会实际调用一次 AI…', 'codex：可用 — 正常', '/diff ', '/plain ', '/exit ', '不认识的指令：/未知',
     '这个指令只在常驻运行的渠道里有意义。', '当前没有正在运行的任务。', '用法：/approve <任务号>', 'J0003 · 继续执行已批准的计划']) expect(log()).toContain(part);
   expect(engine.jobs).toHaveBeenCalledWith(10);
@@ -252,12 +252,14 @@ it('优先保留的可写角色是主控与审查之外的第一个可写角色�
     { label: '文档', holder: undefined, degraded: true, priority: false }]);
 });
 
-it('/roles 与 /agents 的输出文字不受状态栏影响', async () => {
-  const { session, engine, snap } = await setup();
+it('/roles 保留角色表，/agents 在可用状态和版本后列出额度', async () => {
+  const { session, engine, snap } = await setup(undefined, undefined, [
+    { id: 'codex', quota: { free: false, windows: [{ id: '周', usedPercent: 37 }] } },
+  ]);
   session.submit('/roles');
   session.submit('/agents');
   await session.whenIdle();
   const views = await engine.rolesView() as unknown as Parameters<typeof formatRoles>[0];
   expect(snap().history.filter(h => h.type === 'text').map(h => 'text' in h && h.text))
-    .toEqual([formatRoles(views, 'auto'), 'codex：可用 · 版本']);
+    .toEqual([formatRoles(views, 'auto'), 'codex：可用 · 版本 · 额度 周 37%']);
 });

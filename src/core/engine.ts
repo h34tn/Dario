@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { QuotaWindow } from '../plugin.js';
 import type { ProjectConfig, UserConfig } from './config.js';
 import { HEALTH_PROMPT } from './defaults.js';
 import { Orchestrator, type RunOptions } from './orchestrator.js';
@@ -48,6 +49,8 @@ export interface AgentView {
   path?: string;
   /** 暂时不可用的原因。 */
   unavailable?: string;
+  /** 免费标记或最近一次观测的全部额度窗口。 */
+  quota?: { free: boolean; windows: QuotaWindow[]; observedAt?: string };
 }
 
 export interface HealthResult {
@@ -272,8 +275,12 @@ export class Engine {
 
   async agentsView(): Promise<AgentView[]> {
     const out: AgentView[] = [];
+    const quotas = this.deps.state.getQuotas();
     for (const port of this.deps.catalog.list()) {
       const detect = port.enabled ? await port.detect() : { installed: false };
+      const saved = quotas[port.id];
+      const quota = port.free ? { free: true, windows: [] } :
+        saved ? { free: false, windows: saved.windows, observedAt: saved.observedAt } : undefined;
       out.push({
         id: port.id,
         displayName: port.displayName,
@@ -284,6 +291,7 @@ export class Engine {
         version: detect.version,
         path: detect.path,
         unavailable: this.deps.state.getHealthMark(port.id)?.reason,
+        ...(quota && { quota }),
       });
     }
     return out;
@@ -305,6 +313,7 @@ export class Engine {
       const dir = path.join(state.dir, 'health', port.id);
       fs.mkdirSync(dir, { recursive: true });
       const res = await port.run({ access: 'read-only', cwd: dir, prompt: HEALTH_PROMPT, timeoutMs: 180000, workDir: dir, label: 'health' });
+      if (res.quota) state.saveQuota(port.id, res.quota);
       if (res.outcome === 'ok') {
         state.clearHealth(port.id);
         results.push({ agent: port.id, ok: true, detail: `可用（${Math.round(res.durationMs / 1000)} 秒）` });

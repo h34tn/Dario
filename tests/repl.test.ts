@@ -32,6 +32,16 @@ describe('交互方式', () => {
     expect(sb.calls()).toHaveLength(1);
   });
 
+  it('逐行交互的 /agents 在每家 AI 的行末显示额度', async () => {
+    const disabled = { enabled: false };
+    sb = new Sandbox({ agentsExtra: { agents: {
+      claude: disabled, codex: disabled, codebuddy: disabled, deepseek: disabled, a2: { free: true },
+    } } });
+    const text = await session(['/agents']);
+    expect(text).toMatch(/^a1.* · 额度未知$/m);
+    expect(text).toMatch(/^a2.* · 额度 0%（免费）$/m);
+  });
+
   it('输入流结束时正常退出', async () => {
     sb = new Sandbox();
     expect(await session(['/help'])).toContain('/to <角色> <任务>');

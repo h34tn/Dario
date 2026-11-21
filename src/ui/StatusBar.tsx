@@ -15,7 +15,9 @@ export function StatusBar({ status, queued, contextJobId, color }: {
     if (!role.priority) extraRoles.push(parts.length);
     const tone = !role.holder ? 'fail' : role.degraded ? 'warn' : 'agent';
     const name = role.holder ? role.model || role.holder : '无可用';
-    parts.push(paint('role', role.label, color) + ' ' + paint(tone, name, color));
+    const percent = role.quotaPercent;
+    const usage = percent === undefined ? '' : ' ' + paint(percent >= 90 ? 'fail' : percent >= 75 ? 'warn' : 'dim', `${percent}%`, color);
+    parts.push(paint('role', role.label, color) + ' ' + paint(tone, name, color) + usage);
   }
   if (queued) parts.push(`排队 ${queued}`);
   if (contextJobId) parts.push(paint('dim', `上文 ${contextJobId}`, color));

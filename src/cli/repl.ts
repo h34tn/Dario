@@ -3,7 +3,7 @@ import readline from 'node:readline';
 import { HELP_TEXT, parseCommand } from '../core/commands.js';
 import type { Engine } from '../core/engine.js';
 import { describePlan } from '../core/orchestrator.js';
-import { formatFallbackQuestion, formatJob, formatRoles } from '../core/report.js';
+import { formatFallbackQuestion, formatJob, formatQuota, formatRoles } from '../core/report.js';
 import { STATUS_LABEL, type FallbackQuestion } from '../core/types.js';
 import { DarioError, ellipsis } from '../core/util.js';
 
@@ -34,7 +34,7 @@ export async function runRepl(
   };
 
   const off = engine.onProgress((e) => {
-    if (e.kind === 'activity' || e.kind === 'usage') return;
+    if (e.kind === 'activity' || e.kind === 'usage' || e.kind === 'quota') return;
     if (e.kind === 'plan') out(`[${e.jobId}] 计划：\n${e.text}`);
     else out(`[${e.jobId}] ${e.text}`);
   });
@@ -68,7 +68,7 @@ export async function runRepl(
           case 'agents':
             for (const a of await engine.agentsView()) {
               const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : a.unavailable ? `暂时不可用（${a.unavailable}）` : '可用';
-              out(`${a.id}${a.model ? `（${a.model}）` : ''}：${st}${a.version ? ` · ${a.version}` : ''}`);
+              out(`${a.id}${a.model ? `（${a.model}）` : ''}：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
             }
             break;
           case 'role':

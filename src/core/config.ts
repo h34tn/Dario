@@ -56,6 +56,7 @@ export interface AgentInstanceConfig {
   envPass?: string[];
   timeoutMinutes?: number;
   enabled?: boolean;
+  free?: boolean;
   /** 这一家可写方式的权限，不写则用本机的总设置。 */
   permissions?: WritePermissions;
   options?: Record<string, unknown>;
@@ -144,6 +145,7 @@ const agentSchema = z
     env_pass: z.array(z.string()).optional(),
     timeout_minutes: z.number().positive().optional(),
     enabled: z.boolean().optional(),
+    free: z.boolean().optional(),
     permissions: z.enum(['full', 'listed']).optional(),
     options: z.record(z.unknown()).optional(),
   })
@@ -351,6 +353,7 @@ export function loadUserConfig(home: string): UserConfig {
       envPass: c.env_pass,
       timeoutMinutes: c.timeout_minutes,
       enabled: c.enabled,
+      free: c.free,
       permissions: c.permissions,
       options: c.options,
     };

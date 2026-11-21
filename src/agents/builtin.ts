@@ -1,4 +1,6 @@
 import {
+  claudeQuotaReader,
+  codexQuotaReader,
   codexActivities,
   codexMeter,
   defineAgent,
@@ -58,6 +60,7 @@ export const claudePlugin: AgentPlugin = defineAgent({
   defaultAllowedTools: { readOnly: READ_TOOLS, write: ['Read', 'Grep', 'Glob', ...EDIT_TOOLS, ...EXEC_TOOLS] },
   build: (req) => ({ args: claudeStyleArgs(req), stdin: req.prompt }),
   parse: (raw) => parseStreamJsonResult(raw.stdout),
+  quota: claudeQuotaReader,
   meter: () => streamJsonMeter({ inputIncludesCache: false }),
 });
 
@@ -81,6 +84,7 @@ export const codexPlugin: AgentPlugin = defineAgent({
   apiVersion: PLUGIN_API_VERSION,
   id: 'codex',
   progress: codexActivities,
+  quota: codexQuotaReader,
   meter: codexMeter,
   displayName: 'Codex',
   defaultCommand: 'codex',

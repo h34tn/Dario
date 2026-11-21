@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { setup } from './ui-session-helper.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -38,4 +38,47 @@ describe('状态栏：换人之后显示实际上场的 AI', () => {
     finish();
     await session.whenIdle();
   });
+});
+
+it('额度跟随实际担当者，探测期间的新事件优先，只处理当前任务且不重复探测', async () => {
+  const { session, engine, snap, emit, hold } = await setup(undefined, undefined, [
+    { id: 'claude', quota: { free: true, windows: [] } },
+    { id: 'codex', quota: { free: false, windows: [{ id: '周', usedPercent: 37 }] } },
+  ]);
+  const percent = (label: string) => snap().status.roles.find(r => r.label === label)?.quotaPercent;
+  expect(percent('主控')).toBe(0);
+  expect(percent('实现')).toBe(37);
+  const finish = hold();
+  session.submit('任务');
+  await tick();
+  emit({ jobId: 'J0001', kind: 'fallback', step: { index: 0, role: 'lead', roleLabel: '主控', kind: 'plan', agent: 'codex' }, text: '' });
+  const calls = engine.agentsView.mock.calls.length;
+  const quota = { agent: 'codex', windows: [{ id: '周', usedPercent: 88 }] };
+  emit({ jobId: 'J0001', kind: 'quota', quota, text: '' });
+  expect(percent('实现')).toBe(88);
+  await tick();
+  expect(percent('主控')).toBe(88);
+  emit({ jobId: 'J9999', kind: 'quota', quota: { ...quota, windows: [] }, text: '' });
+  expect(percent('主控')).toBe(88);
+  expect(engine.agentsView).toHaveBeenCalledTimes(calls);
+  finish();
+  await session.whenIdle();
+  expect(percent('主控')).toBe(0);
+});
+
+it('停留在界面时主窗口重置后不再显示数字', async () => {
+  vi.useFakeTimers();
+  try {
+    const windows = [1, 2].map(n => ({ id: String(n), usedPercent: 30 * n,
+      resetsAt: new Date(Date.now() + n * 1000).toISOString(), primary: n === 1 ? true as const : undefined }));
+    const { session, snap, engine } = await setup(undefined, undefined, [{ id: 'claude', quota: { free: false, windows } }]);
+    const percent = () => snap().status.roles[0]?.quotaPercent;
+    expect(percent()).toBe(30);
+    vi.advanceTimersByTime(1000);
+    expect(percent()).toBeUndefined();
+    vi.advanceTimersByTime(1000);
+    expect(percent()).toBeUndefined();
+    expect(engine.agentsView).toHaveBeenCalledTimes(1);
+    session.dispose();
+  } finally { vi.useRealTimers(); }
 });

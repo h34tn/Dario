@@ -32,6 +32,7 @@ export function shortRole(label: string): string {
 
 export function reduceFeed(state: FeedState, event: ProgressEvent, now: number): FeedState {
   const { kind, step, fallback } = event;
+  if (kind === 'quota') return state;
   if (kind === 'activity') {
     if (!state.current || state.activities.at(-1) === event.text) return state;
     return { ...state, activities: [...state.activities.slice(1 - MAX_ACTIVITIES), event.text] };

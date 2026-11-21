@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { AgentInstanceConfig, WritePermissions } from '../core/config.js';
 import type { AgentDetect, AgentPort, AgentRunRequest, AgentRunResult } from '../core/ports.js';
 import { realPath } from '../core/util.js';
-import { looksSessionLost, looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type RawResult, type TokenUsage } from '../plugin.js';
+import { looksSessionLost, looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type QuotaReader, type QuotaWindow, type RawResult, type TokenUsage } from '../plugin.js';
 import { buildEnv, runProcess, SYSTEM_ENV, which } from './spawn.js';
 
 export interface HandleSettings {
@@ -116,6 +116,10 @@ export class AgentHandle implements AgentPort {
     return this.config.enabled !== false;
   }
 
+  get free(): boolean {
+    return this.config.free === true;
+  }
+
   get resumes(): boolean {
     return this.plugin.resumes === true;
   }
@@ -178,6 +182,19 @@ export class AgentHandle implements AgentPort {
       ...(resume && { resume }),
     });
 
+    const env = this.envFor(invocation.env);
+    let reader: QuotaReader | undefined;
+    try {
+      if (!this.free) reader = this.plugin.quota?.();
+    } catch {
+      // 插件不能采集额度时，任务照常执行
+    }
+    let quota: QuotaWindow[] | undefined;
+    const observe = (windows: QuotaWindow[] | undefined): void => {
+      if (!windows) return;
+      quota = windows;
+      req.onQuota?.(windows);
+    };
     const meter = this.plugin.meter?.();
     let tokens: TokenUsage | undefined;
     const showActivity = req.onActivity;
@@ -185,12 +202,17 @@ export class AgentHandle implements AgentPort {
       command: this.command,
       args: invocation.args,
       cwd: req.cwd,
-      env: this.envFor(invocation.env),
+      env,
       stdin: invocation.stdin,
       timeoutMs: req.timeoutMs,
       startupTimeoutMs: this.plugin.streams ? this.settings.startupTimeoutSeconds * 1000 : undefined,
       onSpawn: (pid) => req.onPid?.(pid),
-      onStdoutLine: (showActivity && this.plugin.progress) || meter ? (line) => {
+      onStdoutLine: (showActivity && this.plugin.progress) || meter || reader?.onLine ? (line) => {
+        try {
+          observe(reader?.onLine?.(line));
+        } catch {
+          // 额度解析失败不影响用量和活动
+        }
         // 用量和活动互不影响：先统计用量，解析活动出错也不会丢掉这一行的用量
         try {
           const usage = meter?.(line);
@@ -234,6 +256,11 @@ export class AgentHandle implements AgentPort {
       startupTimedOut: out.startupTimedOut,
     };
     const { result, output } = classify(this.plugin, raw);
+    try {
+      observe(await reader?.afterRun?.({ sessionId: output?.sessionId, env }));
+    } catch {
+      // 额度读取失败不影响运行结果
+    }
     // 会话不在了是续接特有的失败：工具根本没有开始干活，换成新会话重跑即可，不算这家 AI 不可用。
     // 只看报错和最终答复；没有答复时才看原始输出（有的工具把这个错误写在标准输出里），免得把 AI 干活过程中的文字当成证据
     const answer = output?.text.trim() ?? '';
@@ -249,6 +276,7 @@ export class AgentHandle implements AgentPort {
       durationMs: out.durationMs,
       costUsd: output?.costUsd,
       tokens,
+      ...(quota && { quota }),
       sessionId: this.resumes ? output?.sessionId : undefined,
       ...(sessionLost && { sessionLost }),
       // 个别插件把任务说明放在参数里，记录时截短

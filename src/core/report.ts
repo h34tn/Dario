@@ -1,9 +1,48 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Activity } from '../plugin.js';
+import type { Activity, QuotaWindow } from '../plugin.js';
+import type { AgentView } from './engine.js';
 import type { RoleView } from './roles.js';
 import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job } from './types.js';
-import { formatDuration, formatTokens } from './util.js';
+import { formatDuration, formatLocalTime, formatTokens } from './util.js';
+
+function isQuotaWindowActive(window: QuotaWindow, now: Date): boolean {
+  return !window.resetsAt || Date.parse(window.resetsAt) > now.getTime();
+}
+
+export function quotaPercent(quota: AgentView['quota'], now: Date): number | undefined {
+  if (quota?.free) return 0;
+  if (!quota?.windows.length) return undefined;
+  const primary = quota.windows.find(w => w.primary);
+  if (primary) return isQuotaWindowActive(primary, now) ? Math.round(primary.usedPercent) : undefined;
+  const active = quota.windows.filter(w => isQuotaWindowActive(w, now));
+  return active.length ? Math.round(Math.max(...active.map(w => w.usedPercent))) : undefined;
+}
+
+export function formatQuota(quota: AgentView['quota'], now: Date): string {
+  if (quota?.free) return '额度 0%（免费）';
+  const windows = quota?.windows.filter(w => isQuotaWindowActive(w, now));
+  if (!windows?.length) return '额度未知';
+  windows.sort((a, b) => Number(!!b.primary) - Number(!!a.primary));
+  const lengthOf = (w: QuotaWindow): string => {
+    const minutes = w.windowMinutes;
+    return minutes === undefined ? w.id : minutes < 60 ? `${minutes} 分钟` :
+      minutes < 1440 ? `${minutes / 60} 小时` : `${minutes / 1440} 天`;
+  };
+  // 两个窗口长度相同（例如 Claude 的两个 7 天窗口）时只写长度分不清，补上工具报告的窗口标识
+  const seen = new Map<string, number>();
+  for (const w of windows) seen.set(lengthOf(w), (seen.get(lengthOf(w)) ?? 0) + 1);
+  return '额度 ' + windows.map(w => {
+    const length = lengthOf(w);
+    const name = seen.get(length)! > 1 && length !== w.id ? `${length}（${w.id}）` : length;
+    // 名称以全角括号结尾时，后面不再加空格
+    const usage = `${name}${name.endsWith('）') ? '' : ' '}${Math.round(w.usedPercent)}%`;
+    if (!w.resetsAt) return usage;
+    const today = new Date(w.resetsAt).toDateString() === now.toDateString();
+    const time = formatLocalTime(w.resetsAt).slice(today ? 11 : 5);
+    return `${usage}（${time} 重置）`;
+  }).join('、');
+}
 
 export function formatActivity(activity: Activity): string {
   if (activity.kind === 'say') return activity.text;

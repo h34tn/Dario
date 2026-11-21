@@ -3,6 +3,7 @@ import type { ReactElement } from 'react';
 import { expect, it, vi } from 'vitest';
 import { StatusBar } from '../src/ui/StatusBar.js';
 import type { StatusView } from '../src/ui/session.js';
+import { paint } from '../src/ui/theme.js';
 import { clip, displayWidth } from '../src/ui/text.js';
 
 // 直接调用组件取出它自己截断好的文字，逐列扫描时不必每次经过渲染库；真实渲染见 ui-screen.test.tsx。
@@ -85,3 +86,18 @@ it.each(variants.flatMap(([name, status]) => [true, false].map(color => [name, c
     }
     expect(shown).toBeGreaterThan(0);
   });
+
+it('百分数按三档着色，未知时留空，窄屏将百分数计入宽度', () => {
+  Object.assign(screen, { columns: 160, wide: false });
+  const status = { project, roles: [
+    { ...roles.lead, quotaPercent: 74 }, { ...roles.coder, quotaPercent: 75 },
+    { ...roles.review, quotaPercent: 90 }, roles.helper,
+  ] };
+  expect(line(status, false)).toContain('主控 a1 74% · 实现 a2 75% · 审查 a3 90% · 杂活 a4 ·');
+  expect(line(status, true)).toContain(paint('dim', '74%', true));
+  expect(line(status, true)).toContain(paint('warn', '75%', true));
+  expect(line(status, true)).toContain(paint('fail', '90%', true));
+  screen.columns = displayWidth(line(status, false), false);
+  expect(line(status, false)).not.toContain('杂活');
+  expect(line(status, false)).toContain('上文 J0001');
+});

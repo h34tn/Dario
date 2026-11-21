@@ -26,7 +26,7 @@ export async function finishInPlain(session: Session, opts: ReplOptions, error: 
   const { runningJobId, queued } = session.getSnapshot();
   if (!runningJobId && !queued) return session.whenIdle();
   const off = opts.engine.onProgress(event => {
-    if (event.kind !== 'activity' && event.kind !== 'usage' && event.jobId === session.getSnapshot().runningJobId) opts.printLine(`[${event.jobId}] ${event.text}`);
+    if (event.kind !== 'activity' && event.kind !== 'quota' && event.kind !== 'usage' && event.jobId === session.getSnapshot().runningJobId) opts.printLine(`[${event.jobId}] ${event.text}`);
   });
   let prompt: readline.Interface | undefined;
   function checkPlan() {

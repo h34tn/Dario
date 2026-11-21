@@ -82,6 +82,8 @@ dario -p --to 审核者 --output-format json "检查这次改动" < 任务说明
 rise · 主控 claude · 执行者 codex · 测试者 claude · 审核者 claude
 ```
 
+状态栏里型号后面的百分数是该 AI 最近一次运行时报告的已用额度。Claude Code 和 Codex 由工具自己报告，CodeBuddy 不报告。如果工具标了主窗口，状态栏只显示这个窗口的比例。到达主窗口的重置时刻，数字就会隐藏，直到下一次运行报告新额度。如果工具没标主窗口，就显示尚未过期窗口中最高的已用比例，全部过期后隐藏数字。用 `/agents` 或 `dario agents` 可以查看所有尚未过期的窗口和各自的重置时间，也可以用 `dario health <AI>` 实际调用一次来刷新。在 `~/.dario/agents.yaml` 里给免费的 AI 写上 `free: true`，状态栏就会显示 `0%`。
+
 - 直接输入文字是把任务交给主控；`/to 执行者 …` 直接交给某个角色。
 - 输入 `/` 弹出指令列表，Tab 补全。`/help` 查看全部指令。
 - 任务运行时可以继续输入，新任务会排队。
@@ -260,9 +262,11 @@ export default {
 
 想在界面上显示 token 用量，再实现一个可选的 `meter()`：每次运行调用一次，返回的函数逐行接收标准输出，用量有变化时返回 `{ input, cachedInput, output }`（到目前为止的累计值，`input` 含命中缓存的 `cachedInput`）。工具只报整个会话的累计值时加上 `sessionTotal: true`，续接时 Dario 会自己减去上一轮的数。
 
+要显示额度，可实现 `quota()`。Dario 每次运行调用一次，返回的读取器可以提供 `onLine(line)` 逐行读取标准输出，也可以提供 `afterRun({ sessionId, env })` 在运行结束后读取会话记录，两者可同时提供。有数据时返回本次观测的全部窗口，每个窗口包含标识 `id`、已用百分数 `usedPercent`（如 75 表示 75%），以及可选的窗口长度 `windowMinutes`、重置时刻 `resetsAt` 和主窗口标记 `primary`。额度只用于显示。
+
 声明了 `resumes: true` 的 AI，再次担当同一角色时会续接上一次的会话（比如执行者返工、审核者再审，以及交互界面里的后续任务），不必重新读一遍项目。内置的三家都支持；声明式插件不支持，每一步都新开会话。
 
-接口的类型定义和辅助函数（`parseJsonLines`、`parseStreamJsonResult`、`streamJsonMeter`、`looksUnavailable`、`looksSessionLost`）从 `dario/plugin` 导出。
+接口的类型定义和辅助函数（`parseJsonLines`、`parseStreamJsonResult`、`streamJsonMeter`、`claudeQuotaReader`、`codexQuotaReader`、`looksUnavailable`、`looksSessionLost`）从 `dario/plugin` 导出。
 
 ## 接入飞书
 

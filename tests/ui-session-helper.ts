@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import type { Engine } from '../src/core/engine.js';
+import type { AgentView, Engine } from '../src/core/engine.js';
 import type { Job, ProgressEvent } from '../src/core/types.js';
 import { Session, type SessionOptions } from '../src/ui/session.js';
 
@@ -18,7 +18,7 @@ export const DEFAULT_ROWS: RoleRow[] = [
   state: id === 'coder' ? 'unavailable' : 'ok' }));
 
 export async function setup(options?: Partial<SessionOptions>, rows: RoleRow[] = DEFAULT_ROWS,
-  agents: Array<{ id: string; model?: string }> = [{ id: 'codex' }], extra: Record<string, unknown> = {}) {
+  agents: Array<Pick<AgentView, 'id' | 'model' | 'quota'>> = [{ id: 'codex' }], extra: Record<string, unknown> = {}) {
   const views = rows.map(({ id, label, holder, access, state }) => ({ id, alias: [label], holder, access,
     candidates: [{ agent: holder ?? 'a9', state }] }));
   const listeners = new Set<(e: ProgressEvent) => void>();

@@ -1,7 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import type { QuotaWindow } from '../plugin.js';
 import type { Job, RoleSession } from './types.js';
 import { normPath, nowIso, readJson, shortHash, withLock, writeJsonAtomic } from './util.js';
+
+interface SavedQuota {
+  observedAt: string;
+  windows: QuotaWindow[];
+}
 
 export interface HealthMark {
   until: string;
@@ -171,6 +178,24 @@ export class StateStore {
         delete all[agent];
         writeJsonAtomic(this.healthFile(), all);
       }
+    });
+  }
+
+  getQuotas(): Record<string, SavedQuota> {
+    return readJson(this.file('quota.json'), {});
+  }
+
+  /** 在同一把锁下比较和保存；窗口顺序变化不算新观测。 */
+  saveQuota(agent: string, windows: QuotaWindow[]): boolean {
+    return this.lock('quota', () => {
+      const all = this.getQuotas();
+      const previous = all[agent]?.windows;
+      if (previous && previous.length === windows.length) {
+        const byId = new Map(previous.map(window => [window.id, window]));
+        if (windows.every(window => isDeepStrictEqual(window, byId.get(window.id)))) return false;
+      }
+      writeJsonAtomic(this.file('quota.json'), { ...all, [agent]: { observedAt: nowIso(), windows } });
+      return true;
     });
   }
 
