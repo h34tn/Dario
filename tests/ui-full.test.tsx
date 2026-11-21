@@ -163,6 +163,31 @@ it('提交后回显并贴底，菜单过滤和补全沿用输入框', async () =
   await ui.contains('> /roles');
 });
 
+it('全屏矮窗口的菜单跟随高亮，关闭后恢复历史和多行光标移动', async () => {
+  const ui = await screen(60, 8);
+  await ui.key('历史任务');
+  await ui.key('\r');
+  await ui.contains('上文 J0001');
+  await ui.key('/');
+  await ui.key('\x1b[A');
+  await ui.contains('（15/15）');
+  expect(ui.lines()).toContain('> /');
+  expect(ui.lines().some(line => line.startsWith('> /exit '))).toBe(true);
+  expect(ui.lines()).toHaveLength(8);
+  await ui.key('\x1b[B');
+  await ui.contains('> /to <角色>');
+  await ui.key('\n');
+  await ui.key('正文');
+  await ui.key('\x1b[A');
+  await ui.key('甲');
+  await ui.contains('> /甲');
+  expect(ui.lines().join('\n')).not.toContain('（1/15）');
+  await ui.key('\x1b');
+  await ui.check(lines => expect(lines.at(-4)).toBe('>'));
+  await ui.key('\x1b[A');
+  await ui.check(lines => expect(lines.at(-4)).toBe('> 历史任务'));
+});
+
 it('长计划展开后仍可翻页和滚动，确认提示始终固定', async () => {
   const ui = await screen(60, 12);
   ui.engine.advance.mockImplementationOnce(async (job, opts) => {

@@ -75,6 +75,49 @@ it('菜单过滤与补全，提交后输入清空并回显到历史', async () =
   expect(view.lastFrame()).toMatch(/\n>\s*\n/);
 });
 
+it('行内菜单循环滚动，过滤后回到首条，Tab 补全所选指令', async () => {
+  const { key, contains, absent } = await screen();
+  key('/');
+  await contains('> /to <角色>');
+  await contains('（1/15）');
+  key('\x1b[A');
+  await contains('> /exit');
+  await contains('（15/15）');
+  await absent('直接交给指定角色');
+  key('\x1b[B');
+  await contains('> /to <角色>');
+  key('\x1b[B');
+  key('r');
+  await contains('> /roles ');
+  await absent('（');
+  key('\x1b[B');
+  key('\t');
+  await contains('> 主控');
+});
+
+it('Enter 执行完整或可直接执行的指令，有必填参数或选择参数时先补全', async () => {
+  const { key, contains, session } = await screen();
+  const submit = vi.spyOn(session, 'submit');
+  for (const [input, command] of [['/new', '/new'], ['/ro', '/roles'], ['/sta', '/status']] as const) {
+    key(input);
+    key('\r');
+    await vi.waitFor(() => expect(submit).toHaveBeenLastCalledWith(command));
+  }
+  submit.mockClear();
+  key('/ro');
+  key('\x1b[B');
+  key('\r');
+  await contains('> 主控');
+  key('\x1b[B');
+  key('\r');
+  await contains('> codex');
+  key('\r');
+  await contains('> /role 实现 codex');
+  expect(submit).not.toHaveBeenCalled();
+  key('\r');
+  await vi.waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith('/role 实现 codex'));
+});
+
 it.each([6, 10, 12, 20, 40])('交互界面在 %i 行终端随菜单调整活动和输入光标', async rows => {
   const { props, view, key, session, emit, hold, contains } = await screen();
   Object.assign(view.stdout, { rows });
@@ -85,7 +128,7 @@ it.each([6, 10, 12, 20, 40])('交互界面在 %i 行终端随菜单调整活动�
   emit({ jobId, kind: 'step_start', text: '', step });
   const activities = Array.from({ length: 100 }, (_, i) => `活动 ${i}`);
   async function check(count: number, menu: boolean) {
-    const footer = menu ? Math.min(6, rows - 5) : 1;
+    const footer = menu ? Math.min(7, rows - 5) : 1;
     const available = Math.max(1, rows - 5 - footer);
     const omitted = count > available ? count - available + 1 : 0;
     const expected = activities.slice(omitted, count).map(text => '    ' + text);

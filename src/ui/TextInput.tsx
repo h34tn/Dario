@@ -11,6 +11,7 @@ export interface TextInputProps {
   currentState?: RefObject<EditorState>;
   onChange: (state: EditorState) => void;
   onSubmit: (text: string) => void;
+  onMenuKey?: (key: 'up' | 'down' | 'tab' | 'enter') => boolean;
   prompt?: string;
   view?: ReturnType<typeof editorWindow>;
   onNewline?: (key: string) => void;
@@ -39,14 +40,14 @@ function editKey(input: string, key: Key): EditorAction | undefined {
   if (input) return { type: 'insert', text: input };
 }
 
-export function TextInput({ state, currentState, onChange, onSubmit, prompt = '> ', view: suppliedView, onNewline, row, isActive = true, color }: TextInputProps) {
+export function TextInput({ state, currentState, onChange, onSubmit, onMenuKey, prompt = '> ', view: suppliedView, onNewline, row, isActive = true, color }: TextInputProps) {
   // 同一批输入可能在父组件重画前连续到达。
   const local = useRef(state);
   const current = currentState ?? local;
   useLayoutEffect(() => { local.current = state; }, [state]);
   function change(next: EditorState) {
     if (next === current.current) return;
-    current.current = next;
+    local.current = next;
     onChange(next);
   }
   const { columns, wide, ellipsis } = useScreen();
@@ -64,7 +65,8 @@ export function TextInput({ state, currentState, onChange, onSubmit, prompt = '>
       if (letters[state.cursor - 1] === '\\' && (state.cursor === letters.length || letters[state.cursor] === '\n')) {
         newline = '反斜杠+Enter';
       } else {
-        const result = editorSubmit(state);
+        if (onMenuKey?.('enter')) return;
+        const result = editorSubmit(current.current);
         if (result.text !== undefined) {
           change(result.state);
           onSubmit(result.text);
@@ -77,6 +79,9 @@ export function TextInput({ state, currentState, onChange, onSubmit, prompt = '>
       change(editorReduce(base, { type: 'newline' }));
       onNewline?.(newline);
       return;
+    }
+    if (!key.ctrl && !key.meta && (key.tab || key.upArrow || key.downArrow)) {
+      if (onMenuKey?.(key.tab ? 'tab' : key.upArrow ? 'up' : 'down')) return;
     }
     const action = editKey(input, key);
     if (action) change(editorReduce(state, action, width, wide));

@@ -6,7 +6,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CurrentStep } from '../src/ui/LiveJob.js';
 import { StatusBar } from '../src/ui/StatusBar.js';
-import { CommandMenu } from '../src/ui/CommandMenu.js';
+import { CommandMenu, menuLayout } from '../src/ui/CommandMenu.js';
 import { PlanPrompt } from '../src/ui/PlanPrompt.js';
 import { TextInput } from '../src/ui/TextInput.js';
 import { EMPTY_EDITOR } from '../src/ui/editor.js';
@@ -94,14 +94,28 @@ it('担当者着色：正常用 AI 名的颜色，首选异常用警告色，无
   expect(frame).not.toContain(paint('agent', 'a2', true));
 });
 
+it('菜单显示六个候选、选中标记和位置，滚动后仍能看见选中项', async () => {
+  const suggestions = Array.from({ length: 9 }, (_, i) => ({ label: '项' + i, value: String(i), hint: '' }));
+  function menu(selected: number, items = suggestions) {
+    return <CommandMenu suggestions={items} selected={selected} layout={menuLayout(items.length, 7)} color={false} />;
+  }
+  const view = render(menu(0));
+  const lines = () => view.lastFrame()!.split('\n').map(line => line.trimEnd());
+  expect(lines()).toEqual(['> 项0', '  项1', '  项2', '  项3', '  项4', '  项5', '（1/9）']);
+  view.rerender(menu(7));
+  expect(lines()).toEqual(['  项2', '  项3', '  项4', '  项5', '  项6', '> 项7', '（8/9）']);
+  view.rerender(menu(0, suggestions.slice(0, 2)));
+  expect(lines()).toEqual(['> 项0', '  项1']);
+});
+
 it('四十列下活动、状态、菜单与两种计划视图都留有一格', async () => {
   const view = await narrow(<Box flexDirection="column">
     <CurrentStep now={0} symbols={pickSymbols({})} color={false} activityLines={[long]} feed={{ lines: [], stopping: false,
       activities: [long], current: { index: 0, kind: 'step', role: '实现', startedAt: 0, state: 'running' } }} />
     <StatusBar status={{ project: long, roles: [] }} color={false} queued={2} />
     <StatusBar status={{ project: '项目', roles: [] }} color queued={2} contextJobId={long} />
-    <CommandMenu suggestions={[{ label: '短', value: '短', hint: long }]} color={false} />
-    <CommandMenu suggestions={[{ label: long, value: '长', hint: '不可见' }]} color={false} />
+    <CommandMenu selected={0} layout={menuLayout(1, 7)} suggestions={[{ label: '短', value: '短', hint: long }]} color={false} />
+    <CommandMenu selected={0} layout={menuLayout(1, 7)} suggestions={[{ label: long, value: '长', hint: '不可见' }]} color={false} />
     <PlanPrompt plan={{ summary: '', steps: [{ role: '实现', writes: true, task: long, acceptance: long }] }}
       roleLabel={role => role} color={false} onDecide={vi.fn()} />
   </Box>);

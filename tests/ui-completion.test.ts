@@ -5,9 +5,11 @@ import { editorSetValue, EMPTY_EDITOR } from '../src/ui/editor.js';
 const ctx = { roles: [{ id: 'coder', alias: ['实现'] }], agents: ['claude', 'codex', 'other'] };
 const values = (line: string) => suggest(line, ctx).map(s => s.value);
 
-it('按顺序限制六条指令并按是否带参数补空格', () => {
-  expect(values('/')).toEqual(['/to ', '/roles', '/role ', '/model ', '/agents', '/health ']);
+it('按顺序列出全部指令并按是否带参数补空格', () => {
+  expect(values('/')).toEqual(['/to ', '/roles', '/role ', '/model ', '/agents', '/health ',
+    '/status ', '/approve ', '/cancel ', '/diff', '/continue ', '/new', '/plain', '/help', '/exit']);
   expect(values('/r')).toEqual(['/roles', '/role ']);
+  expect(values('/role\ncoder')).toEqual([]);
   expect(values('任务')).toEqual([]);
 });
 

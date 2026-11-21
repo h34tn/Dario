@@ -2,7 +2,7 @@ import { Box, Text, useInput, useStdout } from 'ink';
 import { stripVTControlCharacters } from 'node:util';
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ModelPrompt } from './ModelPrompt.js';
-import { CommandMenu } from './CommandMenu.js';
+import { CommandMenu, menuLayout } from './CommandMenu.js';
 import { createLineCache, FALLBACK_HINT, fallbackLines, planLines, stepText, wrapAnsi } from './lines.js';
 import { useSessionEditor } from './ReplApp.js';
 import { DisplayBoundary } from './RunApp.js';
@@ -48,7 +48,7 @@ function Screen({ session, symbols, color, onMouse, copy, readClipboard, onExit 
   const { rows, columns, wide, ellipsis } = useScreen();
   const limit = Math.max(0, columns - 1);
   const small = rows < 8 || columns < 40;
-  const { snap, editor, current, change, now, warningText, suggestions } = useSessionEditor({ session, onExit, suspended: small });
+  const { snap, editor, current, change, now, warningText, suggestions, selected, onMenuKey } = useSessionEditor({ session, onExit, suspended: small });
   const [expanded, expand] = useState<typeof snap.plan>();
   const [cache] = useState(createLineCache);
   const ctx = { symbols, color, wide };
@@ -143,9 +143,10 @@ function Screen({ session, symbols, color, onMouse, copy, readClipboard, onExit 
   function adjusted(height: number) {
     return afterChange(anchor.view, total - anchor.total + anchor.height - height, total, height);
   }
-  const menu = !snap.plan && !snap.ask && !warningText && !adjusted(baseHeight).offset ? suggestions.slice(0, baseHeight) : [];
-  const height = baseHeight - Math.max(0, menu.length - 1);
-  const view = menu.length ? FOLLOW : adjusted(height);
+  const menuVisible = baseHeight > 0 && !warningText && !adjusted(baseHeight).offset;
+  const layout = menuLayout(suggestions.length, menuVisible ? baseHeight : 0);
+  const height = baseHeight - Math.max(0, layout.height - 1);
+  const view = layout.height ? FOLLOW : adjusted(height);
   const { visible, below, above } = sliceView(lines, height, view);
   // 收缩后触底便恢复跟随，避免旧偏移在下一次追加时复现。
   if (!small && (anchor.total !== total || anchor.height !== height)) setAnchor({ view, total, height });
@@ -273,10 +274,10 @@ function Screen({ session, symbols, color, onMouse, copy, readClipboard, onExit 
     {stepLine !== undefined && <Text wrap="truncate-end">{stepLine}</Text>}
     {!!notice && <Text wrap="truncate-end">{' '.repeat(Math.max(0, limit - displayWidth(fit(notice), wide))) + paint('dim', fit(notice), color)}</Text>}
     <Text wrap="truncate-end">{rule}</Text>
-    <TextInput view={inputView} state={editor} currentState={current} onChange={change} onSubmit={text => { follow(); session.submit(text); }}
+    <TextInput view={inputView} state={editor} currentState={current} onChange={change} onMenuKey={menuVisible ? onMenuKey : undefined} onSubmit={text => { follow(); session.submit(text); }}
       row={height + stepHeight + Number(!!notice) + 1} isActive={!snap.plan && !snap.ask} color={color} />
     <Text wrap="truncate-end">{rule}</Text>
-    {menu.length ? <CommandMenu suggestions={menu} color={color} />
+    {layout.height ? <CommandMenu {...{ suggestions, selected, layout, color }} />
       : <Text wrap="truncate-end">{paint(snap.plan || snap.ask || warningText ? 'warn' : 'dim', fit(hint), color)}</Text>}
     <StatusBar status={snap.status} queued={snap.queued} contextJobId={snap.contextJobId} color={color} />
   </Box>;

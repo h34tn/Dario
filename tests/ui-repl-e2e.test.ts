@@ -291,7 +291,8 @@ describe('完整交互界面：指令', () => {
     expect(ui.term.screen()).toContain('查看角色表');
     expect(ui.term.screen()).toContain('/role <角色> <AI>');
     ui.term.press('\t');
-    await ui.see('> /roles');
+    // 菜单的高亮行也以 "> /roles" 开头，所以要等输入框那一行（整行只有指令本身）出现，才说明 Tab 生效了
+    await waitFor(() => /^> \/roles\s*$/m.test(ui.term.screen()), '输入框补全成 /roles', ui.term.screen);
     ui.term.press('\r');
     await ui.see('实现（coder） · 可写 · 当前担当：a2');
 

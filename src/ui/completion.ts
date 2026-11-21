@@ -2,6 +2,7 @@ export interface Suggestion {
   value: string;
   label: string;
   hint: string;
+  submitOnSelect?: boolean;
 }
 
 export interface CompletionContext {
@@ -28,11 +29,11 @@ const commands = [
 ] as const;
 
 export function suggest(line: string, ctx: CompletionContext): Suggestion[] {
-  if (!line.startsWith('/')) return [];
+  if (!line.startsWith('/') || /[\r\n]/.test(line)) return [];
   const [name, ...args] = line.split(/\s+/);
   const command = name!.toLowerCase();
-  if (!args.length) return commands.filter(([label]) => label.startsWith(command)).slice(0, 6)
-    .map(([label, hint]) => ({ label, hint, value: label.replace(/ .*/, ' ') }));
+  if (!args.length) return commands.filter(([label]) => label.startsWith(command))
+    .map(([label, hint]) => ({ label, hint, submitOnSelect: !label.includes('<'), value: label.replace(/ .*/, ' ') }));
 
   const prefix = args.at(-1)!.toLowerCase();
   let options: Suggestion[];
@@ -45,5 +46,5 @@ export function suggest(line: string, ctx: CompletionContext): Suggestion[] {
     options = ctx.agents.map(label => ({ label, hint: '', value: base + label }));
     if (command === '/role') options.push({ label: 'reset', hint: '恢复为角色表里的顺序', value: base + 'reset' });
   } else return [];
-  return options.filter(item => item.label.toLowerCase().startsWith(prefix)).slice(0, 6);
+  return options.filter(item => item.label.toLowerCase().startsWith(prefix));
 }
