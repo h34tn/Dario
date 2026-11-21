@@ -409,3 +409,12 @@ describe('分层', () => {
     }
   });
 });
+
+describe('ellipsis：压成一行并截短', () => {
+  it('只把空白压成一个空格，不动字母 s；超长时截断', async () => {
+    const { ellipsis } = await import('../src/core/util.js');
+    expect(ellipsis('修改 D:\Projects\Dario 里的\n  npm test   这一行', 80)).toBe('修改 D:\Projects\Dario 里的 npm test 这一行');
+    expect(ellipsis('  classes  ', 80)).toBe('classes');
+    expect(ellipsis('abcdef', 3)).toBe('abc…');
+  });
+});

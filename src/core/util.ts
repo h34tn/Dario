@@ -156,7 +156,7 @@ export function truncate(text: string, max: number): string {
 
 /** 压成一行并在超长时加省略号，用于列表里的简短显示。 */
 export function ellipsis(text: string, max: number): string {
-  const oneLine = text.replace(/s+/g, ' ').trim();
+  const oneLine = text.replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max)}…`;
 }
 
