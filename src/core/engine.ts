@@ -31,6 +31,8 @@ export interface SubmitRequest {
   confirm?: RunOptions['confirm'];
   confirmFallback?: RunOptions['confirmFallback'];
   context?: string;
+  /** context 是哪个任务的结论。 */
+  contextJob?: string;
   /** 同一次交互里上一个任务留下的各角色会话，本任务接着用。 */
   sessions?: Record<string, RoleSession>;
 }
@@ -131,6 +133,7 @@ export class Engine {
       strategy: this.deps.strategy,
       origin: req.origin,
       context: req.context,
+      ...(req.context && req.contextJob && { contextJob: req.contextJob }),
       // 带过来的会话在本任务里还没有上过场
       ...(req.sessions && {
         sessions: Object.fromEntries(Object.entries(req.sessions).map(([roleId, s]) => [roleId, { ...s, step: -1 }])),

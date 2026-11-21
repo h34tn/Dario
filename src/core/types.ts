@@ -100,6 +100,8 @@ export interface RoleSession {
    * 续接时指纹没变就不再重发这些内容；项目配置改了，指纹跟着变，会重发一次。
    */
   brief?: string;
+  /** 这个会话最近一次做成一步所在的任务。那个任务的经过和结论它已经知道，之后不必再当作"上文"发给它。 */
+  job?: string;
 }
 
 export interface PlanStep {
@@ -147,6 +149,8 @@ export interface Job {
   projectRoot: string;
   strategy: Strategy;
   origin: Origin;
+  /** context 是哪个任务的结论。用来判断带过来的会话是否已经知道这段上文。 */
+  contextJob?: string;
   /** 同一话题上一个任务的结论摘要。 */
   context?: string;
   plan?: Plan;

@@ -149,7 +149,7 @@ export class Session {
     this.roleSessions = saved.sessions;
     this.files = saved.files ?? [];
     this.contextVersion++;
-    this.update({ contextJobId: saved.context ? saved.jobId : undefined });
+    this.update({ contextJobId: saved.context ? (saved.contextJobId ?? saved.jobId) : undefined });
     try {
       const last = this.engine.job(saved.jobId);
       this.append('title', `${last.id} · ${last.task.split(/\r?\n/, 1)[0]}`);
@@ -291,7 +291,8 @@ export class Session {
       this.append('title', `${work.jobId} · 继续执行已批准的计划`);
       done = await this.engine.approve(work.jobId, { confirmFallback: this.confirmFallback });
     } else {
-      const job = this.engine.create({ task: work.text, role: work.role, ...(this.context && { context: this.context }),
+      const job = this.engine.create({ task: work.text, role: work.role,
+        ...(this.context && { context: this.context, contextJob: this.snapshot.contextJobId }),
         ...(this.roleSessions && { sessions: this.roleSessions }),
         origin: { channel: 'terminal', senderId: this.opts.senderId ?? os.userInfo().username } });
       this.update({ runningJobId: job.id });
@@ -317,7 +318,8 @@ export class Session {
     // 每个任务结束都存档，退出（包括更新 Dario 后重进）再进来可以用 --continue 或 /continue 接上
     if (version === this.contextVersion && (this.context || this.roleSessions)) {
       this.persist({ savedAt: nowIso(), jobId: done.id, task: done.task.split(/\r?\n/, 1)[0] ?? '', files: this.files,
-        ...(this.context && { context: this.context }), ...(this.roleSessions && { sessions: this.roleSessions }) });
+        ...(this.context && { context: this.context, contextJobId: this.snapshot.contextJobId }),
+        ...(this.roleSessions && { sessions: this.roleSessions }) });
     }
   }
 

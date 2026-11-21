@@ -217,6 +217,16 @@ export class Orchestrator {
     return how.delta(session.step, briefed);
   }
 
+  /**
+   * 给带过来的会话看的上文。上文是上一个任务的结论；这个会话最近一次干活就在那个任务里的话，
+   * 经过和结论它都已经知道，不再重发。新开的会话不走这里，照常收到上文。
+   */
+  private carriedContext(job: Job, roleId: string): string | undefined {
+    const session = job.sessions?.[roleId];
+    const known = session !== undefined && job.contextJob !== undefined && session.job === job.contextJob;
+    return known ? undefined : job.context;
+  }
+
   /** 把一步的失败记到任务上，返回给发起人看的说明。 */
   private failFromStep(job: Job, rec: StepRecord): string {
     job.status = statusForOutcome(rec.outcome);
@@ -244,8 +254,8 @@ export class Orchestrator {
       brief,
       // 直派只有一步，能续接的只有上一个任务带过来的会话
       followUp: this.followUp(job, roleId, brief, {
-        full: prompt,
-        carried: () => stepCarried(role, role.access, job.task, job.context),
+        full: stepPrompt(project, role, role.access, job.task, this.carriedContext(job, roleId)),
+        carried: () => stepCarried(role, role.access, job.task, this.carriedContext(job, roleId)),
         delta: () => undefined,
       }),
     });
@@ -275,8 +285,8 @@ export class Orchestrator {
         prompt,
         brief,
         followUp: this.followUp(job, lead, brief, {
-          full: prompt,
-          carried: () => planCarried(job.task, job.context),
+          full: planPrompt(project, roles, job.task, this.carriedContext(job, lead), feedback),
+          carried: () => planCarried(job.task, this.carriedContext(job, lead)),
           delta: () => (problem !== undefined ? planFollowUp(problem) : undefined),
         }),
       });
@@ -349,8 +359,8 @@ export class Orchestrator {
         prompt,
         brief,
         followUp: this.followUp(job, step.role, brief, {
-          full: prompt,
-          carried: () => stepCarried(role, role.access, step.task, context, step.acceptance),
+          full: stepPrompt(project, role, role.access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance),
+          carried: () => stepCarried(role, role.access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance),
           delta: (after, briefed) => stepFollowUp(project, role, role.access, step.task, job, after, step.acceptance, briefed),
         }),
       });

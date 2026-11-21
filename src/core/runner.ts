@@ -205,7 +205,7 @@ export class StepRunner {
         const total = res.tokens?.sessionTotal ? { input: res.tokens.input, cachedInput: res.tokens.cachedInput, output: res.tokens.output } : undefined;
         // 新开的会话只收到过这一步的固定说明；续接的会话在此之外还留着以前收到的
         const brief = req.brief ?? (resume ? slot?.brief : undefined);
-        sessions[req.roleId] = { agent, sessionId: res.sessionId, step: index, ...(total && { tokens: total }), ...(brief && { brief }) };
+        sessions[req.roleId] = { agent, sessionId: res.sessionId, step: index, job: req.job.id, ...(total && { tokens: total }), ...(brief && { brief }) };
       }
       else delete sessions[req.roleId];
       attempts.push({ agent, outcome: res.outcome, reason: res.reason, durationMs: res.durationMs });

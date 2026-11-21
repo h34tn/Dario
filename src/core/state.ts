@@ -17,6 +17,8 @@ export interface SavedSession {
   task: string;
   /** 带给下一个任务的上文。 */
   context?: string;
+  /** 上文是哪个任务的结论。 */
+  contextJobId?: string;
   /** 各角色的 AI 会话。 */
   sessions?: Record<string, RoleSession>;
   /** 最近一个任务改动的文件，供 /diff 使用。 */

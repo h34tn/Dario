@@ -34,6 +34,33 @@ export function extractJson(text: string): unknown {
   return undefined;
 }
 
+/**
+   * 去掉回复末尾的 JSON 计划，留下前面的正文。主控直接回答问题时，正文就是答案。
+   */
+export function proseBeforeJson(text: string): string {
+  const blocks = [...text.matchAll(/```(?:json|JSON)?\s*\n?([\s\S]*?)```/g)];
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const m = blocks[i]!;
+    try {
+      const v: unknown = JSON.parse(m[1]!.trim());
+      if (v && typeof v === 'object') return (text.slice(0, m.index) + text.slice(m.index! + m[0].length)).trim();
+    } catch {
+      // 换下一个代码块
+    }
+  }
+  const trimmed = text.trim();
+  for (let i = trimmed.lastIndexOf('{'); i >= 0; i = trimmed.lastIndexOf('{', i - 1)) {
+    try {
+      const v: unknown = JSON.parse(trimmed.slice(i));
+      if (v && typeof v === 'object') return trimmed.slice(0, i).trim();
+    } catch {
+      // 继续向前找
+    }
+    if (i === 0) break;
+  }
+  return trimmed;
+}
+
 const planSchema = z.object({
   summary: z.string().default(''),
   answer: z.string().nullish(),
@@ -84,11 +111,13 @@ export function parsePlan(text: string, ctx: PlanContext): { plan: Plan } | { er
     steps.push({ role: roleId, task: s.task, writes: s.writes, acceptance: s.acceptance ?? undefined });
   });
   if (steps.length > ctx.maxSteps) errors.push(`计划有 ${steps.length} 步，超过上限 ${ctx.maxSteps} 步`);
-  if (parsed.data.steps.length === 0 && !parsed.data.answer && !parsed.data.summary) {
+  // 没有步骤就是直接回答：答案是 JSON 之前的正文，只写一遍。JSON 里另外写了 answer 的（旧写法）以它为准
+  const answer = parsed.data.answer || (parsed.data.steps.length === 0 ? proseBeforeJson(text) : '') || null;
+  if (parsed.data.steps.length === 0 && !answer && !parsed.data.summary) {
     errors.push('计划既没有步骤，也没有给出答案');
   }
   if (errors.length > 0) return { error: errors.join('；') };
-  return { plan: { summary: parsed.data.summary, answer: parsed.data.answer ?? null, steps } };
+  return { plan: { summary: parsed.data.summary, answer, steps } };
 }
 
 const verdictSchema = z.object({
