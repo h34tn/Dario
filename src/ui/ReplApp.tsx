@@ -111,7 +111,7 @@ function Screen({ session, symbols, color, onExit, suspended }: Props) {
     {!suspended && snap.picker && <ModelPrompt color={color} picker={snap.picker} onKey={key => void session.modelKey(key)} />}
     {!suspended && !snap.picker && (snap.plan || snap.ask || rows >= minRows) && <>
       <CurrentStep feed={snap.feed} {...{ activityLines, now, color, symbols }} truncate />
-      {snap.plan && <PlanPrompt key={snap.runningJobId} plan={snap.plan} roleLabel={session.roleLabel} color={color}
+      {snap.plan && <PlanPrompt key={snap.runningJobId} plan={snap.plan} roleLabel={session.planRoleLabel} color={color}
         onDecide={approved => session.decidePlan(approved)} />}
       {snap.ask && <FallbackPrompt key={snap.ask.from[0]?.agent + '>' + snap.ask.to.agent} question={snap.ask} symbols={symbols} color={color}
         onDecide={approved => session.decideFallback(approved)} />}

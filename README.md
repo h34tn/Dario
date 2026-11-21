@@ -34,7 +34,7 @@ dario -c                                   # 交互方式，接上这个项目�
 dario -c J0027                             # 交互方式，从指定的任务接着做
 ```
 
-主控给出的计划如果要改文件，会先停下来等你确认：
+主控出计划时只读。已经读过代码、清楚怎么改的小改动（一两个文件、总共几十行以内），可以列为主控自己的步骤，确认后续接会话完成，改完照常审查。主控给出的计划如果要改文件，会先停下来等你确认：
 
 ```
 dario -p "给登录接口加上次数限制"          # 打印计划，退出码 4
@@ -136,7 +136,7 @@ dario input-test               # 检查中文输入法和粘贴在你的终端�
 |---|---|---|
 | 项目的 `.dario/` | `roles.yaml` | 角色表，随仓库提交，团队共用 |
 | | `dispatch-rules.md` | 主控按什么规则分派 |
-| | `project.yaml` | 允许改动的目录、时限、返工轮数、开工前是否先拉取等 |
+| | `project.yaml` | `lead_implements` 默认 `true`，设为 `false` 可让主控把动手步骤全部分派出去；另可设置允许改动的目录、时限、返工轮数、开工前是否先拉取等 |
 | 本机的 `~/.dario/` | `agents.yaml` | 各家 AI 的命令路径、默认及按角色的型号与强度、放行的工具、要加载的插件 |
 | | `channels.yaml`、`access.yaml` | 渠道设置与名单 |
 | | `state/` | 任务记录、审计日志 |
@@ -147,8 +147,8 @@ dario input-test               # 检查中文输入法和粘贴在你的终端�
 
 交给 Dario 的任务由各角色自己做完，中途不靠人，所以角色干活要用的工具都放行：
 
-- 只读角色（主控、审核者）：读取、搜索、几条只读的 git 命令，不加载 MCP。它们只做阅读和判断，要动手的事分派出去。
-- 可写角色（执行者、测试者）：**全部放行**，不逐项审批。命令、文件、MCP 都能用，分寸由各家 AI 自己把握。实现上是各家自己的方式：Claude Code 与 CodeBuddy 用 `--permission-mode bypassPermissions`，Codex 用 `--dangerously-bypass-approvals-and-sandbox`。
+- 只读步骤（出计划、汇总、审查）：读取、搜索、几条只读的 git 命令，不加载 MCP。
+- 可写步骤（包括主控自己执行和返工的小改动）：**全部放行**，不逐项审批。命令、文件、MCP 都能用，分寸由各家 AI 自己把握。实现上是各家自己的方式：Claude Code 与 CodeBuddy 用 `--permission-mode bypassPermissions`，Codex 用 `--dangerously-bypass-approvals-and-sandbox`。
 
 这意味着可写角色在你的机器上不受 Dario 限制，接入飞书后群里下达的任务也是这个权限。想收紧，在 `~/.dario/agents.yaml` 里改：
 

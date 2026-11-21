@@ -24,7 +24,7 @@ describe('提问类任务：答案只写一遍', () => {
     try {
       // 借沙箱里的角色表做校验
       const { engine, project } = await createApp({ cwd: sb.project, env: sb.env() });
-      const ctx = { roles: engine.roles, leadRole: project.settings.leadRole, maxSteps: 8 };
+      const ctx = { roles: engine.roles, ...project.settings };
       const fromProse = parsePlan(`答案在这里。\n\n${block({ summary: '概括', answer: null, steps: [] })}`, ctx);
       expect(fromProse).toMatchObject({ plan: { answer: '答案在这里。', steps: [] } });
       const legacy = parsePlan(`思路。\n\n${block({ summary: '概括', answer: '旧写法的答案', steps: [] })}`, ctx);

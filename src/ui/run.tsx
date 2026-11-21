@@ -97,7 +97,7 @@ export async function runLive(opts: LiveRunOptions): Promise<Job> {
     const plan = record.plan;
     if (!plan) return false;
     return new Promise(resolve => {
-      prompt = { plan, roleLabel, color, onDecide: approved => {
+      prompt = { plan, roleLabel: id => engine.roles.label(id, 'plan'), color, onDecide: approved => {
         prompt = undefined;
         update();
         resolve(approved);

@@ -2,6 +2,7 @@ import type { ProjectConfig } from './config.js';
 import { parsePlan, parseVerdict } from './plan.js';
 import {
   carriedPrompt,
+  leadStepFollowUp,
   parseBlocked,
   planBrief,
   planCarried,
@@ -58,7 +59,7 @@ function statusForOutcome(outcome: StepRecord['outcome']): JobStatus {
 export function describePlan(plan: Plan, roles: RoleBook): string {
   if (plan.steps.length === 0) return plan.summary || '（无步骤）';
   const lines = plan.steps.map(
-    (s, i) => `${i + 1}. [${roles.label(s.role)}${s.writes ? '，改文件' : '，只读'}] ${ellipsis(s.task, 160)}`,
+    (s, i) => `${i + 1}. [${roles.label(s.role, 'plan')}${s.writes ? '，改文件' : '，只读'}] ${ellipsis(s.task, 160)}`,
   );
   return `${plan.summary ? `${plan.summary}\n` : ''}${lines.join('\n')}`;
 }
@@ -141,12 +142,13 @@ export class Orchestrator {
     }
   }
 
-  private avoidFor(job: Job, roleId: string): string | undefined {
+  private avoidFor(job: Job, roleId: string, kind: StepKind): { role: string; agent: string } | undefined {
     const other = this.deps.roles.get(roleId).mustDifferFrom;
     if (!other) return undefined;
+    if (kind === 'review' && this.deps.project.settings.leadImplements && job.lastWriter) return job.lastWriter;
     for (let i = job.steps.length - 1; i >= 0; i--) {
       const s = job.steps[i]!;
-      if (s.role === other && s.agent && s.outcome === 'ok') return s.agent;
+      if (s.role === other && s.agent && s.outcome === 'ok') return { role: other, agent: s.agent };
     }
     return undefined;
   }
@@ -159,8 +161,8 @@ export class Orchestrator {
   ): Promise<StepRecord> {
     this.checkCancel(job);
     const before = await ws.stamp();
-    const avoid = this.avoidFor(job, req.roleId);
-    const rec = await this.deps.runner.run({ job, cwd: ws.cwd, avoid, confirmFallback: opts.confirmFallback, ...req });
+    const avoid = this.avoidFor(job, req.roleId, req.kind);
+    const rec = await this.deps.runner.run({ job, cwd: ws.cwd, avoid: avoid?.agent, confirmFallback: opts.confirmFallback, ...req });
     rec.changedFiles = await ws.changedSince(before);
     // 角色报告必需的工具或服务用不了：这一步算没做成，任务就此停下并告知发起人。
     // 会话仍然留着，问题解决后再下达任务可以接着做。
@@ -188,8 +190,8 @@ export class Orchestrator {
     if (writable && rec.outcome === 'ok' && rec.agent && (req.kind === 'step' || req.kind === 'rework')) {
       job.lastWriter = { role: req.roleId, agent: rec.agent, task: req.kind === 'rework' ? (job.lastWriter?.task ?? req.task ?? '') : (req.task ?? '') };
     }
-    if (avoid && rec.agent === avoid) {
-      job.warnings.push(`${this.deps.roles.label(req.roleId)}与${this.deps.roles.get(req.roleId).mustDifferFrom}由同一家 AI（${avoid}）担当：没有其他可用的候选。`);
+    if (avoid && rec.agent === avoid.agent) {
+      job.warnings.push(`${this.deps.roles.label(req.roleId)}与${avoid.role}由同一家 AI（${avoid.agent}）担当：没有其他可用的候选。`);
     }
     this.save(job);
     this.checkCancel(job);
@@ -286,7 +288,7 @@ export class Orchestrator {
         brief,
         followUp: this.followUp(job, lead, brief, {
           full: planPrompt(project, roles, job.task, this.carriedContext(job, lead), feedback),
-          carried: () => planCarried(job.task, this.carriedContext(job, lead)),
+          carried: () => planCarried(project.settings.leadImplements, job.task, this.carriedContext(job, lead)),
           delta: () => (problem !== undefined ? planFollowUp(problem) : undefined),
         }),
       });
@@ -294,7 +296,7 @@ export class Orchestrator {
         job.result = { conclusion: this.failFromStep(job, rec), changedFiles: [], fallbackHappened: false, warnings: [] };
         return false;
       }
-      const parsed = parsePlan(rec.text, { roles, leadRole: lead, maxSteps: project.settings.maxPlanSteps });
+      const parsed = parsePlan(rec.text, { roles, ...project.settings });
       if ('plan' in parsed) plan = parsed.plan;
       else feedback = parsed.error;
     }
@@ -336,13 +338,19 @@ export class Orchestrator {
     const { roles, project } = this.deps;
     const plan = job.plan;
     if (!plan) throw new DarioError(`任务 ${job.id} 没有计划，无法执行。`);
+    if (!project.settings.leadImplements && plan.steps.some(step => step.role === project.settings.leadRole)) {
+      job.status = 'failed';
+      job.failureCode = 'plan_invalid';
+      return '项目已关闭 lead_implements，这份计划包含主控自己的步骤，请重新出计划。';
+    }
     const reviewRole = project.settings.reviewRole;
     job.branch = (await ws.enterExec(job.id)).branch;
     this.setStatus(job, 'running');
 
     for (; job.cursor < plan.steps.length; job.cursor++) {
       const step = plan.steps[job.cursor]!;
-      if (step.role === reviewRole) {
+      const leadStep = step.role === project.settings.leadRole && step.writes;
+      if (!leadStep && step.role === reviewRole) {
         const failure = await this.reviewLoop(job, ws, opts, step.task);
         if (failure !== undefined) return failure;
         this.setStatus(job, 'running');
@@ -350,18 +358,22 @@ export class Orchestrator {
       }
       const role = roles.get(step.role);
       const context = priorSteps(job) || job.context;
-      const prompt = stepPrompt(project, role, role.access, step.task, context, step.acceptance);
-      const brief = stepBrief(project, role, role.access);
+      const access = leadStep ? 'write' : role.access;
+      const prompt = stepPrompt(project, role, access, step.task, context, step.acceptance);
+      const brief = leadStep ? undefined : stepBrief(project, role, access);
       const rec = await this.execStep(job, ws, opts, {
         kind: 'step',
         roleId: step.role,
+        access,
         task: step.task,
         prompt,
         brief,
         followUp: this.followUp(job, step.role, brief, {
-          full: stepPrompt(project, role, role.access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance),
-          carried: () => stepCarried(role, role.access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance),
-          delta: (after, briefed) => stepFollowUp(project, role, role.access, step.task, job, after, step.acceptance, briefed),
+          full: stepPrompt(project, role, access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance),
+          carried: () => stepCarried(role, access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance),
+          delta: (after, briefed) => leadStep
+            ? leadStepFollowUp(project, role, step.task, job, after, step.acceptance)
+            : stepFollowUp(project, role, access, step.task, job, after, step.acceptance, briefed),
         }),
       });
       if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
@@ -439,18 +451,20 @@ export class Orchestrator {
       const writer = job.lastWriter;
       const writerRole = roles.get(writer.role);
       const reworkText = reworkPrompt(project, writerRole, writer.task, verdict.issues, rec.text);
-      // 返工与执行的固定说明相同（角色与可写的工作规则），共用一个指纹
-      const reworkBrief = stepBrief(project, writerRole, 'write');
+      // 主控保留计划的指纹；其他角色与执行步骤共用可写工作规则的指纹。
+      const leadRework = writer.role === project.settings.leadRole;
+      const reworkBrief = leadRework ? undefined : stepBrief(project, writerRole, 'write');
       const rework = await this.execStep(job, ws, opts, {
         kind: 'rework',
         roleId: writer.role,
+        access: 'write',
         prefer: writer.agent,
         task: writer.task,
         prompt: reworkText,
         brief: reworkBrief,
         followUp: this.followUp(job, writer.role, reworkBrief, {
           full: reworkText,
-          delta: (after, briefed) => reworkFollowUp(project, writerRole, job, after, verdict.issues, rec.text, briefed),
+          delta: (after, briefed) => reworkFollowUp(project, writerRole, job, after, verdict.issues, rec.text, briefed || leadRework),
         }),
       });
       if (rework.outcome !== 'ok') return this.failFromStep(job, rework);

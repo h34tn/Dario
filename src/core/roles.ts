@@ -71,9 +71,14 @@ export class RoleBook {
     return id in this.project.roles.roles;
   }
 
-  label(id: string): string {
+  get leadRole(): string {
+    return this.project.settings.leadRole;
+  }
+
+  label(id: string, context?: 'plan'): string {
     const role = this.project.roles.roles[id];
-    return role?.alias[0] ? `${role.alias[0]}（${id}）` : id;
+    const label = role?.alias[0] ? `${role.alias[0]}（${id}）` : id;
+    return context === 'plan' && id === this.leadRole ? `${label}自己做` : label;
   }
 
   private sequence(role: RoleDef): { list: string[]; override?: string } {

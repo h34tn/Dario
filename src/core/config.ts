@@ -5,7 +5,7 @@ import { parse as parseYaml } from 'yaml';
 import { editYamlFile } from './yaml-edit.js';
 import { z } from 'zod';
 import type { Access } from '../plugin.js';
-import { DEFAULT_DISPATCH_RULES, DEFAULT_PROJECT_YAML, DEFAULT_ROLES_YAML } from './defaults.js';
+import { defaultDispatchRules, DEFAULT_DISPATCH_RULES, DEFAULT_PROJECT_YAML, DEFAULT_ROLES_YAML } from './defaults.js';
 import { ConfigError, normPath, readText } from './util.js';
 
 // ---------- 类型 ----------
@@ -30,6 +30,7 @@ export interface RolesConfig {
 
 export interface ProjectSettings {
   leadRole: string;
+  leadImplements: boolean;
   reviewRole: string;
   writeRoots: string[];
   maxReworkRounds: number;
@@ -149,6 +150,7 @@ const rolesFileSchema = z
 const projectFileSchema = z
   .object({
     lead_role: z.string().default('lead'),
+    lead_implements: z.boolean().default(true),
     review_role: z.string().default('reviewer'),
     write_roots: z.array(z.string()).default([]),
     max_rework_rounds: z.number().int().min(0).default(2),
@@ -314,6 +316,7 @@ function parseSettings(data: unknown, file: string, projectLevel: boolean): Proj
   const p = validate(projectFileSchema, data, file, projectLevel);
   return {
     leadRole: p.lead_role,
+    leadImplements: p.lead_implements,
     reviewRole: p.review_role,
     writeRoots: p.write_roots,
     maxReworkRounds: p.max_rework_rounds,
@@ -361,7 +364,10 @@ export function loadProjectConfig(cwd: string, home: string, explicitRoot?: stri
     : parseSettings(parseYaml(DEFAULT_PROJECT_YAML), '（内置默认项目设置）', false);
 
   const rulesSrc = pick('dispatch-rules.md');
-  const dispatchRules = (rulesSrc ? readText(rulesSrc.file) : undefined) ?? DEFAULT_DISPATCH_RULES;
+  const customRules = rulesSrc && readText(rulesSrc.file);
+  const dispatchRules = customRules === undefined || customRules.replace(/\r\n/g, '\n').trim() === DEFAULT_DISPATCH_RULES.trim()
+    ? defaultDispatchRules(settings.leadImplements)
+    : customRules;
 
   return { root, hasProjectDir, roles, settings, dispatchRules, rolesFile: rolesSrc?.file };
 }

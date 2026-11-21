@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ProjectSettings } from './config.js';
 import type { RoleBook } from './roles.js';
 import type { Plan, PlanStep } from './types.js';
 
@@ -76,10 +77,8 @@ const planSchema = z.object({
     .default([]),
 });
 
-export interface PlanContext {
+export interface PlanContext extends Pick<ProjectSettings, 'leadRole' | 'leadImplements' | 'maxPlanSteps'> {
   roles: RoleBook;
-  leadRole: string;
-  maxSteps: number;
 }
 
 /** 解析并校验主控给出的计划。校验不通过时返回给主控看的错误说明。 */
@@ -101,16 +100,21 @@ export function parsePlan(text: string, ctx: PlanContext): { plan: Plan } | { er
       return;
     }
     if (roleId === ctx.leadRole) {
-      errors.push(`第 ${n} 步不能交给主控自己（${roleId}）`);
-      return;
-    }
-    if (s.writes && ctx.roles.get(roleId).access !== 'write') {
+      if (!ctx.leadImplements) {
+        errors.push(`第 ${n} 步不能交给主控自己（${roleId}）`);
+        return;
+      }
+      if (!s.writes) {
+        errors.push(`第 ${n} 步：交给主控自己的步骤必须是要改文件的小改动；只需要阅读和判断的事直接写在思路或答案里`);
+        return;
+      }
+    } else if (s.writes && ctx.roles.get(roleId).access !== 'write') {
       errors.push(`第 ${n} 步要改文件，但角色 ${roleId} 是只读的`);
       return;
     }
     steps.push({ role: roleId, task: s.task, writes: s.writes, acceptance: s.acceptance ?? undefined });
   });
-  if (steps.length > ctx.maxSteps) errors.push(`计划有 ${steps.length} 步，超过上限 ${ctx.maxSteps} 步`);
+  if (steps.length > ctx.maxPlanSteps) errors.push(`计划有 ${steps.length} 步，超过上限 ${ctx.maxPlanSteps} 步`);
   // 没有步骤就是直接回答：答案是 JSON 之前的正文，只写一遍。JSON 里另外写了 answer 的（旧写法）以它为准
   const answer = parsed.data.answer || (parsed.data.steps.length === 0 ? proseBeforeJson(text) : '') || null;
   if (parsed.data.steps.length === 0 && !answer && !parsed.data.summary) {

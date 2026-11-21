@@ -69,7 +69,7 @@ function Screen({ session, symbols, color, onMouse, copy, readClipboard, onExit 
     for (const _ of activities) joins.push({ continuation: false });
   }
   if (!small && snap.plan) {
-    for (const line of planLines(snap.plan, session.roleLabel, expanded === snap.plan, limit, ctx, joins)) lines.push(line);
+    for (const line of planLines(snap.plan, session.planRoleLabel, expanded === snap.plan, limit, ctx, joins)) lines.push(line);
   }
   if (!small && snap.ask) for (const line of fallbackLines(snap.ask, limit, ctx, joins)) lines.push(line);
   const total = lines.length;

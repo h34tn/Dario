@@ -38,6 +38,9 @@ export const DEFAULT_PROJECT_YAML = `# 项目设置
 lead_role: lead
 review_role: reviewer
 
+# 是否允许主控留下小改动，确认计划后自己执行
+lead_implements: true
+
 # 允许改动的目录（相对项目根目录）。留空表示不限制。
 write_roots: []
 
@@ -60,17 +63,24 @@ preamble: ""
 sync_before_task: off
 `;
 
-export const DEFAULT_DISPATCH_RULES = `# 分派规则
+export function defaultDispatchRules(leadImplements: boolean): string {
+  const smallChange = leadImplements
+    ? '- 开启 lead_implements 时，主控可以留下只涉及一两个文件、总共几十行以内的小改动：出计划时已读过相关代码，知道具体怎么改，无需大范围了解项目。拿不准、范围广、要操作编辑器或其他外部工具、验证耗时长，都交给其他角色。\n'
+    : '';
+  return `# 分派规则
 
 主控按下面的规则决定每一步交给哪个角色。按项目实际情况修改本文件。
 
-- 要动手的工作交给"执行者"：写代码、改文件、整理资料。
+${smallChange}- ${leadImplements ? '其余' : ''}要动手的工作交给"执行者"：写代码、改文件、整理资料。
 - 要验证的工作交给"测试者"：补测试、运行测试或程序、确认效果。行为有变化的改动，在执行之后安排一步验证。
 - 只需要阅读和判断的工作（评估方案、检查改动）交给"审核者"。
 - 任务由这些角色自己做完，不安排要人中途介入的步骤；人只在全部结束后看最终结果。
 - 一步只做一件事。能一步做完的不要拆成多步。
 - 改了文件的计划会在最后自动追加一次审核，不必专门安排。
 `;
+}
+
+export const DEFAULT_DISPATCH_RULES = defaultDispatchRules(true);
 
 export const DEFAULT_AGENTS_YAML = `# 本机的 AI 配置。本文件只在这台机器上生效，不要放进仓库。
 #
@@ -98,7 +108,7 @@ agents: {}
 # 可写角色（执行者、测试者）的权限。
 # full：全部放行，不逐项审批。任务要由角色自己做完，需要什么工具、命令、MCP 都能用，各家 AI 自己把握分寸。
 # listed：只放行 allowed_tools 清单里的工具（没写清单时是读取、搜索、文件编辑和命令执行）。
-# 只读角色（主控、审核者）不受这一项影响，始终只读。某一家要单独设置，在它的条目里写 permissions。
+# 主控出计划、汇总和审核者审查时只读；主控执行自己的步骤或返工时用可写权限。某一家要单独设置，在它的条目里写 permissions。
 permissions: full
 
 # 某家 AI 被判为不可用后，多久之内不再尝试（分钟）

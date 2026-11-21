@@ -16,7 +16,7 @@ export function parseBlocked(text: string): string | undefined {
   return last[1]!.replace(/[`*]+$/, '').trim() || '没有写明原因';
 }
 
-function rules(access: Access, project: ProjectConfig): string {
+function rules(access: Access, project: ProjectConfig, includePreamble = true): string {
   const lines = [
     '- 不要执行 git commit、git push，不要切换或新建分支。',
     `- 完成任务必需的工具或服务（例如某个 MCP 服务）连不上、用不了时，先多试几次：隔几秒重试，确认服务是否在运行，换同一服务里能达到目的的其他工具。各种办法都试过仍然不行就停下，不要改用别的途径凑出结果，也不要继续做依赖它的工作；说明哪个工具或服务用不了、试过什么，并在回复的最后单独写一行 \`${BLOCKED_MARK}: <一句话原因>\`。任务不依赖它、或者只是多了一个用不上的服务时，不要写这一行。`,
@@ -32,7 +32,7 @@ function rules(access: Access, project: ProjectConfig): string {
   } else {
     lines.push('- 你处于只读方式：不要创建、修改或删除任何文件。');
   }
-  const extra = project.settings.preamble.trim();
+  const extra = includePreamble ? project.settings.preamble.trim() : '';
   return extra ? `${lines.join('\n')}\n${extra}` : lines.join('\n');
 }
 
@@ -98,9 +98,9 @@ export function stepCarried(role: RoleDef, access: Access, task: string, context
   return newTaskHeader(role, access) + section('上文', context) + section('任务', task) + section('验收标准', acceptance);
 }
 
-export function planCarried(task: string, context?: string): string {
+export function planCarried(leadImplements: boolean, task: string, context?: string): string {
   return (
-    `# 你的角色\n这是同一次会话里的新任务。你仍然是主控，仍处于只读方式，只做阅读和判断，要动手的工作分派出去。之前的对话仍然有效。${STALE_NOTE}` +
+    `# 你的角色\n这是同一次会话里的新任务。你仍然是主控，仍处于只读方式，只做阅读和判断，要动手的工作${leadImplements ? '列入计划，小改动可以按之前的规则留给自己' : '分派出去'}。之前的对话仍然有效。${STALE_NOTE}` +
     `\n${PLAN_FORMAT_REMINDER}` +
     section('上文', context) +
     section('任务', task)
@@ -149,15 +149,29 @@ export function stepPrompt(project: ProjectConfig, role: RoleDef, access: Access
   );
 }
 
+function stepUpdate(job: Job, after: number, task: string, acceptance?: string): string {
+  return (
+    section('你上次工作之后其他步骤的结果', priorSteps(job, after)) +
+    section('你上次工作之后被改动的文件', staleFiles(job, after)) +
+    section('任务', task) +
+    section('验收标准', acceptance)
+  );
+}
+
 /** after 是这个会话最近一次工作的步骤下标。 */
 export function stepFollowUp(project: ProjectConfig, role: RoleDef, access: Access, task: string, job: Job, after: number, acceptance?: string, briefed = false): string {
   return (
     continueHeader(role, access, '这是同一个任务里交给你的下一步，', briefed) +
     (briefed ? '' : section('工作规则', rules(access, project))) +
-    section('你上次工作之后其他步骤的结果', priorSteps(job, after)) +
-    section('你上次工作之后被改动的文件', staleFiles(job, after)) +
-    section('任务', task) +
-    section('验收标准', acceptance)
+    stepUpdate(job, after, task, acceptance)
+  );
+}
+
+export function leadStepFollowUp(project: ProjectConfig, role: RoleDef, task: string, job: Job, after: number, acceptance?: string): string {
+  return (
+    continueHeader(role, 'write', '你仍然是主控，计划已确认，这一步由你自己完成。') +
+    section('工作规则', rules('write', project, false)) +
+    stepUpdate(job, after, task, acceptance)
   );
 }
 
@@ -170,6 +184,7 @@ export function planFollowUp(feedback: string): string {
 }
 
 export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string, context?: string, feedback?: string): string {
+  const { leadImplements, leadRole } = project.settings;
   const available = roles
     .ids()
     .filter((id) => id !== project.settings.leadRole)
@@ -186,18 +201,22 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
     '```',
     '规则：',
     '- 如果任务只是提问、靠阅读就能回答：直接在 JSON 之前把答案完整写出来，JSON 里 steps 留空数组、answer 填 null。答案只写这一遍，不要在 JSON 里再重复。',
-    '- 任务需要动手时必须分派：把它列成步骤交给可写的角色，在 task 里写清怎么做、怎么验证、结束后把现场还原到什么状态。不要因为你手边有能用的工具就自己做。',
+    leadImplements
+      ? `- 要动手的工作列成步骤。很小的改动可以留给自己：role 写自己的角色 id（${leadRole}），writes 为 true，task 写清要改什么。仅限一两个文件、总共几十行以内，且你已读过要改的代码、知道具体怎么改，无需再大范围了解项目。拿不准、改动面广、要操作编辑器或其他外部工具、要长时间验证，都分派给其他角色。出计划时只读，现在不要动手；计划确认后 Dario 会让你以可写方式接着完成这一步。`
+      : '- 任务需要动手时必须分派：把它列成步骤交给可写的角色，在 task 里写清怎么做、怎么验证、结束后把现场还原到什么状态。不要因为你手边有能用的工具就自己做。',
     '- 确实没有哪个角色做得到的事（分派规则明确划在任务范围之外的，或者缺环境、缺账号），不排步骤，在说明里写明是什么、为什么做不了；其余部分照常排完。',
     '- 任务要由这些角色自己做完，人只在全部结束后看最终结果。各步连续自动执行，中间不会停下来等人：不要把任何一步留给人，不要写"需要人处理""由人工完成后再继续"之类的安排。改资产、运行程序、操作编辑器或其他外部工具、验证效果都分派给角色。',
-    '- role 必须是"可用角色"里的 id；writes 为 true 的步骤只能交给可写的角色。',
-    `- 步骤不超过 ${project.settings.maxPlanSteps} 个，不要把主控自己列为步骤。`,
-    '- 每一步的 task 必须自包含：写清背景、要做什么、涉及哪些文件。执行者看不到本次对话，也看不到其他步骤的说明。',
+    leadImplements
+      ? '- 分派给其他角色时，role 必须是"可用角色"里的 id；writes 为 true 的步骤只能交给其中可写的角色。'
+      : '- role 必须是"可用角色"里的 id；writes 为 true 的步骤只能交给可写的角色。',
+    `- 步骤不超过 ${project.settings.maxPlanSteps} 个${leadImplements ? '。' : '，不要把主控自己列为步骤。'}`,
+    `- 每一步的 task 必须自包含：写清背景、要做什么、涉及哪些文件。${leadImplements ? '其他角色' : '执行者'}看不到本次对话，也看不到其他步骤的说明。`,
     '- writes 表示这一步是否会创建、修改或删除文件，请如实填写。',
   ].join('\n');
   return (
     `# 你的角色\n你是主控。阅读任务和项目，判断如何完成，并输出一份计划。` +
     `你现在处于只读方式，只做阅读和判断：不要修改任何文件，也不要自己动手执行任务。` +
-    `动手包括改文件、执行命令、操作编辑器或其他外部工具、运行程序验证效果、截图或采集数据；这些都交给下面的角色去做。` +
+    (leadImplements ? '需要动手的工作列入计划，按下面的规则安排。' : `动手包括改文件、执行命令、操作编辑器或其他外部工具、运行程序验证效果、截图或采集数据；这些都交给下面的角色去做。`) +
     section('可用角色', available) +
     section('项目约定（各角色都要遵守，分派时据此安排）', project.settings.preamble) +
     section('分派规则', project.dispatchRules) +

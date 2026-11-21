@@ -124,6 +124,7 @@ export class Session {
     return () => { this.listeners.delete(listener); };
   };
   completionContext() { return this.completion; }
+  planRoleLabel = (id: string) => this.engine.roles.label(id, 'plan');
   roleLabel = (id: string) => this.engine.roles.label(id);
 
   private update(patch: Partial<SessionSnapshot>) {
