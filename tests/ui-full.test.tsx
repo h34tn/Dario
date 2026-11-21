@@ -3,6 +3,8 @@ import { setImmediate } from 'node:timers/promises';
 import { render } from 'ink';
 import { stripVTControlCharacters } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
+import type { Mouse } from '../src/ui/mouse.js';
+import type { CopyResult } from '../src/ui/clipboard.js';
 import { FullApp } from '../src/ui/FullApp.js';
 import { displayWidth } from '../src/ui/text.js';
 import { pickSymbols } from '../src/ui/theme.js';
@@ -25,11 +27,12 @@ async function screen(columns = 100, rows = 30, wide = false, color = false) {
   } }), { columns, rows, isTTY: true });
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn(), ref: vi.fn(), unref: vi.fn() });
   const symbols = pickSymbols(wide ? {} : { WT_SESSION: '终端' }, { platform: 'win32', locale: 'zh-CN' });
-  const listeners = new Set<(d: 'up' | 'down') => void>();
+  const listeners = new Set<(d: Mouse) => void>();
   const onExit = vi.fn();
   const onError = vi.fn();
-  const props = { session: data.session, symbols, color, onExit, onError,
-    onWheel(listener: (d: 'up' | 'down') => void) {
+  const copy = vi.fn(async (_text: string): Promise<CopyResult> => ({ ok: true }));
+  const props = { copy, session: data.session, symbols, color, onExit, onError,
+    onMouse(listener: (d: Mouse) => void) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     } };
@@ -39,8 +42,8 @@ async function screen(columns = 100, rows = 30, wide = false, color = false) {
   const check = (fn: (lines: string[]) => void) => vi.waitFor(() => fn(frame.split('\n')));
   const contains = (text: string) => vi.waitFor(() => expect(frame).toContain(text));
   const key = async (value: string) => { stdin.write(value); await setImmediate(); };
-  const wheel = (direction: 'up' | 'down') => listeners.forEach(fn => fn(direction));
-  return { ...data, check, contains, key, wheel, stdout, props, view, onExit, symbols, lines: () => frame.split('\n') };
+  const wheel = (direction: Mouse) => listeners.forEach(fn => fn(direction));
+  return { ...data, mouse: wheel, copy, check, contains, key, wheel, stdout, props, view, onExit, symbols, lines: () => frame.split('\n') };
 }
 
 it.each([[100, 30], [60, 20], [40, 12]])('%i 列 %i 行时历史贴顶，输入框上下有横线，状态栏固定在末行', async (columns, rows) => {
@@ -236,6 +239,9 @@ it.each([[60, 7], [39, 20]])('缩小到 %i 列 %i 行后只显示提示，恢复
   expect(ui.lines()).toHaveLength(rows);
   expect(ui.lines()[0]).toContain('Ctrl+C 退出');
   expect(ui.lines().slice(1).join('')).toBe('');
+  ui.mouse({ type: 'press', col: 1, row: 1 });
+  ui.mouse({ type: 'release', col: 4, row: 1 });
+  expect(ui.copy).not.toHaveBeenCalled();
   resize(100, 30);
   await ui.contains('> 草稿');
   expect(ui.lines()).toHaveLength(30);
@@ -336,4 +342,146 @@ it('角色选择先显示已有名称，各家并发返回后刷新当前屏并�
   await setImmediate();
   expect(ui.lines().join('')).not.toContain('清单查询失败');
   expect(ui.session.getSnapshot().picker).toMatchObject({ step: 'roles', roleIndex: 1 });
+});
+
+it('拖选反显，松开复制，提示位于步骤与边线之间并在三秒后消失', async () => {
+  const ui = await screen(60, 20);
+  const finish = ui.hold();
+  ui.session.submit('任务');
+  ui.emit({ jobId: 'J0001', kind: 'step_start', text: '', step });
+  await ui.contains('执行   实现');
+  ui.mouse({ type: 'press', col: 1, row: 1 });
+  ui.mouse({ type: 'move', col: 5, row: 1 });
+  await ui.contains('\x1b[7mDario');
+  expect(ui.copy).not.toHaveBeenCalled();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    ui.mouse({ type: 'release', col: 5, row: 1 });
+    await ui.contains('已复制 5 个字符到剪贴板');
+    expect(ui.copy).toHaveBeenCalledExactlyOnceWith('Dario');
+    const lines = ui.lines(), i = lines.findIndex(line => line.includes('已复制'));
+    expect(lines[i - 1]).toContain('执行   实现');
+    expect(displayWidth(lines[i])).toBe(59);
+    expect(lines[i + 1]).toBe(ui.symbols.rule.repeat(59));
+    await vi.advanceTimersByTimeAsync(3000);
+    await ui.check(frame => expect(frame.join('')).not.toContain('到剪贴板'));
+    expect(ui.lines()[0]).toContain('\x1b[7m');
+  } finally {
+    vi.useRealTimers();
+    finish();
+    await ui.session.whenIdle();
+  }
+});
+
+it('单击清除，历史外不能开始拖选，键入保留高亮而重新折行会清除', async () => {
+  const ui = await screen(80, 20);
+  function drag(start: number, end: number) {
+    ui.mouse({ type: 'press', col: 1, row: start });
+    ui.mouse({ type: 'release', col: 3, row: end });
+  }
+  drag(20, 1);
+  expect(ui.copy).not.toHaveBeenCalled();
+  drag(1, 1);
+  await ui.contains('已复制 3');
+  await ui.key('草稿');
+  await ui.contains('> 草稿');
+  expect(ui.lines()[0]).toContain('\x1b[7m');
+  ui.mouse({ type: 'press', col: 3, row: 1 });
+  ui.mouse({ type: 'release', col: 3, row: 1 });
+  await ui.check(lines => expect(lines.join('')).not.toMatch(/已复制|\x1b\[7m/));
+  expect(ui.copy).toHaveBeenCalledTimes(1);
+  drag(1, 1);
+  await ui.contains('已复制 3');
+  Object.assign(ui.stdout, { columns: 100 });
+  ui.stdout.emit('resize');
+  await ui.check(lines => expect(lines[0]).not.toContain('\x1b[7m'));
+});
+
+it('双击选词三击选段，Esc 清除高亮，超时后重新计数', async () => {
+  const ui = await screen();
+  const click = () => {
+    ui.mouse({ type: 'press', col: 2, row: 1 });
+    ui.mouse({ type: 'release', col: 2, row: 1 });
+  };
+  const now = vi.spyOn(Date, 'now');
+  try {
+    const start = Date.now();
+    now.mockReturnValue(start);
+    click(); click(); click();
+    expect(ui.copy.mock.calls.map(([s]) => s)).toEqual(['Dario', expect.stringContaining('Dario · rise')]);
+    await ui.contains('个字符到剪贴板');
+    await ui.key('\x1b');
+    await ui.check(lines => expect(lines[0]).not.toContain('\x1b[7m'));
+    click();
+    now.mockReturnValue(start + 401);
+    click();
+    expect(ui.copy).toHaveBeenCalledTimes(2);
+  } finally { now.mockRestore(); }
+});
+
+it('越界自动滚动并延伸选区，拖选时滚轮可用，复制提示保持翻看位置', async () => {
+  const ui = await screen(80, 12);
+  ui.session.submit('/help');
+  await ui.contains('切换到逐行交互');
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  async function frame() {
+    await setImmediate();
+    await ui.view.waitUntilRenderFlush();
+    return ui.lines().map(stripVTControlCharacters);
+  }
+  try {
+    const original = await frame();
+    ui.mouse({ type: 'press', col: 1, row: 2 });
+    ui.mouse({ type: 'move', col: 1, row: 1 });
+    await frame();
+    await vi.advanceTimersByTimeAsync(100);
+    const up = await frame();
+    expect(up[0]).not.toBe(original[0]);
+    expect(up.at(-2)).toContain('下面还有 2 行');
+
+    ui.mouse({ type: 'move', col: 1, row: 3 });
+    ui.wheel('up');
+    await frame();
+    await vi.advanceTimersByTimeAsync(200);
+    expect((await frame()).at(-2)).toContain('下面还有 5 行');
+
+    ui.mouse({ type: 'move', col: 2, row: 9 });
+    await frame();
+    await vi.advanceTimersByTimeAsync(100);
+    const down = await frame();
+    expect(down.at(-2)).toContain('下面还有 3 行');
+    ui.mouse({ type: 'release', col: 2, row: 9 });
+    await vi.advanceTimersByTimeAsync(150);
+    const copied = await frame();
+    expect(copied.join('')).toContain('个字符到剪贴板');
+    expect(ui.copy).toHaveBeenCalledExactlyOnceWith([original[1], original[2], original[3].slice(0, 2)].join('\n'));
+    expect(copied[0]).toBe(down[0]);
+  } finally { vi.useRealTimers(); }
+});
+
+it('拖动期间追加大量历史，原地松开仍复制先前高亮的字', async () => {
+  const ui = await screen(80, 12);
+  ui.mouse({ type: 'press', col: 1, row: 1 });
+  ui.mouse({ type: 'move', col: 5, row: 1 });
+  await ui.contains('\x1b[7mDario');
+  ui.session.submit('/help');
+  await ui.contains('切换到逐行交互');
+  ui.mouse({ type: 'release', col: 5, row: 1 });
+  expect(ui.copy).toHaveBeenCalledExactlyOnceWith('Dario');
+});
+
+it('迟到的复制结果不会覆盖新提示，失败后仍可输入', async () => {
+  const ui = await screen();
+  let finish!: (result: CopyResult) => void;
+  ui.copy.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  ui.copy.mockResolvedValueOnce({ ok: false, reason: '终端已关闭' });
+  for (const col of [1, 2]) {
+    ui.mouse({ type: 'press', col, row: 1 });
+    ui.mouse({ type: 'release', col: 4, row: 1 });
+  }
+  await ui.contains('复制失败：终端已关闭');
+  finish({ ok: true });
+  await ui.key('继续');
+  await ui.contains('> 继续');
+  expect(ui.lines().join('')).toContain('复制失败：终端已关闭');
 });

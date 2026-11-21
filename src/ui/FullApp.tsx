@@ -1,6 +1,6 @@
 import { Box, Text, useInput, useStdout } from 'ink';
 import { stripVTControlCharacters } from 'node:util';
-import { useEffect, useMemo, useReducer, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ModelPrompt } from './ModelPrompt.js';
 import { CommandMenu } from './CommandMenu.js';
 import { createLineCache, FALLBACK_HINT, fallbackLines, planLines, stepText, wrapAnsi } from './lines.js';
@@ -10,23 +10,33 @@ import { GlyphContext, useScreen } from './screen.js';
 import type { Session } from './session.js';
 import { StatusBar } from './StatusBar.js';
 import { TextInput } from './TextInput.js';
-import { clip } from './text.js';
+import type { CopyResult } from './clipboard.js';
+import type { Mouse, Pointer } from './mouse.js';
+import { columns as selectedColumns, highlight, paragraph, selectedText, word, type Point, type Selection } from './selection.js';
+import { clip, displayWidth, graphemes } from './text.js';
 import { paint, type Symbols } from './theme.js';
 import { afterChange, FOLLOW, scrollBy, sliceView } from './viewport.js';
 
-type Direction = 'up' | 'down';
+interface Drag {
+  origin: Point;
+  end: Point;
+  pointer: Pointer;
+  preset?: Selection;
+  moved: boolean;
+}
 
 export interface FullAppProps {
   session: Session;
   symbols: Symbols;
   color: boolean;
-  /** 订阅滚轮事件，返回取消订阅的函数。 */
-  onWheel?: (listener: (direction: Direction) => void) => () => void;
+  copy?: (text: string) => Promise<CopyResult>;
+  /** 订阅鼠标事件，返回取消订阅的函数。 */
+  onMouse?: (listener: (event: Mouse) => void) => () => void;
   onExit: (kind: 'exit' | 'plain') => void;
   onError: (error: Error) => void;
 }
 
-function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
+function Screen({ session, symbols, color, onMouse, copy, onExit }: FullAppProps) {
   const { stdout } = useStdout();
   const [, resize] = useReducer(n => n + 1, 0);
   useEffect(() => {
@@ -47,18 +57,62 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
     return paint('dim', clip('    ' + first, limit, wide, ellipsis), color);
   }), [small, snap.feed.activities, limit, wide, ellipsis, color]);
   const lines = small ? [] : cache.lines(snap.history, limit, ctx).slice();
+  const joins = small ? [] : cache.joins.slice();
   const stepLine = !small && snap.feed.current
     ? wrapAnsi(stepText(snap.feed.current, { ...ctx, now, ellipsis, stopping: snap.feed.stopping }), limit, wide)[0]
     : undefined;
   const stepHeight = stepLine === undefined ? 0 : 1;
-  if (stepHeight) lines.push(...activities);
-  if (!small && snap.plan) {
-    for (const line of planLines(snap.plan, session.roleLabel, expanded === snap.plan, limit, ctx)) lines.push(line);
+  if (stepHeight) {
+    lines.push(...activities);
+    for (const _ of activities) joins.push({ continuation: false });
   }
-  if (!small && snap.ask) for (const line of fallbackLines(snap.ask, limit, ctx)) lines.push(line);
+  if (!small && snap.plan) {
+    for (const line of planLines(snap.plan, session.roleLabel, expanded === snap.plan, limit, ctx, joins)) lines.push(line);
+  }
+  if (!small && snap.ask) for (const line of fallbackLines(snap.ask, limit, ctx, joins)) lines.push(line);
   const total = lines.length;
   const [anchor, setAnchor] = useState({ view: FOLLOW, total: 0, height: 0 });
-  const baseHeight = Math.max(0, rows - 5 - stepHeight);
+  const [selection, select] = useState<Selection>();
+  const [notice, setNotice] = useState('');
+  const drag = useRef<Drag | undefined>(undefined);
+  const clicks = useRef<{ press: Pointer; time: number; count: number } | undefined>(undefined);
+  const generation = useRef(0);
+  const noticeTimer = useRef<NodeJS.Timeout | undefined>(undefined);
+  const [edge, setEdge] = useState(0);
+  const autoScroll = useRef<((delta: number) => void) | undefined>(undefined);
+  function clearNotice() {
+    generation.current++;
+    clearTimeout(noticeTimer.current);
+    setNotice('');
+  }
+  function clearSelection() {
+    drag.current = undefined;
+    clicks.current = undefined;
+    setEdge(0);
+    select(undefined);
+  }
+  useLayoutEffect(() => { clearSelection(); }, [limit]);
+  useLayoutEffect(() => {
+    if (small || snap.picker) {
+      drag.current = undefined;
+      clicks.current = undefined;
+      setEdge(0);
+    }
+  }, [small, !!snap.picker]);
+  useEffect(() => () => { generation.current++; clearTimeout(noticeTimer.current); }, []);
+  async function copySelection(range: Selection) {
+    const text = selectedText(lines, joins, range, wide);
+    if (!text || !copy) return;
+    const id = generation.current;
+    let result: CopyResult;
+    try { result = await copy(text); } catch (error) {
+      result = { ok: false, reason: error instanceof Error ? error.message : '无法写入剪贴板' };
+    }
+    if (id !== generation.current) return;
+    setNotice(result.ok ? '已复制 ' + graphemes(text).length + ' 个字符到剪贴板' : '复制失败：' + result.reason);
+    noticeTimer.current = setTimeout(() => setNotice(''), 3000);
+  }
+  const baseHeight = Math.max(0, rows - 5 - stepHeight - Number(!!notice));
   // 离开底部时固定首行，计入历史内容和下方固定区域的高度变化。
   function adjusted(height: number) {
     return afterChange(anchor.view, total - anchor.total + anchor.height - height, total, height);
@@ -66,7 +120,7 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
   const menu = !snap.plan && !snap.ask && !warningText && !adjusted(baseHeight).offset ? suggestions.slice(0, baseHeight) : [];
   const height = baseHeight - Math.max(0, menu.length - 1);
   const view = menu.length ? FOLLOW : adjusted(height);
-  const { visible, below } = sliceView(lines, height, view);
+  const { visible, below, above } = sliceView(lines, height, view);
   // 收缩后触底便恢复跟随，避免旧偏移在下一次追加时复现。
   if (!small && (anchor.total !== total || anchor.height !== height)) setAnchor({ view, total, height });
 
@@ -77,12 +131,84 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
       return { view: scrollBy(active, delta, total, baseHeight), total, height: baseHeight };
     });
   }
+  // 同一批输入可能先于 React 重画到达，立即推进本批事件使用的视口。
+  useLayoutEffect(() => {
+    if (small) return;
+    if (snap.picker) {
+      return onMouse?.(event => {
+        if (typeof event !== 'string' && event.type === 'press') { clearNotice(); clearSelection(); }
+      });
+    }
+    let first = above, offset = below, visibleCount = visible.length;
+    function pointAt(event: Pointer): Point {
+      return { line: first + Math.max(0, Math.min(visibleCount - 1, event.row - 1)),
+        col: Math.max(0, Math.min(limit - 1, event.col - 1)) };
+    }
+    function move(active: Drag, pointer: Pointer, scrolled = false) {
+      if (scrolled || pointer.row !== active.pointer.row || pointer.col !== active.pointer.col) {
+        active.end = pointAt(pointer);
+        active.moved = true;
+      }
+      active.pointer = pointer;
+      const range = active.moved ? { start: active.origin, end: active.end } : active.preset;
+      select(range);
+      return range;
+    }
+    function scrollMouse(delta: number) {
+      const next = scrollBy({ offset }, delta, total, baseHeight);
+      if (next.offset === offset) return;
+      offset = next.offset;
+      first = Math.max(0, total - offset - baseHeight);
+      visibleCount = Math.min(total, baseHeight);
+      setAnchor({ view: next, total, height: baseHeight });
+      if (drag.current) move(drag.current, drag.current.pointer, true);
+    }
+    autoScroll.current = delta => {
+      const pointer = drag.current?.pointer;
+      if (pointer && (delta > 0 ? pointer.row <= 1 : pointer.row > height)) scrollMouse(delta);
+    };
+    return onMouse?.(event => {
+      if (typeof event === 'string') { scrollMouse(event === 'up' ? 3 : -3); return; }
+      if (event.type === 'press') {
+        clearNotice();
+        const last = clicks.current;
+        clearSelection();
+        if (event.row < 1 || event.row > visibleCount) return;
+        const point = pointAt(event);
+        const time = Date.now();
+        const count = last && last.press.row === event.row && last.press.col === event.col && time - last.time <= 400
+          ? last.count % 3 + 1 : 1;
+        clicks.current = { press: event, count, time };
+        const preset = count === 2 ? word(lines, joins, point, wide) : count === 3 ? paragraph(lines, joins, point, wide) : undefined;
+        drag.current = { origin: point, end: point, pointer: event, moved: false, preset };
+        select(preset);
+      } else if (drag.current) {
+        const active = drag.current;
+        const range = move(active, event);
+        if (event.type === 'release') {
+          setEdge(0);
+          drag.current = undefined;
+          if (active.moved) clicks.current = undefined;
+          if (range) void copySelection(range);
+        } else {
+          // 历史区贴着屏幕顶端，终端能上报的最小行号通常就是 1。
+          setEdge(event.row <= 1 ? 1 : event.row > height ? -1 : 0);
+        }
+      }
+    });
+  });
+  const canAutoScroll = !small && !snap.picker && (edge > 0 ? above > 0 : below > 0);
   useEffect(() => {
-    if (!small) return onWheel?.(direction => scroll(direction === 'up' ? 3 : -3));
-  }, [onWheel, small, total, height, baseHeight]);
+    if (!edge || !canAutoScroll) return;
+    const timer = setInterval(() => {
+      if (drag.current) autoScroll.current?.(edge);
+    }, 50);
+    return () => clearInterval(timer);
+  }, [edge, canAutoScroll]);
 
   function follow() { setAnchor({ view: FOLLOW, total, height }); }
   useInput((input, key) => {
+    if (key.escape) clearSelection();
     if (small) {
       if (key.ctrl && input === 'c') session.requestExit('exit');
     } else if (key.pageUp || key.pageDown) {
@@ -112,11 +238,12 @@ function Screen({ session, symbols, color, onWheel, onExit }: FullAppProps) {
     : warningText || (below ? '  ' + symbols.down + ' 下面还有 ' + below + ' 行   PgDn 向下翻   End 回到最新'
       : '  / 指令   PgUp/PgDn 翻看   Esc 中断当前任务   Ctrl+C 退出');
   return <Box flexDirection="column">
-    {Array.from({ length: height }, (_, i) => row(visible[i] ?? '', i))}
+    {Array.from({ length: height }, (_, i) => row(highlight(visible[i] ?? '', selectedColumns(selection, above + i), wide), i))}
     {stepLine !== undefined && <Text wrap="truncate-end">{stepLine}</Text>}
+    {!!notice && <Text wrap="truncate-end">{' '.repeat(Math.max(0, limit - displayWidth(fit(notice), wide))) + paint('dim', fit(notice), color)}</Text>}
     <Text wrap="truncate-end">{rule}</Text>
     <TextInput state={editor} currentState={current} onChange={change} onSubmit={text => { follow(); session.submit(text); }}
-      row={height + stepHeight + 1} isActive={!snap.plan && !snap.ask} color={color} />
+      row={height + stepHeight + Number(!!notice) + 1} isActive={!snap.plan && !snap.ask} color={color} />
     <Text wrap="truncate-end">{rule}</Text>
     {menu.length ? <CommandMenu suggestions={menu} color={color} />
       : <Text wrap="truncate-end">{paint(snap.plan || snap.ask || warningText ? 'warn' : 'dim', fit(hint), color)}</Text>}

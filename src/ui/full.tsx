@@ -1,8 +1,9 @@
 import { writeSync } from 'node:fs';
 import { render } from 'ink';
+import { copyText } from './clipboard.js';
 import { FullApp, type FullAppProps } from './FullApp.js';
 import { createLineCache } from './lines.js';
-import { createInputFilter, DISABLE_MOUSE, ENABLE_MOUSE } from './mouse.js';
+import { createInputFilter, DISABLE_MOUSE, ENABLE_MOUSE, type Mouse } from './mouse.js';
 import { finishInPlain, UiUnavailableError, type ReplOptions } from './repl.js';
 import { pollSize } from './resize.js';
 import { Session } from './session.js';
@@ -15,10 +16,10 @@ export async function runFullUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
   const color = !!stdout.isTTY && !env.NO_COLOR;
   const symbols = pickSymbols(env);
   const session = new Session({ engine, color, continueLast: opts.continueLast });
-  let wheel: ((direction: 'up' | 'down') => void) | undefined;
-  const onWheel: NonNullable<FullAppProps['onWheel']> = listener => {
-    wheel = listener;
-    return () => { wheel = undefined; };
+  let mouse: ((event: Mouse) => void) | undefined;
+  const onMouse: NonNullable<FullAppProps['onMouse']> = listener => {
+    mouse = listener;
+    return () => { mouse = undefined; };
   };
   // 退出事件里不能等待流排空，真实终端直接同步写文件描述符。
   function disableOnExit() {
@@ -42,8 +43,10 @@ export async function runFullUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
     let result: 'exit' | 'plain' | Error;
     try {
       try {
-        input = createInputFilter(stdin, direction => wheel?.(direction));
-        app = render(<FullApp session={session} symbols={symbols} color={color} onWheel={onWheel}
+        input = createInputFilter(stdin, event => mouse?.(event));
+        app = render(<FullApp session={session} symbols={symbols} color={color} onMouse={onMouse}
+          copy={text => copyText(text, { env, write: sequence => new Promise((resolve, reject) =>
+            stdout.write(sequence, error => error ? reject(error) : resolve())) })}
           onExit={finish} onError={onError} />, { stdout, stdin: input.stream, exitOnCtrlC: false,
           patchConsole: false, maxFps: 15, interactive: !!stdout.isTTY, alternateScreen: true, incrementalRendering: true });
         await app.waitUntilRenderFlush();

@@ -8,12 +8,12 @@ afterEach(() => vi.useRealTimers());
 
 it('键盘、方向键和粘贴标记立即放行，按顺序提取滚轮并过滤其余鼠标按钮', () => {
   const keys = '甲\x1b[A\x1b[200~粘贴\x1b[201~';
-  expect(extractMouse(keys)).toEqual({ rest: keys, wheel: [], pending: '' });
+  expect(extractMouse(keys)).toEqual({ rest: keys, events: [], pending: '' });
   expect(extractMouse(keys + '\x1b[<65;1;2M乙\x1b[<0;2;3M\x1b[<64;2;3m\x1b[<32;3;4M\x1b[<64;5;6M丙'))
-    .toEqual({ rest: keys + '乙丙', wheel: ['down', 'up'], pending: '' });
-  expect(extractMouse('\x1b[<1;x')).toEqual({ rest: '\x1b[<1;x', pending: '', wheel: [] });
-  expect(ENABLE_MOUSE).toBe('\x1b[?1000h\x1b[?1006h');
-  expect(DISABLE_MOUSE).toBe('\x1b[?1006l\x1b[?1000l');
+    .toEqual({ rest: keys + '乙丙', events: ['down', { type: 'press', col: 2, row: 3 }, { type: 'move', col: 3, row: 4 }, 'up'], pending: '' });
+  expect(extractMouse('\x1b[<1;x')).toEqual({ rest: '\x1b[<1;x', pending: '', events: [] });
+  expect(ENABLE_MOUSE).toBe('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
+  expect(DISABLE_MOUSE).toBe('\x1b[?1006l\x1b[?1002l\x1b[?1000l');
 });
 
 it('在每一个可能的切分位置保留前缀，再拼成完整事件', () => {
@@ -21,7 +21,7 @@ it('在每一个可能的切分位置保留前缀，再拼成完整事件', () =
   for (let i = 1; i < event.length; i++) {
     const { pending } = extractMouse('甲' + event.slice(0, i));
     expect(pending).toBe(event.slice(0, i));
-    expect(extractMouse(pending + event.slice(i))).toEqual({ rest: '', wheel: ['up'], pending: '' });
+    expect(extractMouse(pending + event.slice(i))).toEqual({ rest: '', events: ['up'], pending: '' });
   }
 });
 
@@ -68,4 +68,11 @@ it('可读流拼接三段输入，超时放行残段，转发终端操作并解�
 it('鼠标输入过滤独立于渲染库', () => {
   const source = readFileSync(new URL('../src/ui/mouse.ts', import.meta.url), 'utf8');
   expect(source).not.toMatch(/(?:from\s*|import\s*\(?\s*)['"](?:ink|react)(?:\/|['"])/);
+});
+
+it('左键修饰与其他按钮被过滤，分段的释放事件保留坐标', () => {
+  const ignored = [1, 2, 4, 8, 16, 36, 40, 48].map(code => '\x1b[<' + code + ';4;5M').join('');
+  const first = extractMouse('甲' + ignored + '\x1b[<0;12;');
+  expect(first).toEqual({ rest: '甲', pending: '\x1b[<0;12;', events: [] });
+  expect(extractMouse(first.pending + '34m乙')).toEqual({ rest: '乙', pending: '', events: [{ type: 'release', col: 12, row: 34 }] });
 });

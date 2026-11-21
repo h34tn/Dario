@@ -6,6 +6,13 @@ import type { HistoryItem } from './session.js';
 import { clip, displayWidth, graphemes } from './text.js';
 import { INPUT_BAND, paint, type Symbols } from './theme.js';
 
+export interface RowLayout {
+  continuation: boolean;
+  /** 排版补入的左右空格，不属于原文。 */
+  indent?: number;
+  padding?: number;
+}
+
 const reset = '\x1b[0m';
 // 控制串（含 OSC、DCS）、CSI、普通 ESC 指令和单个控制字符，保留换行和制表符另行处理。
 const controls = /(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)|(?:\x1b[PX^_]|[\x90\x98\x9e\x9f])[\s\S]*?(?:\x1b\\|\x9c|$)|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]?|\x1b[ -/]*[0-~]?|\r(?!\n)|[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]/g;
@@ -30,7 +37,7 @@ function track(styles: Set<number>, params: string): void {
 }
 
 /** 先在纯文字上划分字素，再按原位置放回颜色，允许同一个字素内部换色。 */
-export function wrapAnsi(text: string, width: number, wide: boolean): string[] {
+export function wrapAnsi(text: string, width: number, wide: boolean, joins?: RowLayout[]): string[] {
   width = Math.max(1, Math.floor(width) || 1);
   const marks: { at: number; raw: string; params: string }[] = [];
   let plain = '';
@@ -53,7 +60,10 @@ export function wrapAnsi(text: string, width: number, wide: boolean): string[] {
       track(styles, params);
     }
   }
-  function finish() {
+  let continuation = false;
+  function finish(nextContinuation = false) {
+    joins?.push({ continuation });
+    continuation = nextContinuation;
     lines.push(hasText ? line + (line.includes('\x1b') && !line.endsWith(reset) ? reset : '') : '');
     line = Array.from(styles, code => `\x1b[${code}m`).join('');
     used = 0;
@@ -67,7 +77,7 @@ export function wrapAnsi(text: string, width: number, wide: boolean): string[] {
     } else {
       // 视口比单个字素还窄时，完整保留该字素并让它独占一行。
       const size = displayWidth(glyph, wide);
-      if (used + size > width && hasText) finish();
+      if (used + size > width && hasText) finish(true);
       used += size;
       hasText = true;
       while (next < marks.length && marks[next].at < end) {
@@ -113,21 +123,27 @@ export function stepText(step: StepView, { now, symbols, color, stopping, ellips
 export interface LineContext { symbols: Symbols; color: boolean; wide: boolean }
 
 /** 计划确认在历史区里显示的行。展开后保留任务说明和验收的换行。 */
-export function planLines(plan: Plan, roleLabel: (id: string) => string, details: boolean, width: number, ctx: LineContext): string[] {
+export function planLines(plan: Plan, roleLabel: (id: string) => string, details: boolean, width: number, ctx: LineContext, joins?: RowLayout[]): string[] {
   const { symbols, color, wide } = ctx;
   const fit = (text: string, max: number) => clip(text, max, wide, symbols.ellipsis);
   const clean = (text: string) => text.replace(/\r\n/g, '\n').replace(controls, '').replaceAll('\t', '    ');
   const rows = [paint('warn', fit('这份计划会改动文件：', width), color)];
+  joins?.push({ continuation: false });
   function append(prefix: string, styled: string, body: string) {
     const indent = displayWidth(prefix, wide);
     const remaining = width - indent;
     if (remaining < (details ? 2 : 1)) {
       rows.push(fit(prefix, width));
-      if (details) rows.push(...wrapAnsi(body, width, wide));
+      joins?.push({ continuation: false });
+      if (details) rows.push(...wrapAnsi(body, width, wide, joins));
       return;
     }
-    const lines = details ? wrapAnsi(body, remaining, wide) : [fit(body.split('\n', 1)[0], remaining)];
-    lines.forEach((line, i) => rows.push((i ? ' '.repeat(indent) : styled) + line));
+    const breaks: RowLayout[] = [];
+    const lines = details ? wrapAnsi(body, remaining, wide, breaks) : [fit(body.split('\n', 1)[0], remaining)];
+    lines.forEach((line, i) => {
+      joins?.push({ continuation: breaks[i]?.continuation ?? false, indent: i ? indent : 0 });
+      rows.push((i ? ' '.repeat(indent) : styled) + line);
+    });
   }
   for (const [i, step] of plan.steps.entries()) {
     const role = shortRole(roleLabel(step.role)).replace(controls, '').replace(/\s/g, ' ');
@@ -140,11 +156,13 @@ export function planLines(plan: Plan, roleLabel: (id: string) => string, details
 }
 
 /** 输入回显：着色时整行铺灰色底，一眼能和程序的输出分开；续行缩进对齐到提示符之后。 */
-function inputLines(text: string, width: number, { color, wide }: LineContext): string[] {
+function inputLines(text: string, width: number, { color, wide }: LineContext, joins?: RowLayout[]): string[] {
   const clean = text.replace(controls, '').replaceAll('\t', '    ');
-  if (!color || width < 4) return wrapAnsi('> ' + clean, width, wide);
-  return wrapAnsi(clean, width - 2, wide).map((row, i) => {
+  if (!color || width < 4) return wrapAnsi('> ' + clean, width, wide, joins);
+  const breaks: RowLayout[] = [];
+  return wrapAnsi(clean, width - 2, wide, breaks).map((row, i) => {
     const pad = ' '.repeat(Math.max(0, width - 2 - displayWidth(row, wide)));
+    joins?.push({ continuation: breaks[i].continuation, indent: i ? 2 : 0, padding: pad.length });
     return INPUT_BAND.open + (i ? '  ' : paint('role', '>', true) + ' ') + INPUT_BAND.text + row + pad + INPUT_BAND.close;
   });
 }
@@ -152,15 +170,15 @@ function inputLines(text: string, width: number, { color, wide }: LineContext): 
 export const FALLBACK_HINT = '改用备选继续吗？  y 继续   n 停止任务';
 
 /** 换人询问显示的行：谁不可用、为什么、打算改用谁（带模型）。 */
-export function fallbackLines(question: FallbackQuestion, width: number, { symbols, color, wide }: LineContext): string[] {
+export function fallbackLines(question: FallbackQuestion, width: number, { symbols, color, wide }: LineContext, joins?: RowLayout[]): string[] {
   const [down, ask] = formatFallbackQuestion(question);
-  const rows = [...wrapAnsi(symbols.warn + ' ' + down, width, wide), ...wrapAnsi('  ' + ask, width, wide)];
+  const rows = [...wrapAnsi(symbols.warn + ' ' + down, width, wide, joins), ...wrapAnsi('  ' + ask, width, wide, joins)];
   return rows.map(row => paint('warn', row, color));
 }
 
-export function itemLines(item: HistoryItem, width: number, ctx: LineContext): string[] {
+export function itemLines(item: HistoryItem, width: number, ctx: LineContext, joins?: RowLayout[]): string[] {
   const { symbols, color, wide } = ctx;
-  if (item.type === 'input') return inputLines(item.text, width, ctx);
+  if (item.type === 'input') return inputLines(item.text, width, ctx, joins);
   let text: string;
   switch (item.type) {
     case 'banner':
@@ -170,21 +188,24 @@ export function itemLines(item: HistoryItem, width: number, ctx: LineContext): s
     case 'text': text = item.text; break;
     case 'step': text = stepText(item.step, { now: 0, symbols, color }); break;
   }
-  return wrapAnsi(color ? text : text.replace(controls, ''), width, wide);
+  return wrapAnsi(color ? text : text.replace(controls, ''), width, wide, joins);
 }
 
 export interface LineCache {
+  /** 与最近一次排版逐行对应，记录折行与展示用的空格。 */
+  readonly joins: readonly RowLayout[];
   lines(history: HistoryItem[], width: number, ctx: LineContext): string[];
 }
 
 export function createLineCache(): LineCache {
   let previous: LineContext | undefined;
   let columns: number;
-  let cache = new WeakMap<HistoryItem, string[]>();
+  let cache = new WeakMap<HistoryItem, { lines: string[]; joins: RowLayout[] }>();
   let entries: HistoryItem[] = [];
   let length = 0;
   let result: string[] = [];
-  return { lines(history, width, ctx) {
+  let joins: RowLayout[] = [];
+  return { get joins() { return joins; }, lines(history, width, ctx) {
     if (columns !== width || previous?.symbols !== ctx.symbols || previous.color !== ctx.color || previous.wide !== ctx.wide) {
       cache = new WeakMap();
       previous = { ...ctx };
@@ -192,16 +213,22 @@ export function createLineCache(): LineCache {
       entries = [];
       length = 0;
       result = [];
+      joins = [];
     }
     // 同一数组也可能已原地追加，因此单独记录上次的长度。
     const appended = history.length >= length && (history === entries || entries.slice(0, length).every((item, i) => history[i] === item));
     if (appended && history.length === length) return result;
-    const extra = history.slice(appended ? length : 0).flatMap(item => {
+    const extra = history.slice(appended ? length : 0).map(item => {
       let rows = cache.get(item);
-      if (!rows) { rows = itemLines(item, width, ctx); cache.set(item, rows); }
+      if (!rows) {
+        const breaks: RowLayout[] = [];
+        rows = { lines: itemLines(item, width, ctx, breaks), joins: breaks };
+        cache.set(item, rows);
+      }
       return rows;
     });
-    result = appended ? result.concat(extra) : extra;
+    result = (appended ? result : []).concat(extra.flatMap(item => item.lines));
+    joins = (appended ? joins : []).concat(extra.flatMap(item => item.joins));
     entries = history;
     length = history.length;
     return result;

@@ -105,6 +105,19 @@ it('原始输入里的滚轮向上翻三行，随后输入的指令仍完整', a
   expect(t.output()).not.toContain('64;4;5');
 });
 
+it('原始拖选协议与键盘输入同批到达，远程终端收到纯文字剪贴板序列', async () => {
+  const t = await terminal();
+  const done = runFullUi({ ...t.opts, env: { ...t.opts.env, SSH_TTY: '模拟终端' } });
+  await t.see(ENABLE_MOUSE);
+  t.input.write('\x1b[<0;1;1M\x1b[<32;5;1M\x1b[<0;5;1m/new');
+  await t.see('\x1b]52;c;RGFyaW8=\x07');
+  await t.see('已复制 5 个字符到剪贴板');
+  t.input.write('\r');
+  await t.see('已清空会话上文');
+  await t.line('/exit');
+  expect(await done).toBe('exit');
+});
+
 it('计划渲染失败时先恢复终端和记录，再逐行确认并降级', async () => {
   const t = await terminal();
   const before = t.listeners();
