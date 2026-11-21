@@ -96,13 +96,17 @@ describe('同一任务里续接角色的会话', () => {
     // 返工：问题清单是新的，原任务已经在会话里
     expect(rework).toContain('f.txt 里缺少校验');
     expect(rework).not.toContain('实现功能 ABC');
-    expect(rework).toContain('不要执行 git commit');
-    // 再审：只给上次审查之后的工作和改动，格式要求照旧
+    // 工作规则这个会话第一步已经收到过，不再重发，只提一句
+    expect(rework).not.toContain('不要执行 git commit');
+    expect(rework).toContain('工作规则与项目约定同之前');
+    // 再审：只给上次审查之后的工作和改动，规则不重发，输出格式只留一行提醒
     expect(review2).toContain('改好了');
     expect(review2).not.toContain('第一版写好了');
     expect(review2).not.toContain('原始任务 XYZ');
     expect(review2).toContain('- f.txt');
     expect(review2).toContain('"verdict"');
+    expect(review2).not.toContain('不要创建、修改或删除任何文件');
+    expect(review2).not.toContain('只因为会导致错误结果');
     // 汇总：各步结果是新的，原始任务不再重复
     expect(summary).toContain('第一版写好了');
     expect(summary).not.toContain('原始任务 XYZ');
@@ -223,11 +227,13 @@ describe('跨任务续接：上一个任务留下的会话接着用', () => {
   const origin = { channel: 'terminal', senderId: '测试' };
   const engine = async () => (await createApp({ cwd: sb.project, env: sb.env() })).engine;
 
-  it('直派：同一角色的下一个任务续接会话，收到完整的新任务说明', async () => {
+  it('直派：同一角色的下一个任务续接会话，只交代新任务，规则不重发', async () => {
     sb.setScenario({ a2: [{ text: '第一个任务做完了' }, { text: '第二个任务做完了' }, { text: '第三个任务做完了' }] });
     const e = await engine();
     const first = await e.submit({ task: '第一个任务', role: 'coder', origin });
-    expect(first.sessions).toEqual({ coder: { agent: 'a2', sessionId: 'a2-s0', step: 0 } });
+    expect(first.sessions).toMatchObject({ coder: { agent: 'a2', sessionId: 'a2-s0', step: 0 } });
+    // 会话上记着它收到过的固定说明的指纹
+    expect(first.sessions!.coder!.brief).toMatch(/^[0-9a-f]{12}$/);
     const second = await e.submit({ task: '第二个任务', role: 'coder', origin, sessions: first.sessions });
     expect(second.status).toBe('done');
     expect(second.steps[0]!.resumed).toBe(true);
@@ -235,10 +241,12 @@ describe('跨任务续接：上一个任务留下的会话接着用', () => {
     const prompt = sb.calls()[1]!.prompt;
     expect(prompt).toContain('这是同一次会话里的新任务');
     expect(prompt).toContain('请重新读取');
-    // 新任务它没见过：角色、规则、任务都完整给出
+    // 新任务它没见过，任务照给；角色用一句话重申，规则和项目约定第一次已经给过，不再重发
     expect(prompt).toContain('第二个任务');
-    expect(prompt).toContain('不要执行 git commit');
-    expect(prompt).toContain('你现在担任');
+    expect(prompt).toContain('你继续担任「实现」（coder）这个角色，权限：可以修改文件');
+    expect(prompt).not.toContain('不要执行 git commit');
+    expect(prompt).not.toContain('# 工作规则');
+    expect(second.sessions!.coder!.brief).toBe(first.sessions!.coder!.brief);
     // 不带会话时照旧新开
     await e.submit({ task: '第三个任务', role: 'coder', origin });
     expect(trace()[2]).toBe('a2:新开');
@@ -260,12 +268,17 @@ describe('跨任务续接：上一个任务留下的会话接着用', () => {
     // 三个角色、两个任务，一共只有三个会话
     expect(trace()).toEqual(['a1:新开', 'a2:新开', 'a3:新开', 'a1:a1-s0', 'a1:a1-s0', 'a2:a2-s0', 'a3:a3-s0', 'a1:a1-s0']);
     const [plan2, step2, review2, summary2] = sb.calls().slice(4).map((c) => c.prompt);
-    // 带过来的会话第一次上场：完整说明，前面交代是新任务
+    // 带过来的会话第一次上场：交代是新任务；角色表、分派规则、工作规则、输出格式的正文上一个任务已经给过，不再重发
     for (const p of [plan2!, step2!, review2!]) expect(p).toContain('这是同一次会话里的新任务');
-    expect(plan2).toContain('可用角色');
+    expect(plan2).not.toContain('# 可用角色');
+    expect(plan2).not.toContain('# 分派规则');
+    expect(plan2).toContain('输出同样字段的 JSON 代码块');
     expect(plan2).toContain('任务乙');
     expect(step2).toContain('实现乙');
+    expect(step2).not.toContain('# 工作规则');
     expect(review2).toContain('"verdict"');
+    expect(review2).not.toContain('# 工作规则');
+    expect(review2).toContain('乙写好了');
     // 同一任务里再次上场（汇总）：只发增量
     expect(summary2).not.toContain('这是同一次会话里的新任务');
     expect(summary2).not.toContain('任务乙');
@@ -280,11 +293,31 @@ describe('跨任务续接：上一个任务留下的会话接着用', () => {
     const second = await e.submit({ task: '第二个任务', role: 'coder', origin, sessions: first.sessions });
     expect(second.steps[0]).toMatchObject({ agent: 'a3' });
     expect(second.steps[0]!.resumed).toBeUndefined();
-    expect(second.sessions).toEqual({ coder: { agent: 'a3', sessionId: 'a3-s0', step: 0 } });
+    expect(second.sessions).toMatchObject({ coder: { agent: 'a3', sessionId: 'a3-s0', step: 0 } });
     expect(sb.calls()[1]!.prompt).not.toContain('这是同一次会话里的新任务');
+    // 换了人是新开的会话，规则要完整给一遍
+    expect(sb.calls()[1]!.prompt).toContain('不要执行 git commit');
     const third = await e.submit({ task: '第三个任务', role: 'coder', origin, sessions: second.sessions });
     expect(third.steps[0]!.resumed).toBe(true);
     expect(trace()).toEqual(['a2:新开', 'a3:新开', 'a3:a3-s0']);
+  });
+
+  it('项目约定改了之后，带过来的会话重新收到一次完整说明', async () => {
+    sb.setScenario({ a2: [{ text: '第一个任务做完了' }, { text: '第二个任务做完了' }, { text: '第三个任务做完了' }] });
+    const first = await (await engine()).submit({ task: '第一个任务', role: 'coder', origin });
+    // 改项目的固定前言，重新加载配置
+    fs.writeFileSync(path.join(sb.project, '.dario', 'project.yaml'), 'preamble: "- 新增的项目约定 QWE"\n', 'utf8');
+    const e = await engine();
+    const second = await e.submit({ task: '第二个任务', role: 'coder', origin, sessions: first.sessions });
+    expect(second.steps[0]!.resumed).toBe(true);
+    const prompt = sb.calls()[1]!.prompt;
+    expect(prompt).toContain('这是同一次会话里的新任务');
+    expect(prompt).toContain('新增的项目约定 QWE');
+    expect(prompt).toContain('不要执行 git commit');
+    expect(second.sessions!.coder!.brief).not.toBe(first.sessions!.coder!.brief);
+    // 之后配置没再变，又回到精简的写法
+    await e.submit({ task: '第三个任务', role: 'coder', origin, sessions: second.sessions });
+    expect(sb.calls()[2]!.prompt).not.toContain('新增的项目约定 QWE');
   });
 
   it('失败的任务里没做成的那个角色不再续接，其他角色的会话照样带下去', async () => {

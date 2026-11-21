@@ -10,27 +10,23 @@ roles:
     description: 读任务、出计划、最后汇总。
     candidates: [claude, codex]
     access: read-only
-  coder:
-    alias: [实现]
-    description: 写代码、改文件。
+  executor:
+    alias: [执行者, 执行]
+    description: 动手完成任务：写代码、改文件、整理资料等。
     candidates: [codex, claude, codebuddy]
     access: write
-  server:
-    alias: [服务端]
-    description: 服务端与配表相关的改动。
-    candidates: [codex, codebuddy]
+  # 要让测试者能运行测试或程序，在本机 ~/.dario/agents.yaml 里给它的候选放行相应的命令。
+  tester:
+    alias: [测试者, 测试]
+    description: 验证结果：补测试、运行测试或程序、确认效果，如实报告通过与否。
+    candidates: [claude, codebuddy]
     access: write
   reviewer:
-    alias: [审查]
-    description: 只读审查改动，给出通过或不通过的结论。
+    alias: [审核者, 审核]
+    description: 只读审核改动、评估方案，给出通过或不通过的结论。
     candidates: [claude, codex]
     access: read-only
-    must_differ_from: coder
-  bulk:
-    alias: [杂活]
-    description: 量大、低风险的工作，如批量检查、整理、文档初稿。
-    candidates: [codebuddy, deepseek]
-    access: write
+    must_differ_from: executor
 
 # auto：某家不可用时自动换下一家；ask：先问一句，同意后再换；manual：只报告，等人换
 fallback: auto
@@ -38,7 +34,7 @@ fallback: auto
 
 export const DEFAULT_PROJECT_YAML = `# 项目设置
 
-# 承担"主控"和"审查"两个职能的角色
+# 承担"主控"和"审核"两个职能的角色
 lead_role: lead
 review_role: reviewer
 
@@ -56,18 +52,24 @@ max_plan_steps: 8
 
 # 附在每次任务说明前面的固定文字
 preamble: ""
+
+# 每个任务开工前是否先与远端同步（就地执行时）。
+# off：不同步。
+# pull：先 git fetch；本地落后时 git pull --rebase。工作区有未提交的改动又落后于远端时，不自动暂存，任务不开始并说明情况。
+# pull-autostash：同上，但有未提交的改动时用 --autostash 自动暂存、拉取后放回。
+sync_before_task: off
 `;
 
 export const DEFAULT_DISPATCH_RULES = `# 分派规则
 
 主控按下面的规则决定每一步交给哪个角色。按项目实际情况修改本文件。
 
-- 需要写代码、改文件的工作交给"实现"。
-- 服务端与配表相关的改动交给"服务端"。
-- 量大、重复、低风险的工作（批量检查、整理、文档初稿）交给"杂活"。
-- 只需要阅读和判断的工作（评估方案、检查改动）交给"审查"。
+- 要动手的工作交给"执行者"：写代码、改文件、整理资料。
+- 要验证的工作交给"测试者"：补测试、运行测试或程序、确认效果。行为有变化的改动，在执行之后安排一步验证。
+- 只需要阅读和判断的工作（评估方案、检查改动）交给"审核者"。
+- 任务由这些角色自己做完，不安排要人中途介入的步骤；人只在全部结束后看最终结果。
 - 一步只做一件事。能一步做完的不要拆成多步。
-- 改了文件的计划，最后要有一步交给"审查"。
+- 改了文件的计划会在最后自动追加一次审核，不必专门安排。
 `;
 
 export const DEFAULT_AGENTS_YAML = `# 本机的 AI 配置。本文件只在这台机器上生效，不要放进仓库。
@@ -85,12 +87,18 @@ agents: {}
   #   model: sonnet                      # 模型
   #   timeout_minutes: 30
   #   enabled: true
-  #   allowed_tools:                     # 放行的工具清单
+  #   allowed_tools:                     # 放行的工具清单；不写时可写方式放行读取、搜索、文件编辑和命令执行
   #     read_only: [Read, Grep, Glob]
-  #     write: [Read, Grep, Glob, Edit, Write, "Bash(npm test:*)"]
+  #     write: [Read, Grep, Glob, Edit, Write, Bash, PowerShell, mcp__某个服务]
   #   env_pass: [MY_PROXY_*]             # 额外传给它的环境变量
   # codebuddy:
   #   model: glm-5.3                     # 不写则用 CodeBuddy 自己的默认模型
+
+# 可写角色（执行者、测试者）的权限。
+# full：全部放行，不逐项审批。任务要由角色自己做完，需要什么工具、命令、MCP 都能用，各家 AI 自己把握分寸。
+# listed：只放行 allowed_tools 清单里的工具（没写清单时是读取、搜索、文件编辑和命令执行）。
+# 只读角色（主控、审核者）不受这一项影响，始终只读。某一家要单独设置，在它的条目里写 permissions。
+permissions: full
 
 # 某家 AI 被判为不可用后，多久之内不再尝试（分钟）
 cooldown_minutes: 10

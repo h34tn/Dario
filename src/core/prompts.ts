@@ -1,13 +1,15 @@
 import type { ProjectConfig, RoleDef } from './config.js';
 import type { RoleBook } from './roles.js';
 import type { Access, Job, StepRecord } from './types.js';
-import { truncate } from './util.js';
+import { shortHash, truncate } from './util.js';
 
 const CONTEXT_CHARS = 4000;
 
 function rules(access: Access, project: ProjectConfig): string {
   const lines = ['- 不要执行 git commit、git push，不要切换或新建分支。'];
   if (access === 'write') {
+    lines.push('- 这一步由你自己做完：需要运行命令、调用工具、操作编辑器的就去做，不要把其中一部分留给人，也不要只给出让人照着做的步骤。');
+    lines.push('- 某个工具或命令被拒绝时，换一种能达到同样目的的正当做法；确实做不了，在结果里写明被拒绝的是什么、原话是什么，不要想办法绕过限制。');
     lines.push('- 只修改完成任务所必需的文件。');
     if (project.settings.writeRoots.length > 0) {
       lines.push(`- 只允许改动这些目录：${project.settings.writeRoots.join('、')}。`);
@@ -42,16 +44,70 @@ export function priorSteps(job: Job, after = -1): string {
 /**
  * 续接用的增量说明：下面几个 xxxFollowUp 与同名的 xxxPrompt 一一对应，发给已经做过本任务前几轮的同一个会话。
  * 会话里已有的内容（原始任务、它自己做过的事）不再重复；它上次发言之后别人做了什么、改了哪些文件必须补上。
- * 角色、权限和工作规则每次都重申：会话历史可能被工具压缩，这几行不能丢。
+ * 角色和权限每次用一句话重申；工作规则与项目约定只在这个会话还没收到过（briefed 为假）时才附上。
  */
-function continueHeader(role: RoleDef, access: Access, what: string): string {
+function continueHeader(role: RoleDef, access: Access, what: string, briefed = false): string {
   const name = role.alias[0] ? `「${role.alias[0]}」（${role.id}）` : `「${role.id}」`;
-  return `# 你的角色\n你继续担任${name}这个角色，权限：${access === 'write' ? '可以修改文件' : '只读'}。${what}之前的对话仍然有效。`;
+  return `# 你的角色\n你继续担任${name}这个角色，权限：${access === 'write' ? '可以修改文件' : '只读'}。${what}之前的对话仍然有效。${briefed ? SAME_RULES : ''}`;
 }
 
 /**
- * 发给从上一个任务带过来的会话：它熟悉项目，但不知道这个新任务，所以完整的任务说明照发，只在前面交代一句。
- * 完整说明里的角色、规则和输出格式不省：这些篇幅很小，而会话历史随时可能被工具压缩。
+ * 固定说明只发一次：角色、工作规则、项目约定、输出格式这些每次都一样的内容，一个会话收到过就不再重复。
+ * 下面三个 xxxBrief 给出某类说明里固定部分的指纹，记在会话上（RoleSession.brief）；
+ * 续接时指纹与会话上记的相同（briefed）才省略。项目配置改过则指纹不同，照常完整发一次。
+ */
+const SAME_RULES = '工作规则与项目约定同之前，不再重复。';
+const STALE_NOTE = '距离你上次工作，项目里的文件可能已经被其他角色或用户改动，用到时请重新读取，不要依赖记忆里的内容。';
+const PLAN_FORMAT_REMINDER =
+  '可用角色、项目约定、分派规则和输出格式同之前，不再重复：先用几句话说明思路，回复的**最后**输出同样字段的 JSON 代码块（summary、answer、steps）。';
+const REVIEW_FORMAT_REMINDER =
+  '输出格式同之前：先写审查意见，回复的**最后**用 JSON 代码块给出结论 `{"verdict":"pass","issues":[]}`，verdict 只能是 pass 或 fail。';
+
+export function stepBrief(project: ProjectConfig, role: RoleDef, access: Access): string {
+  return shortHash(`step\n${roleHeader(role, access)}\n${rules(access, project)}`);
+}
+
+export function reviewBrief(project: ProjectConfig, role: RoleDef): string {
+  return shortHash(`review\n${roleHeader(role, 'read-only')}\n${rules('read-only', project)}\n${REVIEW_FORMAT}`);
+}
+
+export function planBrief(project: ProjectConfig, roles: RoleBook): string {
+  return shortHash(`plan\n${planPrompt(project, roles, '')}`);
+}
+
+function newTaskHeader(role: RoleDef, access: Access): string {
+  return continueHeader(role, access, '这是同一次会话里的新任务，', true) + STALE_NOTE;
+}
+
+/** 发给从上一个任务带过来、且已经收到过同样固定说明的会话：只交代新任务。 */
+export function stepCarried(role: RoleDef, access: Access, task: string, context?: string, acceptance?: string): string {
+  return newTaskHeader(role, access) + section('上文', context) + section('任务', task) + section('验收标准', acceptance);
+}
+
+export function planCarried(task: string, context?: string): string {
+  return (
+    `# 你的角色\n这是同一次会话里的新任务。你仍然是主控，仍处于只读方式，只做阅读和判断，要动手的工作分派出去。之前的对话仍然有效。${STALE_NOTE}` +
+    `\n${PLAN_FORMAT_REMINDER}` +
+    section('上文', context) +
+    section('任务', task)
+  );
+}
+
+export function reviewCarried(role: RoleDef, job: Job, extraTask?: string): string {
+  const files = job.changedFiles.length ? job.changedFiles.map((f) => `- ${f}`).join('\n') : UNDETECTED_FILES;
+  return (
+    newTaskHeader(role, 'read-only') +
+    section('原始任务', job.task) +
+    section('已完成的工作', priorSteps(job)) +
+    section('本次改动的文件', files) +
+    section('审查要求', extraTask ?? '审查上面的改动是否正确、完整地完成了原始任务。请实际阅读改动的文件。') +
+    section('输出格式', REVIEW_FORMAT_REMINDER)
+  );
+}
+
+/**
+ * 发给从上一个任务带过来、但还没收到过这份固定说明的会话（项目配置改过，或它上次是以别的方式上场的）：
+ * 完整的任务说明照发，只在前面交代一句。收到过的会话改用上面的 xxxCarried，只交代新任务。
  */
 export function carriedPrompt(full: string): string {
   return (
@@ -80,10 +136,10 @@ export function stepPrompt(project: ProjectConfig, role: RoleDef, access: Access
 }
 
 /** after 是这个会话最近一次工作的步骤下标。 */
-export function stepFollowUp(project: ProjectConfig, role: RoleDef, access: Access, task: string, job: Job, after: number, acceptance?: string): string {
+export function stepFollowUp(project: ProjectConfig, role: RoleDef, access: Access, task: string, job: Job, after: number, acceptance?: string, briefed = false): string {
   return (
-    continueHeader(role, access, '这是同一个任务里交给你的下一步，') +
-    section('工作规则', rules(access, project)) +
+    continueHeader(role, access, '这是同一个任务里交给你的下一步，', briefed) +
+    (briefed ? '' : section('工作规则', rules(access, project))) +
     section('你上次工作之后其他步骤的结果', priorSteps(job, after)) +
     section('你上次工作之后被改动的文件', staleFiles(job, after)) +
     section('任务', task) +
@@ -115,7 +171,10 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
     '{"summary":"一句话概括计划","answer":null,"steps":[{"role":"角色 id","task":"交给该角色的完整任务说明","writes":true,"acceptance":"验收标准"}]}',
     '```',
     '规则：',
-    '- 如果任务只是提问、不需要分派给别人，把答案写在 answer 里，steps 留空数组。',
+    '- 如果任务只是提问、靠阅读就能回答，把答案写在 answer 里，steps 留空数组。',
+    '- 任务需要动手时必须分派：把它列成步骤交给可写的角色，在 task 里写清怎么做、怎么验证、结束后把现场还原到什么状态。不要因为你手边有能用的工具就自己做。',
+    '- 确实没有哪个角色做得到的事（分派规则明确划在任务范围之外的，或者缺环境、缺账号），不排步骤，在说明里写明是什么、为什么做不了；其余部分照常排完。',
+    '- 任务要由这些角色自己做完，人只在全部结束后看最终结果。各步连续自动执行，中间不会停下来等人：不要把任何一步留给人，不要写"需要人处理""由人工完成后再继续"之类的安排。改资产、运行程序、操作编辑器或其他外部工具、验证效果都分派给角色。',
     '- role 必须是"可用角色"里的 id；writes 为 true 的步骤只能交给可写的角色。',
     `- 步骤不超过 ${project.settings.maxPlanSteps} 个，不要把主控自己列为步骤。`,
     '- 每一步的 task 必须自包含：写清背景、要做什么、涉及哪些文件。执行者看不到本次对话，也看不到其他步骤的说明。',
@@ -123,8 +182,10 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
   ].join('\n');
   return (
     `# 你的角色\n你是主控。阅读任务和项目，判断如何完成，并输出一份计划。` +
-    `你现在处于只读方式：不要修改任何文件，也不要自己去完成需要改文件的工作。` +
+    `你现在处于只读方式，只做阅读和判断：不要修改任何文件，也不要自己动手执行任务。` +
+    `动手包括改文件、执行命令、操作编辑器或其他外部工具、运行程序验证效果、截图或采集数据；这些都交给下面的角色去做。` +
     section('可用角色', available) +
+    section('项目约定（各角色都要遵守，分派时据此安排）', project.settings.preamble) +
     section('分派规则', project.dispatchRules) +
     section('输出格式', format) +
     section('上文', context) +
@@ -158,15 +219,15 @@ export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, ex
 }
 
 /** after 是这个会话上一次审查的步骤下标。 */
-export function reviewFollowUp(project: ProjectConfig, role: RoleDef, job: Job, after: number, extraTask?: string): string {
+export function reviewFollowUp(project: ProjectConfig, role: RoleDef, job: Job, after: number, extraTask?: string, briefed = false): string {
   const recheck = '审查你上次审查之后的改动是否正确、完整地完成了原始任务；你上一轮提出过问题的，逐条确认是否已经解决，并确认修改没有引入新的问题。请实际阅读改动的文件。';
   return (
-    continueHeader(role, 'read-only', '这是同一个任务的又一轮审查，') +
-    section('工作规则', rules('read-only', project)) +
+    continueHeader(role, 'read-only', '这是同一个任务的又一轮审查，', briefed) +
+    (briefed ? '' : section('工作规则', rules('read-only', project))) +
     section('你上次审查之后完成的工作', priorSteps(job, after)) +
     section('你上次审查之后被改动的文件', staleFiles(job, after) ?? UNDETECTED_FILES) +
     section('审查要求', extraTask ? `${extraTask}\n${recheck}` : recheck) +
-    section('输出格式', REVIEW_FORMAT)
+    section('输出格式', briefed ? REVIEW_FORMAT_REMINDER : REVIEW_FORMAT)
   );
 }
 
@@ -187,10 +248,10 @@ export function reworkPrompt(project: ProjectConfig, role: RoleDef, originalTask
 }
 
 /** after 是这个会话最近一次工作的步骤下标。原任务已经在会话里，不再重复。 */
-export function reworkFollowUp(project: ProjectConfig, role: RoleDef, job: Job, after: number, issues: string[], reviewText: string): string {
+export function reworkFollowUp(project: ProjectConfig, role: RoleDef, job: Job, after: number, issues: string[], reviewText: string, briefed = false): string {
   return (
-    continueHeader(role, 'write', '你之前完成的工作没有通过审查，需要返工，') +
-    section('工作规则', rules('write', project)) +
+    continueHeader(role, 'write', '你之前完成的工作没有通过审查，需要返工，', briefed) +
+    (briefed ? '' : section('工作规则', rules('write', project))) +
     section('审查没有通过，需要修改的问题', issueList(issues, reviewText)) +
     section('你上次工作之后被改动的文件', staleFiles(job, after)) +
     section('任务', REWORK_TASK)

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AgentInstanceConfig } from '../core/config.js';
+import type { AgentInstanceConfig, WritePermissions } from '../core/config.js';
 import type { AgentDetect, AgentPort, AgentRunRequest, AgentRunResult } from '../core/ports.js';
 import { realPath } from '../core/util.js';
 import { looksSessionLost, looksUnavailable, type Activity, type AgentOutput, type AgentPlugin, type Classification, type RawResult, type TokenUsage } from '../plugin.js';
@@ -8,6 +8,8 @@ import { buildEnv, runProcess, SYSTEM_ENV, which } from './spawn.js';
 
 export interface HandleSettings {
   startupTimeoutSeconds: number;
+  /** 可写角色的权限，本机的总设置；不给时按 full。 */
+  permissions?: WritePermissions;
   /** 用户配置里传给所有 AI 的环境变量。 */
   envPass: string[];
   env: NodeJS.ProcessEnv;
@@ -161,6 +163,8 @@ export class AgentHandle implements AgentPort {
     const defaults = this.plugin.defaultAllowedTools;
     const allowedTools = req.access === 'write' ? (tools?.write ?? defaults?.write ?? []) : (tools?.readOnly ?? defaults?.readOnly ?? []);
     const resume = this.resumes ? req.resume : undefined;
+    // 只读角色的职责就是不动手，权限放开只对可写角色有意义
+    const unrestricted = req.access === 'write' && (this.config.permissions ?? this.settings.permissions ?? 'full') === 'full';
 
     const invocation = this.plugin.build({
       access: req.access,
@@ -170,6 +174,7 @@ export class AgentHandle implements AgentPort {
       allowedTools,
       resultFile,
       options: this.config.options ?? {},
+      ...(unrestricted && { unrestricted }),
       ...(resume && { resume }),
     });
 

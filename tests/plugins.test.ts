@@ -40,11 +40,12 @@ const CODEX_STDOUT = [
 ].join('\n');
 
 describe('内置插件：命令行参数', () => {
-  it('Claude Code 只读：dontAsk，放行清单内的工具，并明确禁止编辑类工具', () => {
+  it('Claude Code 只读：dontAsk，不加载 MCP，放行清单内的工具，并明确禁止编辑类工具', () => {
     const inv = claudePlugin.build(req({ model: 'sonnet' }));
     expect(inv.stdin).toBe('任务说明');
     expect(inv.args).toEqual([
       '-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', 'dontAsk',
+      '--strict-mcp-config',
       '--model', 'sonnet',
       '--allowedTools', 'Read', 'Bash(git diff:*)',
       '--disallowedTools', 'Edit', 'Write', 'NotebookEdit',
@@ -52,10 +53,52 @@ describe('内置插件：命令行参数', () => {
     expect(inv.args.join(' ')).not.toContain('任务说明');
   });
 
-  it('Claude Code 可写：acceptEdits，不使用跳过全部权限的参数', () => {
+  it('可写且全部放行：三家都用各自不逐项审批的方式，不再带工具清单；只读不受影响', () => {
+    for (const plugin of [claudePlugin, codebuddyPlugin]) {
+      const full = plugin.build(req({ access: 'write', unrestricted: true, allowedTools: ['Edit'] })).args;
+      expect(full[full.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
+      expect(full).not.toContain('--allowedTools');
+      expect(full).not.toContain('--strict-mcp-config');
+      // 只读角色即使收到这个标记也保持只读
+      const ro = plugin.build(req({ unrestricted: true })).args;
+      expect(ro[ro.indexOf('--permission-mode') + 1]).toBe('dontAsk');
+      expect(ro).toContain('--strict-mcp-config');
+      expect(ro).toContain('--disallowedTools');
+    }
+    const codex = codexPlugin.build(req({ access: 'write', unrestricted: true })).args;
+    expect(codex).toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(codex).not.toContain('-s');
+    expect(codexPlugin.build(req({ unrestricted: true })).args.join(' ')).toContain('-s read-only');
+    // 按清单放行时仍是原来的方式
+    expect(codexPlugin.build(req({ access: 'write' })).args.join(' ')).toContain('-s workspace-write');
+  });
+
+  it('默认放行的工具：只读是读取与只读的 git 命令，可写另有文件编辑和命令执行', () => {
+    for (const plugin of [claudePlugin, codebuddyPlugin]) {
+      const { readOnly, write } = plugin.defaultAllowedTools!;
+      expect(readOnly).toEqual(expect.arrayContaining(['Read', 'Grep', 'Glob', 'Bash(git diff:*)']));
+      for (const tool of ['Edit', 'Write', 'Bash', 'PowerShell']) expect(readOnly).not.toContain(tool);
+      expect(write).toEqual(expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash', 'PowerShell']));
+    }
+  });
+
+  it('本机配置的追加参数：extra_args 两种方式都加，write_args 与 read_only_args 各管一种', () => {
+    const options = { extra_args: ['-c', 'a=1'], write_args: ['-c', 'w=1'], read_only_args: ['-c', 'r=1'] };
+    const ro = codexPlugin.build(req({ options })).args.join(' ');
+    const rw = codexPlugin.build(req({ access: 'write', options })).args.join(' ');
+    expect(ro).toContain('-c a=1 -c r=1');
+    expect(ro).not.toContain('w=1');
+    expect(rw).toContain('-c a=1 -c w=1');
+    expect(rw).not.toContain('r=1');
+    expect(claudePlugin.build(req({ access: 'write', options })).args.join(' ')).toContain('-c a=1 -c w=1');
+  });
+
+  it('Claude Code 可写且按清单放行：acceptEdits，不使用跳过全部权限的参数', () => {
     const inv = claudePlugin.build(req({ access: 'write', allowedTools: ['Edit'] }));
     expect(inv.args).toContain('acceptEdits');
     expect(inv.args).not.toContain('--disallowedTools');
+    // 可写角色照常使用 MCP 工具
+    expect(inv.args).not.toContain('--strict-mcp-config');
     expect(inv.args.join(' ')).not.toMatch(/dangerously|bypassPermissions/);
   });
 

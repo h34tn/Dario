@@ -76,7 +76,7 @@ export async function buildCatalog(user: UserConfig, env: NodeJS.ProcessEnv = pr
     instances.set(id, merged);
   }
 
-  const settings = { startupTimeoutSeconds: user.startupTimeoutSeconds, envPass: user.envPass, env };
+  const settings = { startupTimeoutSeconds: user.startupTimeoutSeconds, permissions: user.permissions, envPass: user.envPass, env };
   const handles = new Map<string, AgentPort>();
   for (const [id, cfg] of instances) {
     const pluginId = cfg.plugin ?? id;

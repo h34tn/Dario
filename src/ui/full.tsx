@@ -14,7 +14,7 @@ export async function runFullUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
   const { engine, stdin, stdout, env } = opts;
   const color = !!stdout.isTTY && !env.NO_COLOR;
   const symbols = pickSymbols(env);
-  const session = new Session({ engine, color });
+  const session = new Session({ engine, color, continueLast: opts.continueLast });
   let wheel: ((direction: 'up' | 'down') => void) | undefined;
   const onWheel: NonNullable<FullAppProps['onWheel']> = listener => {
     wheel = listener;

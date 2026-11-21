@@ -2,13 +2,19 @@ import type { ProjectConfig } from './config.js';
 import { parsePlan, parseVerdict } from './plan.js';
 import {
   carriedPrompt,
+  planBrief,
+  planCarried,
   planFollowUp,
   planPrompt,
   priorSteps,
+  reviewBrief,
+  reviewCarried,
   reviewFollowUp,
   reviewPrompt,
   reworkFollowUp,
   reworkPrompt,
+  stepBrief,
+  stepCarried,
   stepFollowUp,
   stepPrompt,
   summaryFollowUp,
@@ -69,6 +75,7 @@ export class Orchestrator {
     let conclusion = '';
     try {
       if (job.status === 'queued') {
+        await this.syncPhase(job, ws);
         if (job.mode === 'direct') {
           conclusion = await this.runDirect(job, ws, opts);
         } else {
@@ -104,6 +111,17 @@ export class Orchestrator {
     return this.save(job);
   }
 
+  /** 开工前与远端同步（项目设置了才做）。同步不了又不能继续时由工作区抛出，任务按"没有开始"结束。 */
+  private async syncPhase(job: Job, ws: Workspace): Promise<void> {
+    if (!ws.syncRemote) return;
+    const report = await ws.syncRemote();
+    for (const text of report.notes) this.deps.emit({ jobId: job.id, kind: 'phase', text });
+    for (const text of report.warnings) {
+      job.warnings.push(text);
+      this.deps.emit({ jobId: job.id, kind: 'phase', text });
+    }
+  }
+
   private save(job: Job): Job {
     this.deps.state.saveJob(job);
     return job;
@@ -136,7 +154,7 @@ export class Orchestrator {
     job: Job,
     ws: Workspace,
     opts: RunOptions,
-    req: { kind: StepKind; roleId: string; prompt: string; followUp?: string; task?: string; access?: Access; prefer?: string },
+    req: { kind: StepKind; roleId: string; prompt: string; followUp?: string; brief?: string; task?: string; access?: Access; prefer?: string },
   ): Promise<StepRecord> {
     this.checkCancel(job);
     const before = await ws.stamp();
@@ -172,13 +190,22 @@ export class Orchestrator {
   /**
    * 这个角色有会话可以续接时，给出续接用的说明，否则 undefined。
    * 会话在本任务里上过场：只发增量，delta 收到的是它最近一次工作的步骤下标。
-   * 会话是上一个任务带过来的：它不知道这个新任务，发完整说明，前面交代一句。
+   * 会话是上一个任务带过来的：它不知道这个新任务，交代新任务。
+   * 固定说明（角色、规则、项目约定、输出格式）只发一次：brief 是这类说明固定部分的指纹，
+   * 会话上记的指纹与它相同（briefed）时用精简的写法，否则照常带上固定说明。
    * 有会话不等于一定续接：担当者换了人时执行器会改用完整的任务说明新开会话。
    */
-  private followUp(job: Job, roleId: string, full: string, delta: (after: number) => string | undefined): string | undefined {
+  private followUp(
+    job: Job,
+    roleId: string,
+    brief: string | undefined,
+    how: { full: string; carried?: () => string; delta: (after: number, briefed: boolean) => string | undefined },
+  ): string | undefined {
     const session = job.sessions?.[roleId];
     if (!session) return undefined;
-    return session.step < 0 ? carriedPrompt(full) : delta(session.step);
+    const briefed = brief !== undefined && session.brief === brief;
+    if (session.step < 0) return briefed && how.carried ? how.carried() : carriedPrompt(how.full);
+    return how.delta(session.step, briefed);
   }
 
   /** 把一步的失败记到任务上，返回给发起人看的说明。 */
@@ -199,13 +226,19 @@ export class Orchestrator {
     job.branch = (await ws.enterExec(job.id)).branch;
     this.setStatus(job, 'running');
     const prompt = stepPrompt(project, role, role.access, job.task, job.context);
+    const brief = stepBrief(project, role, role.access);
     const rec = await this.execStep(job, ws, opts, {
       kind: 'step',
       roleId,
       task: job.task,
       prompt,
+      brief,
       // 直派只有一步，能续接的只有上一个任务带过来的会话
-      followUp: this.followUp(job, roleId, prompt, () => undefined),
+      followUp: this.followUp(job, roleId, brief, {
+        full: prompt,
+        carried: () => stepCarried(role, role.access, job.task, job.context),
+        delta: () => undefined,
+      }),
     });
     if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
     job.status = 'done';
@@ -224,13 +257,19 @@ export class Orchestrator {
     for (let attempt = 0; attempt < 2 && !plan; attempt++) {
       const prompt = planPrompt(project, roles, job.task, job.context, feedback);
       const problem = feedback;
+      const brief = planBrief(project, roles);
       const rec = await this.execStep(job, ws, opts, {
         kind: 'plan',
         roleId: lead,
         access: 'read-only',
         task: job.task,
         prompt,
-        followUp: this.followUp(job, lead, prompt, () => (problem !== undefined ? planFollowUp(problem) : undefined)),
+        brief,
+        followUp: this.followUp(job, lead, brief, {
+          full: prompt,
+          carried: () => planCarried(job.task, job.context),
+          delta: () => (problem !== undefined ? planFollowUp(problem) : undefined),
+        }),
       });
       if (rec.outcome !== 'ok') {
         job.result = { conclusion: this.failFromStep(job, rec), changedFiles: [], fallbackHappened: false, warnings: [] };
@@ -291,13 +330,20 @@ export class Orchestrator {
         continue;
       }
       const role = roles.get(step.role);
-      const prompt = stepPrompt(project, role, role.access, step.task, priorSteps(job) || job.context, step.acceptance);
+      const context = priorSteps(job) || job.context;
+      const prompt = stepPrompt(project, role, role.access, step.task, context, step.acceptance);
+      const brief = stepBrief(project, role, role.access);
       const rec = await this.execStep(job, ws, opts, {
         kind: 'step',
         roleId: step.role,
         task: step.task,
         prompt,
-        followUp: this.followUp(job, step.role, prompt, (after) => stepFollowUp(project, role, role.access, step.task, job, after, step.acceptance)),
+        brief,
+        followUp: this.followUp(job, step.role, brief, {
+          full: prompt,
+          carried: () => stepCarried(role, role.access, step.task, context, step.acceptance),
+          delta: (after, briefed) => stepFollowUp(project, role, role.access, step.task, job, after, step.acceptance, briefed),
+        }),
       });
       if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
     }
@@ -315,7 +361,8 @@ export class Orchestrator {
       roleId: project.settings.leadRole,
       access: 'read-only',
       prompt: summaryText,
-      followUp: this.followUp(job, project.settings.leadRole, summaryText, () => summaryFollowUp(job, job.steps)),
+      // 汇总没有固定说明，不带指纹：会话上已有的指纹原样保留
+      followUp: this.followUp(job, project.settings.leadRole, undefined, { full: summaryText, delta: () => summaryFollowUp(job, job.steps) }),
     });
     job.status = 'done';
     if (summary.outcome === 'ok' && summary.text.trim()) return summary.text;
@@ -332,14 +379,21 @@ export class Orchestrator {
     const reviewRole = project.settings.reviewRole;
     for (;;) {
       this.setStatus(job, 'reviewing');
-      const reviewText = reviewPrompt(project, roles.get(reviewRole), job, extraTask);
+      const reviewer = roles.get(reviewRole);
+      const reviewText = reviewPrompt(project, reviewer, job, extraTask);
+      const brief = reviewBrief(project, reviewer);
       const rec = await this.execStep(job, ws, opts, {
         kind: 'review',
         roleId: reviewRole,
         access: 'read-only',
         task: extraTask,
         prompt: reviewText,
-        followUp: this.followUp(job, reviewRole, reviewText, (after) => reviewFollowUp(project, roles.get(reviewRole), job, after, extraTask)),
+        brief,
+        followUp: this.followUp(job, reviewRole, brief, {
+          full: reviewText,
+          carried: () => reviewCarried(reviewer, job, extraTask),
+          delta: (after, briefed) => reviewFollowUp(project, reviewer, job, after, extraTask, briefed),
+        }),
       });
       if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
       job.reviewedSinceChange = true;
@@ -364,14 +418,21 @@ export class Orchestrator {
       job.reworkRounds++;
       this.setStatus(job, 'running');
       const writer = job.lastWriter;
-      const reworkText = reworkPrompt(project, roles.get(writer.role), writer.task, verdict.issues, rec.text);
+      const writerRole = roles.get(writer.role);
+      const reworkText = reworkPrompt(project, writerRole, writer.task, verdict.issues, rec.text);
+      // 返工与执行的固定说明相同（角色与可写的工作规则），共用一个指纹
+      const reworkBrief = stepBrief(project, writerRole, 'write');
       const rework = await this.execStep(job, ws, opts, {
         kind: 'rework',
         roleId: writer.role,
         prefer: writer.agent,
         task: writer.task,
         prompt: reworkText,
-        followUp: this.followUp(job, writer.role, reworkText, (after) => reworkFollowUp(project, roles.get(writer.role), job, after, verdict.issues, rec.text)),
+        brief: reworkBrief,
+        followUp: this.followUp(job, writer.role, reworkBrief, {
+          full: reworkText,
+          delta: (after, briefed) => reworkFollowUp(project, writerRole, job, after, verdict.issues, rec.text, briefed),
+        }),
       });
       if (rework.outcome !== 'ok') return this.failFromStep(job, rework);
     }

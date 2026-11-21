@@ -11,23 +11,35 @@ import {
   type InvokeRequest,
 } from '../plugin.js';
 
+/**
+ * 本机配置里追加的参数：extra_args 两种方式都加；write_args 只在可写方式加，read_only_args 只在只读方式加。
+ * 分开是因为有的设置只该给一种方式，例如放行某个 MCP 服务只给可写、关掉它只给只读。
+ */
 function extraArgs(req: InvokeRequest): string[] {
-  const extra = req.options.extra_args;
-  return Array.isArray(extra) ? extra.map(String) : [];
+  const list = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
+  return [...list(req.options.extra_args), ...list(req.access === 'write' ? req.options.write_args : req.options.read_only_args)];
 }
 
 const READ_TOOLS = ['Read', 'Grep', 'Glob', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)'];
 const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'];
+// 可写角色要自己把任务做完：跑测试、跑生成脚本、调用项目自己的工具都要执行命令
+const EXEC_TOOLS = ['Bash', 'PowerShell'];
 
 /** Claude Code 与 CodeBuddy 的命令行参数形式相同。 */
 function claudeStyleArgs(req: InvokeRequest): string[] {
   // --include-partial-messages：每条消息结束时都报准确的 token 用量，运行中就能显示；不加时要等整次运行结束
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', req.access === 'write' ? 'acceptEdits' : 'dontAsk'];
+  // 可写方式默认全部放行（bypassPermissions）：任务要由角色自己做完，需要什么工具都能用；
+  // 用户把权限设为按清单放行时用 acceptEdits，只有清单里的工具能用。
+  const mode = req.access === 'read-only' ? 'dontAsk' : req.unrestricted ? 'bypassPermissions' : 'acceptEdits';
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', mode];
   // 续接只带回对话历史，权限与工具清单仍按这一次的参数生效
+  // 只读时不加载任何 MCP 服务：用户或项目自己的设置里放行过的 MCP 工具（例如在编辑器里执行代码）
+  // 不受下面两份清单约束，只读角色会借它动手干活。要用这些工具的工作应当分派给可写的角色。
+  if (req.access === 'read-only') args.push('--strict-mcp-config');
   if (req.resume) args.push('--resume', req.resume);
   if (req.model) args.push('--model', req.model);
   args.push(...extraArgs(req));
-  if (req.allowedTools.length > 0) args.push('--allowedTools', ...req.allowedTools);
+  if (req.allowedTools.length > 0 && !req.unrestricted) args.push('--allowedTools', ...req.allowedTools);
   // 只读时明确禁止编辑类工具，不受用户自己设置里的放行影响
   if (req.access === 'read-only') args.push('--disallowedTools', ...EDIT_TOOLS);
   return args;
@@ -43,7 +55,7 @@ export const claudePlugin: AgentPlugin = defineAgent({
   resumes: true,
   // 后两个是 Claude Code 自动压缩会话历史的阈值设置：用户为自己调过的上限，续接时照样生效
   envPass: ['ANTHROPIC_*', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_USE_*', 'CLAUDE_CODE_GIT_BASH_PATH', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'],
-  defaultAllowedTools: { readOnly: READ_TOOLS, write: [...READ_TOOLS, ...EDIT_TOOLS] },
+  defaultAllowedTools: { readOnly: READ_TOOLS, write: ['Read', 'Grep', 'Glob', ...EDIT_TOOLS, ...EXEC_TOOLS] },
   build: (req) => ({ args: claudeStyleArgs(req), stdin: req.prompt }),
   parse: (raw) => parseStreamJsonResult(raw.stdout),
   meter: () => streamJsonMeter({ inputIncludesCache: false }),
@@ -58,7 +70,7 @@ export const codebuddyPlugin: AgentPlugin = defineAgent({
   streams: true,
   resumes: true,
   envPass: ['CODEBUDDY_*'],
-  defaultAllowedTools: { readOnly: READ_TOOLS, write: [...READ_TOOLS, ...EDIT_TOOLS] },
+  defaultAllowedTools: { readOnly: READ_TOOLS, write: ['Read', 'Grep', 'Glob', ...EDIT_TOOLS, ...EXEC_TOOLS] },
   build: (req) => ({ args: claudeStyleArgs(req), stdin: req.prompt }),
   parse: (raw) => parseStreamJsonResult(raw.stdout),
   // 实测 CodeBuddy 报的 input_tokens 已经包含命中缓存的部分
@@ -77,7 +89,10 @@ export const codexPlugin: AgentPlugin = defineAgent({
   envPass: ['OPENAI_*', 'CODEX_*'],
   build: (req) => {
     // 沙箱方式是 exec 自己的参数，续接时必须写在 resume 之前才对这一轮生效
-    const args = ['exec', '-C', req.cwd, '-s', req.access === 'write' ? 'workspace-write' : 'read-only', '--skip-git-repo-check', '--color', 'never'];
+    // 可写方式默认全部放行：不走沙箱、不审批（沙箱里起不了子进程，跑不了生成脚本和完整测试，MCP 调用也要逐个预先批准）。
+    // 用户把权限设为按清单放行时用 workspace-write 沙箱。
+    const access = req.access === 'read-only' ? ['-s', 'read-only'] : req.unrestricted ? ['--dangerously-bypass-approvals-and-sandbox'] : ['-s', 'workspace-write'];
+    const args = ['exec', '-C', req.cwd, ...access, '--skip-git-repo-check', '--color', 'never'];
     if (req.resume) args.push('resume', req.resume);
     args.push('--json', '-o', req.resultFile);
     if (req.model) args.push('-m', req.model);

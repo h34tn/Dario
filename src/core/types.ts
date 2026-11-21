@@ -95,6 +95,11 @@ export interface RoleSession {
   step: number;
   /** 工具只报会话累计用量时，记下上一轮结束时的累计值，下一轮减去它才是那一步的用量。 */
   tokens?: StepTokens;
+  /**
+   * 这个会话已经收到过的固定说明（角色、工作规则、项目约定、输出格式等）的指纹。
+   * 续接时指纹没变就不再重发这些内容；项目配置改了，指纹跟着变，会重发一次。
+   */
+  brief?: string;
 }
 
 export interface PlanStep {

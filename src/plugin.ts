@@ -42,6 +42,11 @@ export interface InvokeRequest {
   model?: string;
   /** 本次放行的工具清单；不支持该概念的工具忽略即可。 */
   allowedTools: string[];
+  /**
+   * 可写方式下不再逐项审批：这一步需要什么工具、命令都放行，由工具自己的"全部放行"方式实现。
+   * 只在可写方式出现；用户把权限设为按清单放行（permissions: listed）时不出现。不支持的工具忽略即可。
+   */
+  unrestricted?: boolean;
   /** 可供 AI 写入最终答复的文件路径（位于任务目录内，调用前不存在）。 */
   resultFile: string;
   /** 用户在 agents.yaml 的 options 里给这个 AI 写的自由配置。 */

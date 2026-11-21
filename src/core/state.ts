@@ -1,11 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Job } from './types.js';
+import type { Job, RoleSession } from './types.js';
 import { normPath, nowIso, readJson, shortHash, withLock, writeJsonAtomic } from './util.js';
 
 export interface HealthMark {
   until: string;
   reason: string;
+}
+
+/** 终端交互里一次会话的存档：退出后再进来可以接着做。 */
+export interface SavedSession {
+  savedAt: string;
+  /** 存档时最近完成的任务。 */
+  jobId: string;
+  /** 那个任务的第一行，用于提示。 */
+  task: string;
+  /** 带给下一个任务的上文。 */
+  context?: string;
+  /** 各角色的 AI 会话。 */
+  sessions?: Record<string, RoleSession>;
+  /** 最近一个任务改动的文件，供 /diff 使用。 */
+  files: string[];
 }
 
 const DEDUPE_TTL_MS = 48 * 3600 * 1000;
@@ -106,6 +121,24 @@ export class StateStore {
       else all[role] = agent;
       writeJsonAtomic(this.overridesFile(projectRoot), all);
     });
+  }
+
+  // ----- 终端交互的会话存档（按项目区分，每个项目只留最近一次） -----
+
+  private sessionFile(projectRoot: string): string {
+    return this.file('projects', shortHash(normPath(projectRoot)), 'session.json');
+  }
+
+  getSavedSession(projectRoot: string): SavedSession | undefined {
+    const saved = readJson<SavedSession | undefined>(this.sessionFile(projectRoot), undefined);
+    return saved && typeof saved.jobId === 'string' ? saved : undefined;
+  }
+
+  /** 传 undefined 表示删除存档。 */
+  saveSession(projectRoot: string, session: SavedSession | undefined): void {
+    const f = this.sessionFile(projectRoot);
+    if (session) writeJsonAtomic(f, session);
+    else fs.rmSync(f, { force: true });
   }
 
   // ----- 可用状态（整台机器共用） -----

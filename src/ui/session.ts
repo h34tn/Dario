@@ -4,7 +4,8 @@ import { HELP_TEXT, parseCommand, type Command } from '../core/commands.js';
 import type { Engine } from '../core/engine.js';
 import { formatJob, formatRoles } from '../core/report.js';
 import { STATUS_LABEL, type FallbackQuestion, type Job, type Plan } from '../core/types.js';
-import { DarioError, ellipsis } from '../core/util.js';
+import type { SavedSession } from '../core/state.js';
+import { DarioError, ellipsis, formatLocalTime, nowIso } from '../core/util.js';
 import type { CompletionContext } from './completion.js';
 import { colorizeDiff, readDiff } from './diff.js';
 import { EMPTY_FEED, markStopping, reduceFeed, shortRole, type FeedState, type StepView } from './feed.js';
@@ -37,6 +38,8 @@ export interface SessionOptions {
   engine: Engine;
   color: boolean;
   senderId?: string;
+  /** 启动时直接接上这个项目上一次的会话（`dario --continue`）。 */
+  continueLast?: boolean;
   now?: () => number;
   readDiff?: typeof readDiff;
 }
@@ -71,6 +74,8 @@ export class Session {
   private context?: string;
   /** 各角色的 AI 会话，随任务一路带下去，`/new` 时丢弃。 */
   private roleSessions?: Job['sessions'];
+  /** 当前任务里各角色实际上场的 AI：换人之后状态栏要显示真正在干活的那家，而不是角色表的首选。任务结束时清空。 */
+  private readonly actual = new Map<string, string>();
   private contextVersion = 0;
   private statusVersion = 0;
   private files: string[] = [];
@@ -107,6 +112,11 @@ export class Session {
     this.append('banner', `Dario · ${this.snapshot.status.project}        输入任务直接交给主控，/ 开头是指令，/help 查看全部`);
     this.off = this.engine.onProgress(event => {
       if (event.jobId !== this.snapshot.runningJobId) return;
+      const who = event.step;
+      if (who?.agent && (event.kind === 'step_start' || event.kind === 'fallback') && this.actual.get(who.role) !== who.agent) {
+        this.actual.set(who.role, who.agent);
+        void this.refreshStatus();
+      }
       const { feed, history } = this.snapshot;
       const next = reduceFeed(feed, event, (this.opts.now ?? Date.now)());
       if (next === feed) return;
@@ -117,7 +127,36 @@ export class Session {
       });
       this.update({ history: [...history, ...items], feed: { ...next, lines: [] } });
     });
+    const saved = this.loadSaved();
+    if (saved && this.opts.continueLast) this.restore(saved);
+    else if (saved) this.append('notice', `上一次会话停在 ${saved.jobId}（${formatLocalTime(saved.savedAt)}）：${ellipsis(saved.task, 50)}。输入 /continue 接着做。`);
+    else if (this.opts.continueLast) this.append('notice', '这个项目没有可以接着做的会话，从头开始。');
     await this.refreshStatus();
+  }
+
+  /** 存档读写失败不影响干活：读不到当作没有，写不了就不存。 */
+  private loadSaved(): SavedSession | undefined {
+    try { return this.engine.state?.getSavedSession(this.engine.project.root); } catch { return undefined; }
+  }
+
+  private persist(session: SavedSession | undefined) {
+    try { this.engine.state?.saveSession(this.engine.project.root, session); } catch { /* 见上 */ }
+  }
+
+  /** 接上存档的会话：上文、各角色的 AI 会话、上一个任务改动的文件。 */
+  private restore(saved: SavedSession) {
+    this.context = saved.context;
+    this.roleSessions = saved.sessions;
+    this.files = saved.files ?? [];
+    this.contextVersion++;
+    this.update({ contextJobId: saved.context ? saved.jobId : undefined });
+    try {
+      const last = this.engine.job(saved.jobId);
+      this.append('title', `${last.id} · ${last.task.split(/\r?\n/, 1)[0]}`);
+      this.append('text', resultCard(last, this.opts.color));
+    } catch { /* 任务记录不在了，只是少一段回顾 */ }
+    const roles = Object.keys(saved.sessions ?? {}).map(id => shortRole(this.roleLabel(id)));
+    this.append('notice', `已接上 ${formatLocalTime(saved.savedAt)} 的会话（${saved.jobId}）${roles.length ? `，${roles.join('、')}的 AI 会话接着用` : ''}。/new 从头开始。`);
   }
 
   private async loadAgents(version: number) {
@@ -135,10 +174,12 @@ export class Session {
       const { leadRole, reviewRole } = this.engine.project.settings;
       const writer = views.find(v => v.access === 'write' && v.id !== leadRole && v.id !== reviewRole);
       const priorityIds = new Set([leadRole, writer?.id, reviewRole]);
-      const roles = views.map(view => ({
-        label: shortRole(this.roleLabel(view.id)), holder: view.holder, model: view.holder ? models?.get(view.holder) : undefined,
-        degraded: view.candidates[0]?.state !== 'ok', priority: priorityIds.has(view.id),
-      }));
+      const roles = views.map(view => {
+        const first = view.candidates[0];
+        const holder = this.actual.get(view.id) ?? view.holder;
+        return { label: shortRole(this.roleLabel(view.id)), holder, model: holder ? models?.get(holder) : undefined,
+          degraded: first?.state !== 'ok' || holder !== first.agent, priority: priorityIds.has(view.id) };
+      });
       if (version !== this.statusVersion) return;
       this.completion = { ...this.completion, roles: views.map(({ id, alias }) => ({ id, alias })) };
       this.update({ status: { project: this.snapshot.status.project, roles } });
@@ -162,7 +203,13 @@ export class Session {
       this.roleSessions = undefined;
       this.contextVersion++;
       this.update({ contextJobId: undefined });
+      this.persist(undefined);
       return this.append('notice', '已清空会话上文，各角色的 AI 会话也重新开始，下一个任务从头开始。');
+    }
+    if (line === '/continue') {
+      if (this.working) return this.append('error', '有任务在运行，等它结束后再接上一次的会话。');
+      const saved = this.loadSaved();
+      return saved ? this.restore(saved) : this.append('notice', '这个项目没有可以接着做的会话。');
     }
     if (line === '/diff') return this.showDiff();
     const cmd = parseCommand(line);
@@ -170,6 +217,7 @@ export class Session {
     switch (cmd.kind) {
       case 'invalid': return this.append('error', cmd.message);
       case 'help': return this.append('text', [HELP_TEXT, '/diff                  查看上一个任务的改动',
+        '/continue              接上这个项目上一次的会话（退出前做到哪，接着做）',
         '/new                   清空会话上文，各角色的 AI 会话重新开始', '/plain                 切换到逐行交互', '/exit                  退出'].join('\n'));
       case 'roles': return this.append('text', formatRoles(await engine.rolesView(), engine.roles.fallback));
       case 'agents':
@@ -226,6 +274,7 @@ export class Session {
       this.update({ queued: this.queue.length });
       try { await this.runOne(work); } catch (error) { this.error(error); }
       this.update({ runningJobId: undefined, feed: EMPTY_FEED, plan: undefined, ask: undefined });
+      this.actual.clear();
       await this.refreshStatus();
     }
     this.working = false;
@@ -264,6 +313,11 @@ export class Session {
     if (version === this.contextVersion && done.status === 'done' && conclusion?.trim()) {
       this.context = `同一次会话里上一个任务（${done.id}）的结论：\n${conclusion.slice(0, 3000)}`;
       this.update({ contextJobId: done.id });
+    }
+    // 每个任务结束都存档，退出（包括更新 Dario 后重进）再进来可以用 --continue 或 /continue 接上
+    if (version === this.contextVersion && (this.context || this.roleSessions)) {
+      this.persist({ savedAt: nowIso(), jobId: done.id, task: done.task.split(/\r?\n/, 1)[0] ?? '', files: this.files,
+        ...(this.context && { context: this.context }), ...(this.roleSessions && { sessions: this.roleSessions }) });
     }
   }
 

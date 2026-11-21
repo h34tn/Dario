@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { SyncMode } from './config.js';
 import type { Strategy } from './types.js';
 import { DarioError, normPath, realPath } from './util.js';
 
@@ -13,6 +14,12 @@ export class WorkspaceError extends DarioError {
 
 /** 某一时刻"有改动的文件"的指纹；目录不是 git 仓库时为 null，表示无法检测。 */
 export type Stamp = Map<string, string> | null;
+
+/** 开工前同步的结果：notes 只是告知，warnings 要让发起人在结果里看到。 */
+export interface SyncReport {
+  notes: string[];
+  warnings: string[];
+}
 
 export interface FinalizeInfo {
   changed: string[];
@@ -27,6 +34,11 @@ export interface FinalizeInfo {
 export interface Workspace {
   readonly strategy: Strategy;
   readonly cwd: string;
+  /**
+   * 任务开工前与远端同步（项目设置了才有）。一个任务只调用一次，在计划或直派的第一步之前。
+   * 同步不了又不能在旧代码上干活时抛出 WorkspaceError，任务不开始。
+   */
+  syncRemote?(): Promise<SyncReport>;
   /** 进入只读的计划阶段之前调用。 */
   enterPlan(): Promise<void>;
   /** 进入执行阶段之前调用，返回任务分支名（隔离执行时）。 */
@@ -43,12 +55,12 @@ interface GitResult {
   stderr: string;
 }
 
-export function git(cwd: string, args: string[]): Promise<GitResult> {
+export function git(cwd: string, args: string[], opts: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}): Promise<GitResult> {
   return new Promise((resolve) => {
     execFile(
       'git',
       ['-c', 'core.quotepath=false', ...args],
-      { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+      { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, ...(opts.timeoutMs && { timeout: opts.timeoutMs }), ...(opts.env && { env: opts.env }) },
       (error, stdout, stderr) => {
         const missing = error && (error as NodeJS.ErrnoException).code === 'ENOENT' ? '找不到 git 命令' : '';
         resolve({ ok: !error, stdout: stdout ?? '', stderr: `${stderr ?? ''}${missing}` });
@@ -113,11 +125,89 @@ export function outOfScope(changed: string[], writeRoots: string[]): string[] {
   });
 }
 
+/** 访问远端的 git 命令：不弹出要人输入凭据的提示，最多等十分钟（大仓库加 LFS 可能很慢）。 */
+function gitRemote(cwd: string, args: string[]): Promise<GitResult> {
+  return git(cwd, args, { timeoutMs: 600000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+}
+
+function tail(text: string, lines = 3): string {
+  return text.trim().split(/\r?\n/).filter(Boolean).slice(-lines).join(' / ').slice(0, 500);
+}
+
+async function rebaseInProgress(cwd: string): Promise<boolean> {
+  for (const name of ['rebase-merge', 'rebase-apply']) {
+    const r = await git(cwd, ['rev-parse', '--git-path', name]);
+    if (r.ok && fs.existsSync(path.resolve(cwd, r.stdout.trim()))) return true;
+  }
+  return false;
+}
+
+/**
+ * 开工前把当前分支拉到远端最新（git pull --rebase，线性历史）。
+ * 不落后就什么都不做；落后且工作区干净就拉取；落后又有未提交的改动时，
+ * pull 方式不替人暂存、任务不开始，pull-autostash 方式自动暂存并在拉取后放回。
+ */
+export async function syncWithRemote(cwd: string, mode: SyncMode): Promise<SyncReport> {
+  const report: SyncReport = { notes: [], warnings: [] };
+  if (mode === 'off' || !(await gitTopLevel(cwd))) return report;
+  const up = await git(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  if (!up.ok || !up.stdout.trim()) {
+    report.warnings.push('当前分支没有对应的远端分支，开工前没有拉取。');
+    return report;
+  }
+  const upstream = up.stdout.trim();
+  const fetch = await gitRemote(cwd, ['fetch', '--quiet']);
+  if (!fetch.ok) {
+    report.warnings.push(`开工前连不上远端，没有拉取，在本地现有的代码上继续：${tail(fetch.stderr, 1) || '原因不明'}`);
+    return report;
+  }
+  const behind = Number((await git(cwd, ['rev-list', '--count', 'HEAD..@{u}'])).stdout.trim()) || 0;
+  if (behind === 0) {
+    report.notes.push(`开工前已核对：本地不落后于 ${upstream}。`);
+    return report;
+  }
+  // 没被 git 跟踪的新文件不妨碍拉取，只看已跟踪文件的改动
+  const dirty = (await git(cwd, ['status', '--porcelain', '--untracked-files=no'])).stdout.split('\n').filter(Boolean).map((l) => l.slice(3));
+  if (dirty.length > 0 && mode === 'pull') {
+    const sample = dirty.slice(0, 3).join('、') + (dirty.length > 3 ? ' 等' : '');
+    throw new WorkspaceError(
+      `本地落后 ${upstream} ${behind} 个提交，工作区又有 ${dirty.length} 个文件的未提交改动（${sample}）。` +
+        '项目设置为开工前先拉取、不替你暂存改动，所以任务没有开始。' +
+        '请先处理这些改动（提交，或自己执行 git pull --rebase --autostash）再重试；' +
+        '想让 Dario 自动暂存后拉取，把 .dario/project.yaml 的 sync_before_task 改为 pull-autostash。',
+    );
+  }
+  const pull = await gitRemote(cwd, ['pull', '--rebase', ...(dirty.length > 0 ? ['--autostash'] : [])]);
+  if (await rebaseInProgress(cwd)) {
+    await git(cwd, ['rebase', '--abort']);
+    throw new WorkspaceError(
+      `开工前拉取 ${upstream} 时，本地还没推送的提交与远端有冲突。已撤销这次拉取，仓库回到拉取前的状态，任务没有开始。请自己执行 git pull --rebase 处理冲突后重试。`,
+    );
+  }
+  const unmerged = (await git(cwd, ['diff', '--name-only', '--diff-filter=U'])).stdout.split('\n').filter(Boolean);
+  if (unmerged.length > 0) {
+    throw new WorkspaceError(
+      `已拉取到 ${upstream} 最新，但把你的未提交改动放回去时有冲突（${unmerged.slice(0, 5).join('、')}）。` +
+        '这些改动仍保存在 git stash 里，冲突处理完、确认改动完整之前不要删除它。任务没有开始。',
+    );
+  }
+  if (!pull.ok) throw new WorkspaceError(`开工前拉取 ${upstream} 失败，任务没有开始：${tail(pull.stderr || pull.stdout)}`);
+  report.notes.push(`开工前已拉取 ${upstream}：前进 ${behind} 个提交${dirty.length > 0 ? '，未提交的改动已自动暂存并放回' : ''}。`);
+  return report;
+}
+
 /** 就地执行：在当前目录直接干，不动分支、不提交。 */
 export class InPlaceWorkspace implements Workspace {
   readonly strategy = 'in-place' as const;
 
-  constructor(readonly cwd: string) {}
+  constructor(
+    readonly cwd: string,
+    private readonly syncMode: SyncMode = 'off',
+  ) {}
+
+  syncRemote(): Promise<SyncReport> {
+    return syncWithRemote(this.cwd, this.syncMode);
+  }
 
   async enterPlan(): Promise<void> {}
 

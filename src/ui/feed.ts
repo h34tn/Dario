@@ -44,6 +44,11 @@ export function reduceFeed(state: FeedState, event: ProgressEvent, now: number):
     if (shown && shown.input === tokens.input && shown.output === tokens.output && shown.cachedInput === tokens.cachedInput) return state;
     return { ...state, current: { ...current, tokens } };
   }
+  // 阶段性的告知（例如开工前拉取代码的结果）作为一行提示留在历史里
+  if (kind === 'phase') {
+    if (!event.text) return state;
+    return { ...state, lines: [...state.lines, { type: 'notice', key: `notice-${state.lines.length}`, text: event.text }] };
+  }
   if (kind === 'fallback' && fallback) {
     const text = `${fallback.from} 不可用（${fallback.reason}），改用 ${fallback.to}`;
     return { ...state, lines: [...state.lines, { type: 'notice', key: `notice-${state.lines.length}`, text }] };

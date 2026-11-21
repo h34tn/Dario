@@ -69,6 +69,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
   --verbose                在纯文本输出里逐条显示 AI 的活动
   --plain                  不使用动态界面，按纯文本输出
   --inline                 交互方式使用行内界面，不占满整个终端
+  -c, --continue           交互方式启动时接上这个项目上一次的会话
   -y, --yes                含改文件步骤的计划免确认
   --project <目录>         指定项目根目录
   -h, --help               显示本帮助
@@ -81,6 +82,7 @@ const SUBCOMMANDS = new Set(['roles', 'role', 'agents', 'health', 'jobs', 'job',
 interface Parsed {
   plain: boolean;
   inline: boolean;
+  continueLast?: boolean;
   verbose: boolean;
   positionals: string[];
   to?: string;
@@ -113,6 +115,7 @@ function parseArgs(argv: string[]): Parsed {
     else if (a === '--verbose') p.verbose = true;
     else if (a === '--plain') p.plain = true;
     else if (a === '--inline') p.inline = true;
+    else if (a === '-c' || a === '--continue') p.continueLast = true;
     else if (a === '--output-format') {
       const v = need(++i, '--output-format');
       if (v !== 'text' && v !== 'json') throw new ConfigError('--output-format 只能是 text 或 json。');
@@ -241,7 +244,7 @@ async function runTask(io: CliIO, p: Parsed): Promise<number> {
       if (ui) {
         try {
           const run = 'runFullUi' in ui ? ui.runFullUi : ui.runReplUi;
-          const kind = await run({ engine, stdin: streams.stdin, stdout, env: io.env, printLine: io.stdout });
+          const kind = await run({ engine, stdin: streams.stdin, stdout, env: io.env, printLine: io.stdout, continueLast: p.continueLast });
           if (kind === 'exit') return 0;
         } catch (error) {
           if (!(error instanceof ui.UiUnavailableError)) throw error;

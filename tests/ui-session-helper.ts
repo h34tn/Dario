@@ -18,7 +18,7 @@ export const DEFAULT_ROWS: RoleRow[] = [
   state: id === 'coder' ? 'unavailable' : 'ok' }));
 
 export async function setup(options?: Partial<SessionOptions>, rows: RoleRow[] = DEFAULT_ROWS,
-  agents: Array<{ id: string; model?: string }> = [{ id: 'codex' }]) {
+  agents: Array<{ id: string; model?: string }> = [{ id: 'codex' }], extra: Record<string, unknown> = {}) {
   const views = rows.map(({ id, label, holder, access, state }) => ({ id, alias: [label], holder, access,
     candidates: [{ agent: holder ?? 'a9', state }] }));
   const listeners = new Set<(e: ProgressEvent) => void>();
@@ -34,6 +34,7 @@ export async function setup(options?: Partial<SessionOptions>, rows: RoleRow[] =
     create: vi.fn<Engine['create']>(req => ({ ...job, ...req, id: 'J' + String(++count).padStart(4, '0') })),
     advance: vi.fn<Engine['advance']>(async j => j), approve: vi.fn<Engine['approve']>(async id => ({ ...job, id })),
     cancel: vi.fn(() => job), jobs: vi.fn(() => [job]), job: vi.fn(() => job),
+    ...extra,
     resetRole: vi.fn(() => '已恢复'), setRole: vi.fn(() => '已指定'), health: vi.fn(async () => [{ agent: 'codex', ok: true, detail: '正常' }]),
   };
   const session = new Session({ engine: engine as unknown as Engine, color: false, senderId: '测试', ...options });

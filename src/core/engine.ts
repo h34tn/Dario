@@ -97,7 +97,7 @@ export class Engine {
     if (this.deps.strategy === 'isolated') {
       return new IsolatedWorkspace(this.deps.project.root, this.deps.isolated ?? { forbiddenPaths: [] });
     }
-    return new InPlaceWorkspace(this.deps.project.root);
+    return new InPlaceWorkspace(this.deps.project.root, this.deps.project.settings.syncBeforeTask);
   }
 
   /** 启动常驻前检查隔离克隆是否可用。 */

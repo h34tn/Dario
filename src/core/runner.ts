@@ -18,6 +18,11 @@ export interface StepRequest {
    * 不填，或担当者与会话不是同一家、不支持续接时，新开会话并使用 prompt。
    */
   followUp?: string;
+  /**
+   * prompt 里固定说明（角色、规则、项目约定、输出格式）的指纹。这一步做成后记在会话上，
+   * 之后续接这个会话时据此判断固定说明是否已经发过。不填表示这一步没有固定说明，会话上已有的指纹保留。
+   */
+  brief?: string;
   /** 记录用的任务说明（不含前言）。 */
   task?: string;
   cwd: string;
@@ -198,7 +203,9 @@ export class StepRunner {
       // 会话槽位始终对应这个角色最近的一次运行；没做成的那一轮可能停在半截，不再续
       if (res.outcome === 'ok' && res.sessionId) {
         const total = res.tokens?.sessionTotal ? { input: res.tokens.input, cachedInput: res.tokens.cachedInput, output: res.tokens.output } : undefined;
-        sessions[req.roleId] = { agent, sessionId: res.sessionId, step: index, ...(total && { tokens: total }) };
+        // 新开的会话只收到过这一步的固定说明；续接的会话在此之外还留着以前收到的
+        const brief = req.brief ?? (resume ? slot?.brief : undefined);
+        sessions[req.roleId] = { agent, sessionId: res.sessionId, step: index, ...(total && { tokens: total }), ...(brief && { brief }) };
       }
       else delete sessions[req.roleId];
       attempts.push({ agent, outcome: res.outcome, reason: res.reason, durationMs: res.durationMs });

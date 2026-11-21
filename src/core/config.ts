@@ -32,6 +32,8 @@ export interface ProjectSettings {
   defaultTimeoutMinutes: number;
   maxPlanSteps: number;
   preamble: string;
+  /** 开工前与远端同步的方式。 */
+  syncBeforeTask: SyncMode;
 }
 
 export interface ProjectConfig {
@@ -54,8 +56,16 @@ export interface AgentInstanceConfig {
   envPass?: string[];
   timeoutMinutes?: number;
   enabled?: boolean;
+  /** 这一家可写方式的权限，不写则用本机的总设置。 */
+  permissions?: WritePermissions;
   options?: Record<string, unknown>;
 }
+
+/** 可写角色的权限：full 全部放行，不逐项审批；listed 只放行清单里的工具。 */
+export type WritePermissions = 'full' | 'listed';
+
+/** 开工前与远端同步的方式，见 workspace.ts。 */
+export type SyncMode = 'off' | 'pull' | 'pull-autostash';
 
 export interface FeishuChannelConfig {
   enabled: boolean;
@@ -82,6 +92,8 @@ export interface UserConfig {
   agents: Record<string, AgentInstanceConfig>;
   cooldownMinutes: number;
   startupTimeoutSeconds: number;
+  /** 可写角色的权限，对各家生效；某一家可以在自己的条目里另设。 */
+  permissions: WritePermissions;
   envPass: string[];
   channels: { feishu?: FeishuChannelConfig };
   access: Record<string, AccessEntry>;
@@ -116,6 +128,7 @@ const projectFileSchema = z
     default_timeout_minutes: z.number().positive().default(30),
     max_plan_steps: z.number().int().positive().default(8),
     preamble: z.string().default(''),
+    sync_before_task: z.enum(['off', 'pull', 'pull-autostash']).default('off'),
   })
   .strict();
 
@@ -131,6 +144,7 @@ const agentSchema = z
     env_pass: z.array(z.string()).optional(),
     timeout_minutes: z.number().positive().optional(),
     enabled: z.boolean().optional(),
+    permissions: z.enum(['full', 'listed']).optional(),
     options: z.record(z.unknown()).optional(),
   })
   .strict();
@@ -141,6 +155,7 @@ const agentsFileSchema = z
     agents: z.record(agentSchema).nullish(),
     cooldown_minutes: z.number().positive().default(10),
     startup_timeout_seconds: z.number().positive().default(120),
+    permissions: z.enum(['full', 'listed']).default('full'),
     env_pass: z.array(z.string()).nullish(),
   })
   .strict();
@@ -275,6 +290,7 @@ function parseSettings(data: unknown, file: string, projectLevel: boolean): Proj
     defaultTimeoutMinutes: p.default_timeout_minutes,
     maxPlanSteps: p.max_plan_steps,
     preamble: p.preamble,
+    syncBeforeTask: p.sync_before_task,
   };
 }
 
@@ -335,6 +351,7 @@ export function loadUserConfig(home: string): UserConfig {
       envPass: c.env_pass,
       timeoutMinutes: c.timeout_minutes,
       enabled: c.enabled,
+      permissions: c.permissions,
       options: c.options,
     };
   }
@@ -370,6 +387,7 @@ export function loadUserConfig(home: string): UserConfig {
     agents,
     cooldownMinutes: a.cooldown_minutes,
     startupTimeoutSeconds: a.startup_timeout_seconds,
+    permissions: a.permissions,
     envPass: a.env_pass ?? [],
     channels: { feishu },
     access,

@@ -16,6 +16,8 @@ export interface ReplOptions {
   stdout: NodeJS.WriteStream;
   env: NodeJS.ProcessEnv;
   printLine: (line: string) => void;
+  /** 启动时直接接上这个项目上一次的会话。 */
+  continueLast?: boolean;
 }
 
 /** 卸载之后仍可能有排队的任务需要确认，用原终端逐行提问。 */
@@ -73,7 +75,7 @@ export async function finishInPlain(session: Session, opts: ReplOptions, error: 
 export async function runReplUi(opts: ReplOptions): Promise<'exit' | 'plain'> {
   const { engine, stdin, stdout, env } = opts;
   const color = !!stdout.isTTY && !env.NO_COLOR;
-  const session = new Session({ engine, color });
+  const session = new Session({ engine, color, continueLast: opts.continueLast });
   let app: ReturnType<typeof render> | undefined;
   let finish!: (result: Error | 'exit' | 'plain') => void;
   const ended = new Promise<Error | 'exit' | 'plain'>(resolve => { finish = resolve; });
