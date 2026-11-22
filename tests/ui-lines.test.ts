@@ -119,6 +119,34 @@ it('输入回显着色时整行铺灰色底并补满宽度，续行缩进对齐�
   expect(itemLines({ id: 3, type: 'input', text: '输入' }, 20, { ...ctx, color: false })).toEqual(['> 输入']);
 });
 
+it('进行中步骤的耗时按分秒显示，满一小时后显示时分秒', () => {
+  const running: StepView = { ...step, state: 'running', startedAt: 0 };
+  const shown = (s: StepView, now: number) => plain(stepText(s, { ...ctx, now })).split('助手   ')[1];
+  for (const [now, expected] of [
+    // 不足一小时：分、秒都补零到两位，不足一秒的部分舍去
+    [0, '00:00'], [999, '00:00'], [1000, '00:01'], [59_999, '00:59'], [60_000, '01:00'],
+    [307_000, '05:07'], [600_000, '10:00'], [3_599_999, '59:59'],
+    // 满一小时：小时不补零，分、秒补零到两位
+    [3_600_000, '1:00:00'], [3_600_999, '1:00:00'], [3_659_000, '1:00:59'], [3_660_000, '1:01:00'],
+    [3_900_000, '1:05:00'], [7_199_999, '1:59:59'], [7_200_000, '2:00:00'],
+    [36_000_000, '10:00:00'], [36_061_000, '10:01:01'], [360_000_000, '100:00:00'],
+  ] as const) {
+    expect(shown(running, now)).toBe(expected);
+  }
+  // 从开始时刻起算，而不是从 0 起算
+  expect(shown({ ...running, startedAt: 5_000 }, 3_605_000)).toBe('1:00:00');
+  // 负数按 0 处理
+  expect(shown({ ...running, startedAt: 1000 }, 0)).toBe('00:00');
+  expect(shown({ ...running, startedAt: 10_000_000 }, 0)).toBe('00:00');
+  // 正在终止时，时间之后才跟提示
+  expect(plain(stepText(running, { ...ctx, now: 3_900_000, stopping: true }))).toMatch(/助手 {3}1:05:00 {2}正在终止…$/);
+  // 结束后的步骤仍用短写法，不受影响
+  for (const state of ['done', 'failed', 'timeout'] as const) {
+    expect(shown({ ...step, state, durationMs: 3_900_000 }, 0)).toMatch(/^1小时5分/);
+  }
+  expect(shown({ ...step, durationMs: 307_000 }, 0)).toBe('5分7秒');
+});
+
 it('有 token 用量时显示在耗时之后，输入只算没命中缓存的部分，两套符号各用自己的箭头', () => {
   // 输入 35.7k 里有 20k 命中缓存，显示的是其余的 15.7k
   const tokens = { input: 35700, cachedInput: 20000, output: 426 };

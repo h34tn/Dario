@@ -98,7 +98,10 @@ const phases = { plan: '计划', step: '执行', review: '审查', rework: '返�
 
 function elapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
-  return [Math.floor(seconds / 60), seconds % 60].map(n => String(n).padStart(2, '0')).join(':');
+  const hours = Math.floor(seconds / 3600);
+  const minutes = String(Math.floor(seconds / 60) % 60).padStart(2, '0');
+  const clock = minutes + ':' + String(seconds % 60).padStart(2, '0');
+  return hours > 0 ? hours + ':' + clock : clock;
 }
 
 export function stepText(step: StepView, { now, symbols, color, stopping, ellipsis = '…' }: {
