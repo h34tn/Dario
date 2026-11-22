@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { stripVTControlCharacters as plain } from 'node:util';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, expect, it, vi } from 'vitest';
-import { formatTokens } from '../src/core/util.js';
+import { formatDuration, formatTokens } from '../src/core/util.js';
 import { createLineCache, itemLines, planLines, stepText, wrapAnsi } from '../src/ui/lines.js';
 import { StepRow } from '../src/ui/LiveJob.js';
 import { paint, pickSymbols } from '../src/ui/theme.js';
@@ -136,6 +136,11 @@ it('有 token 用量时显示在耗时之后，输入只算没命中缓存的部
 
 it('token 数的短写法', () => {
   expect([0, 426, 999, 1000, 35700, 999949, 999950, 1234567].map(formatTokens)).toEqual(['0', '426', '999', '1.0k', '35.7k', '999.9k', '1.0M', '1.2M']);
+});
+
+it('耗时的短写法：毫秒、秒、分、满一小时舍掉秒，整小时只写小时', () => {
+  expect([0, 999, 1000, 1499, 1500, 59499, 59500, 65000, 3599499, 3599500, 3600000, 3659000, 3900000, 7199000, 7200000, 90000000].map(formatDuration))
+    .toEqual(['0ms', '999ms', '1秒', '1秒', '2秒', '59秒', '1分0秒', '1分5秒', '59分59秒', '1小时', '1小时', '1小时', '1小时5分', '1小时59分', '2小时', '25小时']);
 });
 
 it('其余六种历史条目保留各自的符号和配色，关闭颜色时也清除原文颜色', () => {

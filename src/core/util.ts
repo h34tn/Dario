@@ -175,9 +175,15 @@ export function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+/** 耗时的短写法：123ms、12秒、1分5秒；满一小时舍掉秒，写 1小时5分，整小时写 1小时。 */
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}秒`;
+  if (s >= 3600) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return m === 0 ? `${h}小时` : `${h}小时${m}分`;
+  }
   return `${Math.floor(s / 60)}分${s % 60}秒`;
 }
