@@ -11,7 +11,8 @@
 需要 Node 22 及以上，以及至少一家已登录的 AI 命令行工具。
 
 ```
-cd D:\Projects\Dario
+git clone https://github.com/h34tn/Dario.git
+cd Dario
 npm install
 npm run build
 npm link          # 得到全局的 dario 命令

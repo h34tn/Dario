@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "按角色调用各家 AI 编码工具的命令行程序",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "dario": "dist/cli/main.js"
