@@ -515,13 +515,15 @@ export function parseStreamJsonResult(stdout: string): AgentOutput {
       sessionId: typeof e.session_id === 'string' && e.session_id ? e.session_id : undefined,
     };
   }
-  // 没有 result 记录：多半是启动阶段就报错了，把非 JSON 的输出当作报错文字保留下来
+  // 没有 result 记录：多半是启动阶段就报错了，把非 JSON 的输出当作报错文字保留下来。
+  // 也可能是运行中被中断了：会话号取自开头的 init 记录，之后还能续接
   const plain = stdout
     .split(/\r?\n/)
     .filter((l) => l.trim() && !l.trim().startsWith('{'))
     .join('\n')
     .trim();
-  return { text: plain.slice(-2000), isError: true };
+  const init = parseJsonLines(stdout).find((r) => r.type === 'system' && r.subtype === 'init' && typeof r.session_id === 'string' && r.session_id);
+  return { text: plain.slice(-2000), isError: true, ...(init && { sessionId: init.session_id as string }) };
 }
 
 const UNAVAILABLE_RE = new RegExp(

@@ -82,6 +82,31 @@ export interface StepRecord {
   promptChars?: number;
   /** 这一步运行中监控发现的问题；没有时为空。 */
   alerts?: Alert[];
+  /** 这一步运行中请主控判断的记录；没有时为空。 */
+  consults?: ConsultRecord[];
+}
+
+/** 主控对一次监控告警的判断。 */
+export interface LeadDecision {
+  /** continue 继续，correct 中断后续接、发去纠偏说明，stop 中止这一步。 */
+  action: 'continue' | 'correct' | 'stop';
+  message: string;
+  /** continue 时这条规则静默多少分钟。 */
+  snoozeMinutes: number;
+}
+
+/** 请主控判断的一次记录。 */
+export interface ConsultRecord {
+  rule: string;
+  /** 做判断的 AI；没有可用的主控时为空。 */
+  agent?: string;
+  /** ok 给出了判断；failed 运行没有成功；unparsed 回复里没有可用的判断；cancelled 这一步先结束了。 */
+  outcome: 'ok' | 'failed' | 'unparsed' | 'cancelled';
+  reason?: string;
+  durationMs: number;
+  tokens?: StepTokens;
+  costUsd?: number;
+  decision?: LeadDecision;
 }
 
 /** 一步的 token 用量。input 是各次请求发给模型的 token 之和，其中 cachedInput 是命中缓存的部分。 */

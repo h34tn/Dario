@@ -313,6 +313,53 @@ const REWORK_TASK =
   '逐条修正上面的问题。只改与这些问题有关的内容，不要顺带做别的改动。' +
   '修改之后，之前做过的测试、测量、截图等验证如果因为这次修改不再成立，在本轮重新做完并给出新结果，不要留给下一轮审查去发现；重新验证不算"别的改动"。';
 
+export interface ConsultBrief {
+  stepNumber: number;
+  roleLabel: string;
+  agent: string;
+  task: string;
+  alert: string;
+  elapsed: string;
+  recent: string[];
+  edited: string[];
+  tokens?: string;
+}
+
+/** 请主控判断一次监控告警。主控只读，判断期间干活的一方还在运行。 */
+export function consultPrompt(project: ProjectConfig, b: ConsultBrief): string {
+  const format = [
+    '在回复的**最后**输出一个 JSON 代码块：',
+    '```json',
+    '{"action":"continue","message":"给干活一方的话，或判断理由","snooze_minutes":10}',
+    '```',
+    '- continue：情况正常或还值得再等，让它接着做。snooze_minutes 是这条规则静默多少分钟。',
+    '- correct：方向不对或卡住了。Dario 会中断它，接着它的会话把 message 发过去，它照着调整后继续完成原任务。message 要具体，说清该停下什么、改做什么。',
+    '- stop：继续下去没有意义或有害。Dario 会中止这一步，任务停下，message 写明原因。',
+    '拿不准时选 continue。',
+  ].join('\n');
+  return (
+    `# 你的角色\n你是主控，正在监督第 ${b.stepNumber} 步的执行。这一步由${b.roleLabel}（${b.agent}）在做，监控规则发现了一个情况，需要你判断怎么处理。` +
+    '你现在只读：不要修改任何文件，也不要自己去做这一步的工作。需要时可以读文件、看 git 状态来了解现场。' +
+    section('项目约定', project.settings.preamble) +
+    section('这一步的任务', b.task) +
+    section('监控发现的情况', b.alert) +
+    section('现场', [
+      `已运行 ${b.elapsed}${b.tokens ? `，用量 ${b.tokens}` : ''}。`,
+      b.edited.length ? `运行中看到的改动：${b.edited.join('、')}` : '运行中还没有看到改动。',
+    ].join('\n')) +
+    section('最近的活动（从早到晚）', b.recent.length ? b.recent.map((r) => `- ${r}`).join('\n') : '（没有）') +
+    section('输出格式', format)
+  );
+}
+
+/** 主控要求纠偏：续接干活一方的会话时发的话。 */
+export function correctionPrompt(message: string): string {
+  return (
+    `# 主控提醒\n你上一轮的运行被 Dario 中断了，原因是主控看了你的进展后要求调整：\n\n${message}\n\n` +
+    '先看一下当前改动的状态（被中断时可能有文件只写了一半），再按上面的提醒接着完成原来的任务。'
+  );
+}
+
 export function reworkPrompt(project: ProjectConfig, role: RoleDef, originalTask: string, issues: string[], reviewText: string): string {
   return (
     `# 你的角色\n${roleHeader(role, 'write')}` +

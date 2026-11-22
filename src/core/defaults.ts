@@ -62,7 +62,8 @@ preamble: ""
 # pull-autostash：同上，但有未提交的改动时用 --autostash 自动暂存、拉取后放回。
 sync_before_task: off
 
-# 干活监控：运行中发现问题时怎么处理。action 可选 off（不检查）、notify（只提示）、stop（中断这一步，任务停下）。
+# 干活监控：运行中发现问题时怎么处理。action 可选 off（不检查）、notify（只提示）、stop（中断这一步，任务停下），
+# 以及 ask_lead（交给主控判断：继续、纠偏或中止；只用于 idle、out_of_roots、loop、usage）。
 # 这只是发现问题的手段，不是安全边界：绕过检查的写法（例如写个脚本去执行）它查不出来。
 supervise:
   # 没动静：超过 minutes 分钟没有任何输出；正在执行命令时用 command_minutes。到结束才输出的工具不检查。
@@ -77,6 +78,9 @@ supervise:
   loop: { action: off, repeat_command: 3, repeat_read: 5, requests_without_edit: 20 }
   # 用量异常：新输入或请求次数超过本项目同类步骤（同一种步骤、同一家 AI）历史中位数的 factor 倍。历史少于 min_samples 条时不检查。
   usage: { action: off, factor: 3, min_samples: 5 }
+  # ask_lead 时：每一步最多纠偏几次（再要纠偏就中止），主控判断一次的时限（分钟）。
+  max_interventions: 2
+  consult_timeout_minutes: 3
 `;
 
 export function defaultDispatchRules(leadImplements: boolean): string {

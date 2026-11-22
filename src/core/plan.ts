@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ProjectSettings } from './config.js';
 import type { RoleBook } from './roles.js';
 import { normalizeScopePath } from './scope.js';
-import type { Plan, PlanStep } from './types.js';
+import type { LeadDecision, Plan, PlanStep } from './types.js';
 
 /** 取文本里最后一个能解析的 JSON：优先 ```json 代码块，其次整段文本。 */
 export function extractJson(text: string): unknown {
@@ -138,6 +138,21 @@ export interface Verdict {
 }
 
 /** 解析审查结论。没有给出明确结论时返回 undefined。 */
+const decisionSchema = z.object({
+  action: z.enum(['continue', 'correct', 'stop']),
+  message: z.string().default(''),
+  snooze_minutes: z.number().positive().default(10),
+});
+
+/** 解析主控对监控告警的判断。纠偏没有写说明时算解析失败：没法告诉干活的一方要改什么。 */
+export function parseLeadDecision(text: string): LeadDecision | undefined {
+  const parsed = decisionSchema.safeParse(extractJson(text));
+  if (!parsed.success) return undefined;
+  const { action, message, snooze_minutes } = parsed.data;
+  if (action === 'correct' && !message.trim()) return undefined;
+  return { action, message: message.trim(), snoozeMinutes: snooze_minutes };
+}
+
 export function parseVerdict(text: string): Verdict | undefined {
   const parsed = verdictSchema.safeParse(extractJson(text));
   return parsed.success ? parsed.data : undefined;

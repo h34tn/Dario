@@ -43,8 +43,11 @@ export interface ProjectSettings {
   supervise: SuperviseSettings;
 }
 
-/** 监控规则触发后的处理：off 不检查，notify 只提示，stop 中断这一步。 */
-export type WatchAction = 'off' | 'notify' | 'stop';
+/**
+ * 监控规则触发后的处理：off 不检查，notify 只提示，stop 中断这一步，
+ * ask_lead 交给主控判断继续、纠偏还是中止（只有部分规则可用）。
+ */
+export type WatchAction = 'off' | 'notify' | 'stop' | 'ask_lead';
 
 export interface SuperviseSettings {
   /** 没动静：超过 minutes 分钟没有任何输出；最后一行是开始执行命令时用 commandMinutes。 */
@@ -52,13 +55,17 @@ export interface SuperviseSettings {
   /** 改动落在 write_roots 之外。write_roots 为空时不检查。 */
   outOfRoots: { action: WatchAction };
   /** 执行的命令命中清单。清单为空时不检查。 */
-  forbiddenCommands: { patterns: string[]; action: WatchAction };
+  forbiddenCommands: { patterns: string[]; action: Exclude<WatchAction, 'ask_lead'> };
   /** 改动落在计划这一步的 files 之外。计划的范围是估计，只提示，不中断。 */
-  offPlan: { action: Exclude<WatchAction, 'stop'> };
+  offPlan: { action: 'off' | 'notify' };
   /** 原地打转：同一条命令、同一个文件反复出现，或连续多次请求没有新的改动，期间没有改动。 */
   loop: { action: WatchAction; repeatCommand: number; repeatRead: number; requestsWithoutEdit: number };
   /** 用量超过本项目同类步骤历史中位数的 factor 倍。样本少于 minSamples 时不检查。 */
   usage: { action: WatchAction; factor: number; minSamples: number };
+  /** ask_lead 时每一步最多纠偏几次，再要纠偏就中止。 */
+  maxInterventions: number;
+  /** 主控判断一次的时限（分钟）。 */
+  consultTimeoutMinutes: number;
 }
 
 export interface ProjectConfig {
@@ -170,6 +177,7 @@ const rolesFileSchema = z
   .strict();
 
 const watchAction = z.enum(['off', 'notify', 'stop']);
+const leadAction = z.enum(['off', 'notify', 'stop', 'ask_lead']);
 
 const superviseSchema = z
   .object({
@@ -177,11 +185,11 @@ const superviseSchema = z
       .object({
         minutes: z.number().positive().default(10),
         command_minutes: z.number().positive().default(30),
-        action: watchAction.default('notify'),
+        action: leadAction.default('notify'),
       })
       .strict()
       .default({}),
-    out_of_roots: z.object({ action: watchAction.default('notify') }).strict().default({}),
+    out_of_roots: z.object({ action: leadAction.default('notify') }).strict().default({}),
     forbidden_commands: z
       .object({
         patterns: z.array(z.string().trim().min(1)).default([]),
@@ -192,7 +200,7 @@ const superviseSchema = z
     off_plan: z.object({ action: z.enum(['off', 'notify']).default('notify') }).strict().default({}),
     loop: z
       .object({
-        action: watchAction.default('off'),
+        action: leadAction.default('off'),
         repeat_command: z.number().int().min(2).default(3),
         repeat_read: z.number().int().min(2).default(5),
         requests_without_edit: z.number().int().positive().default(20),
@@ -201,12 +209,14 @@ const superviseSchema = z
       .default({}),
     usage: z
       .object({
-        action: watchAction.default('off'),
+        action: leadAction.default('off'),
         factor: z.number().gt(1).default(3),
         min_samples: z.number().int().positive().default(5),
       })
       .strict()
       .default({}),
+    max_interventions: z.number().int().min(0).default(2),
+    consult_timeout_minutes: z.number().positive().default(3),
   })
   .strict();
 
@@ -401,6 +411,8 @@ function parseSettings(data: unknown, file: string, projectLevel: boolean): Proj
         requestsWithoutEdit: p.supervise.loop.requests_without_edit,
       },
       usage: { action: p.supervise.usage.action, factor: p.supervise.usage.factor, minSamples: p.supervise.usage.min_samples },
+      maxInterventions: p.supervise.max_interventions,
+      consultTimeoutMinutes: p.supervise.consult_timeout_minutes,
     },
   };
 }

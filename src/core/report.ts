@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Activity, QuotaWindow } from '../plugin.js';
 import type { AgentView } from './engine.js';
 import type { RoleView } from './roles.js';
-import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job, type StepKind, type StepRecord } from './types.js';
+import { exitCodeForJob, STATUS_LABEL, type ConsultRecord, type FallbackQuestion, type Job, type StepKind, type StepRecord } from './types.js';
 import { formatDuration, formatLocalTime, formatTokens } from './util.js';
 
 function isQuotaWindowActive(window: QuotaWindow, now: Date): boolean {
@@ -157,11 +157,25 @@ export interface JobJson {
     startup_ms: number | null;
     /** Dario 交给工具的任务说明的字数；没有启动工具时为 null。 */
     prompt_chars: number | null;
-    /** 运行中监控发现的问题，按发现的先后排列；没有时为空数组。 */
-    alerts: Array<{ rule: string; action: string; at_ms: number; detail: string }>;
+    /** 运行中监控发现的问题，按发现的先后排列；没有时为空数组。decision 是 ask_lead 时主控的判断，没有时为 null。 */
+    alerts: Array<{ rule: string; action: string; at_ms: number; detail: string; decision: { action: string; message: string } | null }>;
+    /** 运行中请主控判断的记录；没有时为空数组。 */
+    consults: Array<{
+      rule: string;
+      agent: string | null;
+      outcome: string;
+      reason: string | null;
+      duration_ms: number;
+      tokens: { input: number; cached_input: number; output: number } | null;
+      cost_usd: number | null;
+      decision: { action: string; message: string } | null;
+    }>;
     attempts: Array<{ agent: string; outcome: string; reason: string | null }>;
   }>;
-  /** 按步骤种类（plan、step、rework、review、summary）汇总的耗时和用量，按流程先后排列，只列出现过的种类。 */
+  /**
+   * 按步骤种类（plan、step、rework、review、summary）汇总的耗时和用量，按流程先后排列，只列出现过的种类。
+   * 请主控判断的开销单列为 supervise，steps 是判断的次数；它和干活的一方同时进行，耗时不计入各步耗时之和。
+   */
   phases: PhaseJson[];
 }
 
@@ -178,10 +192,13 @@ export interface PhaseJson {
   cost_usd: number | null;
 }
 
-const PHASE_ORDER: StepKind[] = ['plan', 'step', 'rework', 'review', 'summary'];
+/** 步骤种类，加上"监督"：请主控判断监控告警的开销。 */
+export type PhaseKind = StepKind | 'supervise';
+
+const PHASE_ORDER: PhaseKind[] = ['plan', 'step', 'rework', 'review', 'summary', 'supervise'];
 
 export interface PhaseTotal {
-  kind: StepKind;
+  kind: PhaseKind;
   steps: number;
   durationMs: number;
   startupMs: number;
@@ -193,6 +210,20 @@ export interface PhaseTotal {
   metered: boolean;
   /** 有一步报了费用就算；都没报时为空。 */
   costUsd?: number;
+}
+
+/** ownRow 为 false 时只计用量和费用：合计里判断与干活同时进行，次数和耗时不重复计。 */
+function addConsult(total: PhaseTotal, c: ConsultRecord, ownRow = true): void {
+  if (ownRow) {
+    total.steps += 1;
+    total.durationMs += c.durationMs;
+  }
+  if (c.tokens) total.metered = true;
+  total.input += c.tokens?.input ?? 0;
+  total.cachedInput += c.tokens?.cachedInput ?? 0;
+  total.output += c.tokens?.output ?? 0;
+  total.requests += c.tokens?.requests ?? 0;
+  if (c.costUsd !== undefined) total.costUsd = (total.costUsd ?? 0) + c.costUsd;
 }
 
 function addPhase(total: PhaseTotal, s: StepRecord): void {
@@ -207,24 +238,29 @@ function addPhase(total: PhaseTotal, s: StepRecord): void {
   if (s.costUsd !== undefined) total.costUsd = (total.costUsd ?? 0) + s.costUsd;
 }
 
-const emptyPhase = (kind: StepKind): PhaseTotal =>
+const emptyPhase = (kind: PhaseKind): PhaseTotal =>
   ({ kind, steps: 0, durationMs: 0, startupMs: 0, input: 0, cachedInput: 0, output: 0, requests: 0, metered: false });
 
 /** 按步骤种类汇总耗时和用量，看清时间和 token 花在流程的哪一段。 */
 export function phaseTotals(job: Job): PhaseTotal[] {
-  const byKind = new Map<StepKind, PhaseTotal>();
+  const byKind = new Map<PhaseKind, PhaseTotal>();
   for (const s of job.steps) {
     let total = byKind.get(s.kind);
     if (!total) byKind.set(s.kind, (total = emptyPhase(s.kind)));
     addPhase(total, s);
+    for (const c of s.consults ?? []) {
+      let sup = byKind.get('supervise');
+      if (!sup) byKind.set('supervise', (sup = emptyPhase('supervise')));
+      addConsult(sup, c);
+    }
   }
   return PHASE_ORDER.filter((k) => byKind.has(k)).map((k) => byKind.get(k)!);
 }
 
-function formatPhase(label: string, p: Omit<PhaseTotal, 'kind'>): string {
+function formatPhase(label: string, p: Omit<PhaseTotal, 'kind'>, unit = '步'): string {
   const fresh = Math.max(0, p.input - p.cachedInput);
   const parts = [
-    `${label}  ${p.steps} 步`,
+    `${label}  ${p.steps} ${unit}`,
     formatDuration(p.durationMs) + (p.startupMs ? `（启动 ${formatDuration(p.startupMs)}）` : ''),
   ];
   if (p.metered) parts.push(`新输入 ${formatTokens(fresh)} · 缓存 ${formatTokens(p.cachedInput)} · 输出 ${formatTokens(p.output)} token`);
@@ -236,10 +272,14 @@ function formatPhase(label: string, p: Omit<PhaseTotal, 'kind'>): string {
 /** 各阶段一行，最后一行合计。少于两个阶段时只有一行，没有合计。 */
 export function formatPhases(job: Job): string {
   const phases = phaseTotals(job);
-  const lines = phases.map((p) => formatPhase(KIND_LABEL[p.kind] ?? p.kind, p));
+  const lines = phases.map((p) => formatPhase(KIND_LABEL[p.kind] ?? p.kind, p, p.kind === 'supervise' ? '次' : '步'));
   if (phases.length > 1) {
     const sum = emptyPhase('step');
-    for (const s of job.steps) addPhase(sum, s);
+    for (const s of job.steps) {
+      addPhase(sum, s);
+      // 判断和干活的一方同时进行：用量和费用算进合计，耗时不重复计
+      for (const c of s.consults ?? []) addConsult(sum, c, false);
+    }
     lines.push(formatPhase('合计', sum));
   }
   return lines.join('\n');
@@ -280,7 +320,17 @@ export function jobToJson(job: Job): JobJson {
       cost_usd: s.costUsd ?? null,
       startup_ms: s.startupMs ?? null,
       prompt_chars: s.promptChars ?? null,
-      alerts: (s.alerts ?? []).map((a) => ({ rule: a.rule, action: a.action, at_ms: a.atMs, detail: a.detail })),
+      alerts: (s.alerts ?? []).map((a) => ({ rule: a.rule, action: a.action, at_ms: a.atMs, detail: a.detail, decision: a.decision ?? null })),
+      consults: (s.consults ?? []).map((c) => ({
+        rule: c.rule,
+        agent: c.agent ?? null,
+        outcome: c.outcome,
+        reason: c.reason ?? null,
+        duration_ms: c.durationMs,
+        tokens: c.tokens ? { input: c.tokens.input, cached_input: c.tokens.cachedInput, output: c.tokens.output } : null,
+        cost_usd: c.costUsd ?? null,
+        decision: c.decision ? { action: c.decision.action, message: c.decision.message } : null,
+      })),
       attempts: s.attempts.map((a) => ({ agent: a.agent, outcome: a.outcome, reason: a.reason ?? null })),
     })),
     phases: phaseTotals(job).map((p) => ({
@@ -291,7 +341,8 @@ export function jobToJson(job: Job): JobJson {
   };
 }
 
-const KIND_LABEL: Record<string, string> = { plan: '计划', step: '执行', review: '审查', rework: '返工', summary: '汇总' };
+const KIND_LABEL: Record<string, string> = { plan: '计划', step: '执行', review: '审查', rework: '返工', summary: '汇总', supervise: '监督' };
+const DECISION_LABEL: Record<string, string> = { continue: '主控判断继续', correct: '主控要求纠偏', stop: '主控中止' };
 const OUTCOME_LABEL: Record<string, string> = {
   ok: '完成',
   unavailable: '不可用',
@@ -320,7 +371,10 @@ export function formatSteps(job: Job): string {
       ].filter(Boolean).join('，');
       const time = formatDuration(s.durationMs) + (fixed ? `（${fixed}）` : '');
       const head = `  ${s.index + 1}. ${KIND_LABEL[s.kind] ?? s.kind} · ${s.role} · ${s.agent ?? '-'} · ${OUTCOME_LABEL[s.outcome] ?? s.outcome} · ${time}${tokens}${note}`;
-      const alerts = (s.alerts ?? []).map((a) => `     ! ${formatDuration(a.atMs)}：${a.detail}${a.action === 'stop' ? '，已中断' : ''}`);
+      const alerts = (s.alerts ?? []).map((a) => {
+        const decided = a.decision ? `；${DECISION_LABEL[a.decision.action] ?? a.decision.action}${a.decision.message ? `：${a.decision.message}` : ''}` : '';
+        return `     ! ${formatDuration(a.atMs)}：${a.detail}${a.action === 'stop' ? '，已中断' : ''}${decided}`;
+      });
       return [head, ...alerts].join('\n');
     })
     .join('\n');

@@ -64,6 +64,14 @@ function unavailableReason(text: string): string {
   return (line ?? firstLine(text)).slice(0, 300);
 }
 
+function safeParse(plugin: AgentPlugin, raw: RawResult): AgentOutput | undefined {
+  try {
+    return plugin.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
 function abortReason(signal: AbortSignal | undefined): string {
   const reason: unknown = signal?.reason;
   if (typeof reason === 'string' && reason) return reason;
@@ -315,9 +323,10 @@ export class AgentHandle implements AgentPort {
       timedOut: out.timedOut,
       startupTimedOut: out.startupTimedOut,
     };
-    // 被 Dario 中断：这一步算没做成，不按退出码或报错判成"不可用"去换人
+    // 被 Dario 中断：这一步算没做成，不按退出码或报错判成"不可用"去换人。
+    // 照常解析输出，取出会话号，纠偏时可以续接
     const aborted = out.aborted
-      ? { result: { outcome: 'task_failed' as const, reason: abortReason(req.signal) }, output: undefined }
+      ? { result: { outcome: 'task_failed' as const, reason: abortReason(req.signal) }, output: safeParse(this.plugin, raw) }
       : undefined;
     const { result, output } = aborted ?? classify(this.plugin, raw);
     try {

@@ -111,8 +111,8 @@ export class Sandbox {
     fs.mkdirSync(path.join(this.project, '.dario'), { recursive: true });
 
     for (const name of this.agents) {
-      if (opts.resumable) this.writeResumablePlugin(name);
-      else if (opts.activity) this.writeActivityPlugin(name);
+      if (opts.activity) this.writeActivityPlugin(name, opts.resumable);
+      else if (opts.resumable) this.writeResumablePlugin(name);
       else this.writeFakePlugin(name, opts.streams ?? false, undefined, undefined, opts.progressLines);
     }
     fs.writeFileSync(
@@ -193,10 +193,10 @@ export default {
 
   /**
    * 逐行输出、能认出活动的假 AI：输出里 `RUN:<命令>` 的行算执行命令，`EDIT:<路径>` 的行算改文件，其余非空行算说话。
-   * 用来测试干活监控。
+   * 用来测试干活监控。resumable 时同时支持续接会话：第一行是 `SESSION:<会话号>`，续接时带 --resume <会话号>。
    */
-  writeActivityPlugin(name: string): void {
-    const common = [FAKE_AGENT, '--name', name, '--scenario', this.scenarioFile];
+  writeActivityPlugin(name: string, resumable = false): void {
+    const common = [FAKE_AGENT, '--name', name, '--scenario', this.scenarioFile, ...(resumable ? ['--emit-session'] : [])];
     fs.writeFileSync(
       path.join(this.home, 'plugins', `${name}.mjs`),
       `const common = ${JSON.stringify(common)};
@@ -207,9 +207,21 @@ export default {
   defaultCommand: ${JSON.stringify(process.execPath)},
   versionArgs: ${JSON.stringify([FAKE_AGENT, '--name', name, '--version'])},
   streams: true,
-  build: (req) => ({ args: [...common, '--access', req.access], stdin: req.prompt }),
-  parse: (raw) => ({ text: raw.stdout.split('\\n').filter((l) => !/^(RUN|EDIT):/.test(l)).join('\\n').trim() }),
+  resumes: ${resumable},
+  build: (req) => ({ args: [...common, '--access', req.access, ...(req.resume ? ['--resume', req.resume] : [])], stdin: req.prompt }),
+  parse: (raw) => {
+    const lines = raw.stdout.split('\\n');
+    const session = lines.find((l) => l.startsWith('SESSION:'))?.slice(8).trim();
+    const text = lines.filter((l) => !/^(RUN|EDIT|SESSION|USAGE):/.test(l)).join('\\n').trim();
+    return { text, ...(session && { sessionId: session }) };
+  },
+  meter: () => (line) => {
+    if (!line.startsWith('USAGE:')) return undefined;
+    const [input, cachedInput, output] = line.slice(6).split('/').map(Number);
+    return { input, cachedInput, output, sessionTotal: true };
+  },
   progress: (line) => {
+    if (/^(SESSION|USAGE):/.test(line)) return [];
     if (line.startsWith('RUN:')) return [{ kind: 'run', target: line.slice(4) }];
     if (line.startsWith('EDIT:')) return [{ kind: 'edit', target: line.slice(5) }];
     return line.trim() ? [{ kind: 'say', text: line.trim() }] : [];

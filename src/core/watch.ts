@@ -9,7 +9,7 @@ import type { Access, Activity } from '../plugin.js';
 import type { UsageBaseline } from './baseline.js';
 import type { SuperviseSettings, WatchAction } from './config.js';
 import { inScope } from './scope.js';
-import type { StepTokens } from './types.js';
+import type { LeadDecision, StepTokens } from './types.js';
 import { formatDuration, formatTokens } from './util.js';
 import { outOfScope } from './workspace.js';
 
@@ -25,6 +25,8 @@ export interface Alert {
   detail: string;
   /** 触发它的文件或命令，用于去重；有的规则没有。 */
   target?: string;
+  /** action 为 ask_lead 时主控的判断；没能判断时为空。 */
+  decision?: { action: LeadDecision['action']; message: string };
 }
 
 export interface WatchOptions {
@@ -43,6 +45,9 @@ export interface WatchOptions {
   baseline?: UsageBaseline;
   now?: () => number;
 }
+
+/** 简报里保留的最近活动条数。 */
+const RECENT = 30;
 
 /** 命令的比较口径：合并空白。 */
 const commandKey = (command: string): string => command.trim().replace(/\s+/g, ' ');
@@ -91,6 +96,11 @@ export class StepWatch {
   private requests = 0;
   private requestsAtEdit = 0;
   private readonly reportedUsage = new Set<string>();
+  /** 最近的活动和运行中看到的改动，给主控判断用。 */
+  private readonly recentActivities: Activity[] = [];
+  private readonly editedFiles = new Set<string>();
+  /** 主控判断"继续"后，这些规则静默到什么时候。 */
+  private readonly snoozed = new Map<WatchRule, number>();
 
   constructor(private readonly opts: WatchOptions) {
     this.now = opts.now ?? Date.now;
@@ -105,6 +115,28 @@ export class StepWatch {
 
   /** 认出了一条活动。 */
   activity(a: Activity): Alert[] {
+    this.recentActivities.push(a);
+    if (this.recentActivities.length > RECENT) this.recentActivities.shift();
+    if (a.kind === 'edit' && normalizeTarget(a.target)) this.editedFiles.add(normalizeTarget(a.target));
+    return this.unsnoozed(this.check(a));
+  }
+
+  /** 主控判断要继续：这条规则在 ms 毫秒内不再报。 */
+  snooze(rule: WatchRule, ms: number): void {
+    this.snoozed.set(rule, this.now() + ms);
+  }
+
+  /** 给主控看的现场：最近的活动、运行中看到的改动、已经过了多久。 */
+  snapshot(): { recent: Activity[]; edited: string[]; elapsedMs: number } {
+    return { recent: [...this.recentActivities], edited: [...this.editedFiles], elapsedMs: this.now() - this.started };
+  }
+
+  private unsnoozed(alerts: Alert[]): Alert[] {
+    const now = this.now();
+    return alerts.filter((a) => (this.snoozed.get(a.rule) ?? 0) <= now);
+  }
+
+  private check(a: Activity): Alert[] {
     const alerts: Alert[] = [];
     if (a.kind === 'edit') {
       this.runCounts = new Map();
@@ -144,6 +176,10 @@ export class StepWatch {
 
   /** 用量有了新数：这一步到目前为止的用量。 */
   usage(tokens: StepTokens): Alert[] {
+    return this.unsnoozed(this.checkUsage(tokens));
+  }
+
+  private checkUsage(tokens: StepTokens): Alert[] {
     const alerts: Alert[] = [];
     const loop = this.opts.rules.loop;
     if (tokens.requests !== undefined) {
@@ -188,7 +224,7 @@ export class StepWatch {
     const factor = this.opts.idleFactor ?? 1;
     const limit = (this.inCommand ? commandMinutes : minutes) * factor * 60000;
     const quiet = this.now() - this.lastLine;
-    if (quiet < limit) return [];
+    if (quiet < limit || (this.snoozed.get('idle') ?? 0) > this.now()) return [];
     this.idleReported = true;
     const what = this.inCommand ? '命令执行中，' : '';
     return [this.alert('idle', action, `${what}${formatDuration(quiet)}没有任何输出`)];

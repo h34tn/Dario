@@ -13,6 +13,8 @@ const OFF: SuperviseSettings = {
   offPlan: { action: 'off' },
   loop: { action: 'off', repeatCommand: 3, repeatRead: 5, requestsWithoutEdit: 20 },
   usage: { action: 'off', factor: 3, minSamples: 5 },
+  maxInterventions: 2,
+  consultTimeoutMinutes: 3,
 };
 
 describe('计划的预计范围', () => {

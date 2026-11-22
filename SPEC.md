@@ -114,7 +114,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 | 交互 | 在终端里不带任务直接运行 `dario` | 默认全屏，按下节条件选择行内界面或逐行交互 |
 
 - **单次命令判断标准错误是否连着终端**，与 `-p` 无关：`-p` 只表示执行完就退出。`dario "任务" > 结果.txt` 在终端里仍有动态进度，文件里只有结论。
-- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`、`phases`。`plan` 为 `{ summary, steps }`，`steps` 的每一项为 `role`、`task`、`writes`、`files`（预计改动的范围，没写时为 `null`），没有计划时 `plan` 为 `null`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`cost_usd`、`startup_ms`、`prompt_chars`、`alerts`、`attempts`。`alerts` 是这一步运行中干活监控发现的问题，每项为 `rule`、`action`、`at_ms`（从这次运行开始算）、`detail`，没有时为空数组。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output, requests, first_input }`，`input` 含命中缓存的 `cached_input`，`requests` 和 `first_input` 工具不报时为 `null`；工具不报用量时 `tokens` 为 `null`。`cost_usd`、`startup_ms` 不可知时为 `null`，口径见第 8 节。`phases` 按流程先后列出出现过的步骤种类，每项为 `kind`、`steps`、`duration_ms`、`startup_ms`、`input`、`cached_input`、`output`、`requests`、`cost_usd`；这一阶段都不报用量时 token 各项为 `null`。
+- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`、`phases`。`plan` 为 `{ summary, steps }`，`steps` 的每一项为 `role`、`task`、`writes`、`files`（预计改动的范围，没写时为 `null`），没有计划时 `plan` 为 `null`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`cost_usd`、`startup_ms`、`prompt_chars`、`alerts`、`consults`、`attempts`。`alerts` 是这一步运行中干活监控发现的问题，每项为 `rule`、`action`、`at_ms`（从这次运行开始算）、`detail`、`decision`（`ask_lead` 时主控的判断 `{ action, message }`，没有时为 `null`），没有时为空数组。`consults` 是这一步请主控判断的记录，每项为 `rule`、`agent`、`outcome`（`ok`、`failed`、`unparsed`、`cancelled`）、`reason`、`duration_ms`、`tokens`、`cost_usd`、`decision`，没有时为空数组。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output, requests, first_input }`，`input` 含命中缓存的 `cached_input`，`requests` 和 `first_input` 工具不报时为 `null`；工具不报用量时 `tokens` 为 `null`。`cost_usd`、`startup_ms` 不可知时为 `null`，口径见第 8 节。`phases` 按流程先后列出出现过的步骤种类，每项为 `kind`、`steps`、`duration_ms`、`startup_ms`、`input`、`cached_input`、`output`、`requests`、`cost_usd`；这一阶段都不报用量时 token 各项为 `null`。请主控判断的开销单列一项 `supervise`，`steps` 是判断的次数；判断和干活的一方同时进行，文字报告的合计里只算它的用量和费用，不算次数和耗时。
 - **`--verbose`**：纯文本方式下，AI 的每条活动（读文件、执行命令等）打印一行。
 - 纯文本与 JSON 两种输出不含任何控制字符，是给脚本和其他 AI 调用的稳定接口。
 
@@ -340,10 +340,18 @@ fallback: auto                # auto：不可用时自动换下一家；ask：�
 | 原地打转 `loop` | 自上次改动以来：同一条命令（合并空白后）执行到 `repeat_command` 次；同一个文件读到 `repeat_read` 次；可写步骤连续 `requests_without_edit` 次请求（只对报请求次数的工具）。有了改动就重新计数，"改一下、跑一次测试"不会触发 | `off`；3 次、5 次、20 次 |
 | 用量异常 `usage` | 这一步的新输入或请求次数超过基准的 `factor` 倍。基准是本项目最近 50 个任务里同一种步骤、同一家 AI、做成了、报了用量的步骤的中位数，每个任务读一次历史；样本少于 `min_samples` 或中位数为 0 时不检查 | `off`；3 倍、5 个样本 |
 
-- 每条规则的 `action`：`off` 不检查；`notify` 只提示；`stop` 中断这一步。默认值对任何项目都不打断，要中断由项目自己打开。
+- 每条规则的 `action`：`off` 不检查；`notify` 只提示；`stop` 中断这一步；`ask_lead` 交给主控判断，只用于没动静、路径越界、原地打转、用量异常（禁用命令是项目明确的禁令，偏离计划的范围本是估计，这两条不用）。默认值对任何项目都不打断，要中断或请主控判断由项目自己打开。
 - 去重：同一段静默只报一次，有了新输出后下一段静默可以再报；同一个越界文件、同一条禁用命令、同一个偏离计划的文件各报一次；打转每种情况报一次，有了改动后可以再报；用量的新输入和请求次数各报一次。
 - 定时检查的间隔取阈值的四分之一，最多 30 秒，不少于 50 毫秒。
 - 发现问题时：发出 `watch` 进度事件（界面在历史区显示一行提示，纯文本方式打到标准错误，渠道转发到任务所在的会话）；记进这一步的 `alerts` 和任务的注意事项；写一条 `watch_alert` 审计。`stop` 时终止进程树，这一步记为"任务失败"，原因是"监控发现问题，已中断：…"，不换人，任务停下。
+- **交给主控判断**（`ask_lead`）：告警发出后干活的一方照常运行，Dario 同时以只读方式运行主控角色当前的担当者，限时 `consult_timeout_minutes`（默认 3 分钟）；能续接主控的会话就续接，它知道计划。交给主控的是这一步的任务、角色、发现的情况、已运行多久和用量、运行中看到的改动、最近 30 条活动，要它在回复末尾给出 JSON 判断 `{ action, message, snooze_minutes }`：
+  - `continue`：这条规则静默 `snooze_minutes` 分钟（默认 10）。
+  - `correct`：中断干活的进程，续接它的会话，发去"主控提醒"：上一轮被中断的原因和主控的说明，要它先看当前改动的状态再接着完成原任务。插件声明不能续接、或取不到会话号时，新开会话，发完整的任务说明并附上提醒。纠偏算同一步，不算换人；各轮的用量和费用相加。`correct` 必须写说明，否则算没有可用的判断。
+  - `stop`：中断，这一步记为任务失败，原因是"主控中止：…"，任务停下。
+  - 每一步最多纠偏 `max_interventions` 次（默认 2），再要纠偏就中止。
+  - 一次只判断一件事：判断期间又发现的情况改为只提示。判断运行失败、超时或回复里没有可用的判断时只提示，不打断。干活的一方先结束了，还在进行的判断就终止，记为 `cancelled`。
+  - 主控自己的步骤（计划、主控自己做的改动、汇总，以及直派给主控的任务）没有更上一级来判断，`ask_lead` 改为只提示。
+  - 被中断的运行拿不到工具最后的结果记录，会话号要从开头取：`claude` 与 `codebuddy` 取 `init` 记录的 `session_id`，`codex` 取 `thread.started` 的 `thread_id`。
 - 这是发现问题的手段，不是安全边界：靠活动认出的改动和命令，绕开工具的写法（例如写个脚本去执行、在命令里改文件）查不出来。实际改动以这一步结束后的改动检测为准，越界由第 10 节处理。
 
 ## 8. AI 接入：插件
@@ -513,7 +521,8 @@ Dario 边收 AI 的标准输出边按行交给插件的 `progress(line)`，得�
 | 会话失效 | 续接的运行失败，且报错文字像"找不到这个会话" | 同一家 AI 新开会话重跑这一步，见第 7 节 |
 | 受阻 | 这一步正常结束，但回复里有单独一行 `DARIO_BLOCKED: <原因>` | 这一步记为没有完成，任务停下，后面的步骤不再执行，结论里写明原因。会话保留，恢复后再下达任务可以接着做 |
 | 超时 | 超过时限 | 终止进程树 |
-| 监控中断 | 干活监控的规则触发，且该规则的 `action` 为 `stop`，见第 7 节 | 终止进程树，这一步记为任务失败，不换人，任务停下 |
+| 监控中断 | 干活监控的规则触发，且该规则的 `action` 为 `stop`；或交给主控判断后主控要求中止、纠偏次数到了上限，见第 7 节 | 终止进程树，这一步记为任务失败，不换人，任务停下 |
+| 主控纠偏 | 交给主控判断后主控要求纠偏，见第 7 节 | 终止进程树，续接这一步的会话发去主控的提醒，同一步接着做 |
 | 越界 | 见第 10 节 | 见第 10 节 |
 | 中断 | 推进任务的 Dario 进程已不存在 | 标为"中断"，不自动重跑 |
 
@@ -757,4 +766,5 @@ rise · 主控 claude · 实现 codex · 测试 codex · 审查 claude · 排队
 - **取机器人自身标识的接口**：用于判断群消息是否 @了机器人。取不到时退回到"消息里有 @ 就处理"。
 - **富文本消息的格式**：按通常结构解析，未对照真实消息核对。
 - **macOS 与 Linux**：未运行过。
+- **中断后续接**：在 Windows 上实测过 Claude Code 与 Codex：执行命令途中结束整个进程树后，用原会话号续接，两家都能接上，记得之前的对话和被中断时在做的事。CodeBuddy 没有实测。主控判断、纠偏的完整流程只在测试里用假 AI 跑过，没有用真实的 AI 跑过。
 - **干活监控的默认阈值**：10 分钟和命令中 30 分钟是为了少误报取的宽松值，没有在各家工具的真实长任务上统计过；各家工具两行输出之间最长隔多久，也没有实测。原地打转的 3、5、20 次和用量异常的 3 倍同样是估计值；主控写的预计范围有多准、偏离计划会有多少误报，也还没有在真实任务上看过。
