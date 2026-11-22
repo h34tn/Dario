@@ -140,7 +140,7 @@ dario input-test               # 检查中文输入法和粘贴在你的终端�
 |---|---|---|
 | 项目的 `.dario/` | `roles.yaml` | 角色表，随仓库提交，团队共用 |
 | | `dispatch-rules.md` | 主控按什么规则分派 |
-| | `project.yaml` | `lead_implements` 默认 `true`，设为 `false` 可让主控把动手步骤全部分派出去；另可设置允许改动的目录、时限、返工轮数、小改动跳过自动审查的行数门槛（`review_skip_max_lines`，默认 0 即始终审查）、开工前是否先拉取等 |
+| | `project.yaml` | `lead_implements` 默认 `true`，设为 `false` 可让主控把动手步骤全部分派出去；另可设置允许改动的目录、时限、返工轮数、小改动跳过自动审查的行数门槛（`review_skip_max_lines`，默认 0 即始终审查）、交接时附上的代码和 diff 的长度上限（`handoff_max_chars`，默认 20000 个字符，0 即不附）、开工前是否先拉取等 |
 | 本机的 `~/.dario/` | `agents.yaml` | 各家 AI 的命令路径、默认及按角色的型号与强度、放行的工具、要加载的插件 |
 | | `channels.yaml`、`access.yaml` | 渠道设置与名单 |
 | | `state/` | 任务记录、审计日志 |

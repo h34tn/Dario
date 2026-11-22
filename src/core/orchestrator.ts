@@ -1,7 +1,9 @@
 import type { ProjectConfig } from './config.js';
+import { diffText, readRefs } from './handoff.js';
 import { parsePlan, parseVerdict } from './plan.js';
 import {
   carriedPrompt,
+  filesChangedAfter,
   leadStepFollowUp,
   parseBlocked,
   planBrief,
@@ -13,12 +15,14 @@ import {
   reviewCarried,
   reviewFollowUp,
   reviewPrompt,
+  type ReviewDiff,
   reworkFollowUp,
   reworkPrompt,
   stepBrief,
   stepCarried,
   stepFollowUp,
   stepPrompt,
+  withRefs,
   withScope,
   summaryFollowUp,
   summaryPrompt,
@@ -61,7 +65,7 @@ function statusForOutcome(outcome: StepRecord['outcome']): JobStatus {
 export function describePlan(plan: Plan, roles: RoleBook): string {
   if (plan.steps.length === 0) return plan.summary || '（无步骤）';
   const lines = plan.steps.map(
-    (s, i) => `${i + 1}. [${roles.label(s.role, 'plan')}${s.writes ? '，改文件' : '，只读'}] ${ellipsis(s.task, 160)}${s.files?.length ? `\n   范围：${s.files.join('、')}` : ''}`,
+    (s, i) => `${i + 1}. [${roles.label(s.role, 'plan')}${s.writes ? '，改文件' : '，只读'}] ${ellipsis(s.task, 160)}${s.files?.length ? `\n   范围：${s.files.join('、')}` : ''}${s.refs?.length ? `\n   参考：${s.refs.join('、')}` : ''}`,
   );
   return `${plan.summary ? `${plan.summary}\n` : ''}${lines.join('\n')}`;
 }
@@ -378,6 +382,10 @@ export class Orchestrator {
     }
     const reviewRole = project.settings.reviewRole;
     job.branch = (await ws.enterExec(job.id)).branch;
+    if (job.dirtyAtStart === undefined) {
+      const stamp = await ws.stamp();
+      job.dirtyAtStart = stamp ? [...stamp.keys()].sort() : [];
+    }
     this.setStatus(job, 'running');
 
     for (; job.cursor < plan.steps.length; job.cursor++) {
@@ -392,7 +400,9 @@ export class Orchestrator {
       const role = roles.get(step.role);
       const context = priorSteps(job) || job.context;
       const access = leadStep ? 'write' : role.access;
-      const task = withScope(step.task, step.writes ? step.files : undefined);
+      const scoped = withScope(step.task, step.writes ? step.files : undefined);
+      // 主控自己的步骤续接时它刚读过这些代码，不再附；新开会话和其他角色都附上
+      const task = withRefs(scoped, step.refs?.length ? readRefs(ws.cwd, step.refs, project.settings.handoffMaxChars, job.changedFiles) : undefined);
       const prompt = stepPrompt(project, role, access, task, context, step.acceptance, job.pulled);
       const brief = leadStep ? undefined : stepBrief(project, role, access);
       const rec = await this.execStep(job, ws, opts, {
@@ -407,7 +417,7 @@ export class Orchestrator {
           full: stepPrompt(project, role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
           carried: () => stepCarried(role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
           delta: (after, briefed) => leadStep
-            ? leadStepFollowUp(project, role, task, job, after, step.acceptance)
+            ? leadStepFollowUp(project, role, scoped, job, after, step.acceptance)
             : stepFollowUp(project, role, access, task, job, after, step.acceptance, briefed),
         }),
       });
@@ -456,6 +466,14 @@ export class Orchestrator {
     return true;
   }
 
+  /** 给审查附的 diff。取不到（不是 git 仓库、关掉了、没有改动）时为 undefined，审查照旧自己去读文件。 */
+  private async reviewDiff(job: Job, ws: Workspace, files: string[]): Promise<ReviewDiff | undefined> {
+    const got = await diffText(ws.cwd, files, this.deps.project.settings.handoffMaxChars);
+    if (!got) return undefined;
+    const before = new Set(job.dirtyAtStart ?? []);
+    return { text: got.text, omitted: got.omitted, preexisting: files.filter((f) => before.has(f)) };
+  }
+
   /** 审查并在不通过时返工。通过返回 undefined；失败时返回说明，任务状态已设置。 */
   private async reviewLoop(job: Job, ws: Workspace, opts: RunOptions, extraTask: string | undefined): Promise<string | undefined> {
     const { roles, project } = this.deps;
@@ -463,7 +481,10 @@ export class Orchestrator {
     for (;;) {
       this.setStatus(job, 'reviewing');
       const reviewer = roles.get(reviewRole);
-      const reviewText = reviewPrompt(project, reviewer, job, extraTask);
+      const diff = await this.reviewDiff(job, ws, job.changedFiles);
+      const lastReview = job.sessions?.[reviewRole]?.step ?? -1;
+      const sinceDiff = lastReview >= 0 ? await this.reviewDiff(job, ws, filesChangedAfter(job, lastReview)) : undefined;
+      const reviewText = reviewPrompt(project, reviewer, job, extraTask, diff);
       const brief = reviewBrief(project, reviewer);
       const rec = await this.execStep(job, ws, opts, {
         kind: 'review',
@@ -474,8 +495,8 @@ export class Orchestrator {
         brief,
         followUp: this.followUp(job, reviewRole, brief, {
           full: reviewText,
-          carried: () => reviewCarried(reviewer, job, extraTask),
-          delta: (after, briefed) => reviewFollowUp(project, reviewer, job, after, extraTask, briefed),
+          carried: () => reviewCarried(reviewer, job, extraTask, diff),
+          delta: (after, briefed) => reviewFollowUp(project, reviewer, job, after, extraTask, briefed, after === lastReview ? sinceDiff : undefined),
         }),
       });
       if (rec.outcome !== 'ok') return this.failFromStep(job, rec);

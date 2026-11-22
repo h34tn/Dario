@@ -152,6 +152,7 @@ export function planLines(plan: Plan, roleLabel: (id: string) => string, details
     append(number + role + suffix, number + paint('role', role, color) + suffix, clean(step.task));
     if (details && step.acceptance) append('验收：', '验收：', clean(step.acceptance));
     if (details && step.files?.length) append('范围：', '范围：', clean(step.files.join('、')));
+    if (details && step.refs?.length) append('参考：', '参考：', clean(step.refs.join('、')));
   }
   return rows;
 }

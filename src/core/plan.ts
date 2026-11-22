@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ProjectSettings } from './config.js';
 import type { RoleBook } from './roles.js';
+import { normalizeRefs } from './handoff.js';
 import { normalizeScopePath } from './scope.js';
 import type { LeadDecision, Plan, PlanStep } from './types.js';
 
@@ -74,6 +75,7 @@ const planSchema = z.object({
         writes: z.boolean().default(false),
         acceptance: z.string().nullish(),
         files: z.array(z.string()).nullish(),
+        refs: z.array(z.string()).nullish(),
       }),
     )
     .default([]),
@@ -115,7 +117,8 @@ export function parsePlan(text: string, ctx: PlanContext): { plan: Plan } | { er
       return;
     }
     const files = s.writes ? [...new Set((s.files ?? []).map(normalizeScopePath).filter(Boolean))] : [];
-    steps.push({ role: roleId, task: s.task, writes: s.writes, acceptance: s.acceptance ?? undefined, ...(files.length > 0 && { files }) });
+    const refs = normalizeRefs(s.refs ?? []);
+    steps.push({ role: roleId, task: s.task, writes: s.writes, acceptance: s.acceptance ?? undefined, ...(files.length > 0 && { files }), ...(refs.length > 0 && { refs }) });
   });
   if (steps.length > ctx.maxPlanSteps) errors.push(`计划有 ${steps.length} 步，超过上限 ${ctx.maxPlanSteps} 步`);
   // 没有步骤就是直接回答：答案是 JSON 之前的正文，只写一遍。JSON 里另外写了 answer 的（旧写法）以它为准

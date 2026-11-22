@@ -147,6 +147,8 @@ export interface PlanStep {
   acceptance?: string;
   /** 这一步预计改动的文件、目录或 glob，相对项目根目录。只有改文件的步骤才有；是估计，不是限制。 */
   files?: string[];
+  /** 主控读过、认为这一步要看的代码位置："文件"、"文件:行"或"文件:起-止"。派活时由 Dario 读出当前内容附上。 */
+  refs?: string[];
 }
 
 export interface Plan {
@@ -210,6 +212,8 @@ export interface Job {
   steps: StepRecord[];
   reworkRounds: number;
   changedFiles: string[];
+  /** 进入执行阶段时就有未提交改动的文件（就地执行时可能有）。给审查附 diff 时据此说明哪些改动不全是本任务的。 */
+  dirtyAtStart?: string[];
   /** 最近一次改动之后是否已经审查过。 */
   reviewedSinceChange: boolean;
   lastWriter?: { role: string; agent: string; task: string };

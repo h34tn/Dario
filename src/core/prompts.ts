@@ -136,7 +136,7 @@ export function planCarried(leadImplements: boolean, task: string, context?: str
   );
 }
 
-export function reviewCarried(role: RoleDef, job: Job, extraTask?: string): string {
+export function reviewCarried(role: RoleDef, job: Job, extraTask?: string, diff?: ReviewDiff): string {
   const files = job.changedFiles.length ? job.changedFiles.map((f) => `- ${f}`).join('\n') : UNDETECTED_FILES;
   return (
     newTaskHeader(role, 'read-only') +
@@ -144,7 +144,8 @@ export function reviewCarried(role: RoleDef, job: Job, extraTask?: string): stri
     pulledSection(job.pulled) +
     section('已完成的工作', priorSteps(job)) +
     section('本次改动的文件', files) +
-    section('审查要求', extraTask ?? '审查上面的改动是否正确、完整地完成了原始任务。请实际阅读改动的文件。') +
+    diffSection(diff) +
+    section('审查要求', reviewAsk(extraTask, diff)) +
     section('输出格式', REVIEW_FORMAT_REMINDER)
   );
 }
@@ -163,8 +164,12 @@ export function carriedPrompt(full: string): string {
 }
 
 /** 某一步之后被改动的文件。会话记得的是旧内容，必须提醒它重新读取。 */
+export function filesChangedAfter(job: Job, after: number): string[] {
+  return [...new Set(job.steps.filter((s) => s.index > after).flatMap((s) => s.changedFiles))].sort();
+}
+
 function staleFiles(job: Job, after: number): string | undefined {
-  const files = [...new Set(job.steps.filter((s) => s.index > after).flatMap((s) => s.changedFiles))].sort();
+  const files = filesChangedAfter(job, after);
   if (files.length === 0) return undefined;
   return `${files.map((f) => `- ${f}`).join('\n')}\n这些文件的内容已经和你记得的不一样，用到时请重新读取。`;
 }
@@ -225,10 +230,12 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
       return `- ${id}${alias}：${r.access === 'write' ? '可写' : '只读'}。${r.description ?? ''}`;
     })
     .join('\n');
+  // 交接上下文关掉时不要求写 refs：写了也不会附上
+  const handoff = project.settings.handoffMaxChars > 0;
   const format = [
     '先用几句话说明思路（直接回答问题时这里就写答案），然后在回复的**最后**输出一个 JSON 代码块，格式如下：',
     '```json',
-    '{"summary":"一句话概括计划","answer":null,"steps":[{"role":"角色 id","task":"交给该角色的完整任务说明","writes":true,"acceptance":"验收标准","files":["预计改动的文件、目录或 glob"]}]}',
+    `{"summary":"一句话概括计划","answer":null,"steps":[{"role":"角色 id","task":"交给该角色的完整任务说明","writes":true,"acceptance":"验收标准","files":["预计改动的文件、目录或 glob"]${handoff ? ',"refs":["src/a.ts:120-160"]' : ''}}]}`,
     '```',
     '规则：',
     '- 如果任务只是提问、靠阅读就能回答：直接在 JSON 之前把答案完整写出来，JSON 里 steps 留空数组、answer 填 null。答案只写这一遍，不要在 JSON 里再重复。',
@@ -244,6 +251,9 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
     `- 每一步的 task 必须自包含：写清背景、要做什么、涉及哪些文件。${leadImplements ? '其他角色' : '执行者'}看不到本次对话，也看不到其他步骤的说明。`,
     '- writes 表示这一步是否会创建、修改或删除文件，请如实填写。',
     '- writes 为 true 的步骤在 files 里列出预计改动的文件、目录或 glob（相对项目根目录，可用 * 和 **），跟着一起改的测试和文档也列上；拿不准具体文件就写到目录。这是估计，用来对照实际改动、提醒发起人，不限制执行。只读步骤不写 files。',
+    ...(handoff
+      ? ['- refs 列出你已经读过、这一步动手时要看的代码位置，写成"文件:起始行-结束行"（相对项目根目录，行号是你读到的），只列关键片段，不要整个文件。Dario 派活时会读出这些行附给接手的角色，所以不必把代码抄进 task，task 里说清要改哪里、怎么改即可。没读过具体代码的步骤不写 refs。']
+      : []),
   ].join('\n');
   return (
     `# 你的角色\n你是主控。阅读任务和项目，判断如何完成，并输出一份计划。` +
@@ -266,6 +276,11 @@ export function withScope(task: string, files: string[] | undefined): string {
   return `${task}\n\n预计改动的范围（出计划时的估计）：${files.join('、')}。确实需要改动范围之外的文件时可以改，在结果里写明改了哪些、为什么。`;
 }
 
+/** 主控标出的代码（handoff.readRefs 读出的内容）接在任务说明后面，自成一节。 */
+export function withRefs(task: string, refs: string | undefined): string {
+  return refs ? `${task}${section('主控标出的相关代码', refs)}` : task;
+}
+
 const UNDETECTED_FILES = '（未能自动检测，请用 git status 与 git diff 查看）';
 
 const REVIEW_FORMAT = [
@@ -278,7 +293,32 @@ const REVIEW_FORMAT = [
   'issues 只写必须修改的问题。可改可不改的、任务说明有歧义需要发起人取舍的、属于任务范围之外的，写进 suggestions：它们会原样交给发起人决定，不会触发返工，也不要因为它们判 fail。',
 ].join('\n');
 
-export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, extraTask?: string): string {
+const READ_FILES = '请实际阅读改动的文件。';
+const READ_DIFF = '改动的 diff 已经附在上面，先据此审查；判断对不对需要更多上下文时再打开相关文件，不必为了确认改了什么逐个重读。';
+
+/** 附给审查的 diff：Dario 在派活这一刻取的，相对 HEAD。 */
+export interface ReviewDiff {
+  text: string;
+  /** 超出长度上限、没有附上（或只附了一部分）的文件。 */
+  omitted: string[];
+  /** 改动的文件里，任务开始前就有未提交改动的。 */
+  preexisting: string[];
+}
+
+function diffSection(diff: ReviewDiff | undefined, title = '改动的 diff'): string {
+  if (!diff) return '';
+  const notes = ['相对最近一次提交（HEAD）的改动，没被 git 跟踪的新文件按全文列出。'];
+  if (diff.preexisting.length) notes.push(`其中 ${diff.preexisting.join('、')} 在任务开始前就有未提交的改动，diff 里也包含那部分，不全是这次任务改的。`);
+  if (diff.omitted.length) notes.push(`超出长度上限，这些文件的 diff 没有附上或没有附全：${diff.omitted.join('、')}。请用 git diff HEAD -- <文件> 查看。`);
+  return section(title, `${notes.join('\n')}\n\n${diff.text}`.trim());
+}
+
+function reviewAsk(extraTask: string | undefined, diff: ReviewDiff | undefined): string {
+  const read = diff ? READ_DIFF : READ_FILES;
+  return extraTask ? `${extraTask}\n${read}` : `审查上面的改动是否正确、完整地完成了原始任务。${read}`;
+}
+
+export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, extraTask?: string, diff?: ReviewDiff): string {
   const files = job.changedFiles.length ? job.changedFiles.map((f) => `- ${f}`).join('\n') : UNDETECTED_FILES;
   return (
     `# 你的角色\n${roleHeader(role, 'read-only')}` +
@@ -287,19 +327,21 @@ export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, ex
     pulledSection(job.pulled) +
     section('已完成的工作', priorSteps(job)) +
     section('本次改动的文件', files) +
-    section('审查要求', extraTask ?? '审查上面的改动是否正确、完整地完成了原始任务。请实际阅读改动的文件。') +
+    diffSection(diff) +
+    section('审查要求', reviewAsk(extraTask, diff)) +
     section('输出格式', REVIEW_FORMAT)
   );
 }
 
 /** after 是这个会话上一次审查的步骤下标。 */
-export function reviewFollowUp(project: ProjectConfig, role: RoleDef, job: Job, after: number, extraTask?: string, briefed = false): string {
-  const recheck = '审查你上次审查之后的改动是否正确、完整地完成了原始任务；你上一轮提出过问题的，逐条确认是否已经解决，并确认修改没有引入新的问题。请实际阅读改动的文件。';
+export function reviewFollowUp(project: ProjectConfig, role: RoleDef, job: Job, after: number, extraTask?: string, briefed = false, diff?: ReviewDiff): string {
+  const recheck = `审查你上次审查之后的改动是否正确、完整地完成了原始任务；你上一轮提出过问题的，逐条确认是否已经解决，并确认修改没有引入新的问题。${diff ? READ_DIFF : READ_FILES}`;
   return (
     continueHeader(role, 'read-only', '这是同一个任务的又一轮审查，', briefed) +
     (briefed ? '' : section('工作规则', rules('read-only', project))) +
     section('你上次审查之后完成的工作', priorSteps(job, after)) +
     section('你上次审查之后被改动的文件', staleFiles(job, after) ?? UNDETECTED_FILES) +
+    diffSection(diff, '这些文件现在的 diff') +
     section('审查要求', extraTask ? `${extraTask}\n${recheck}` : recheck) +
     section('输出格式', briefed ? REVIEW_FORMAT_REMINDER : REVIEW_FORMAT)
   );

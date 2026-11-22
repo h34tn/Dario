@@ -314,7 +314,7 @@ export default {
   }
 }
 
-export function plan(steps: Array<{ role: string; task: string; writes?: boolean; files?: string[] }>, summary = '测试计划'): string {
+export function plan(steps: Array<{ role: string; task: string; writes?: boolean; files?: string[]; refs?: string[] }>, summary = '测试计划'): string {
   return `思路略。\n\n\`\`\`json\n${JSON.stringify({ summary, answer: null, steps: steps.map((s) => ({ writes: false, ...s })) })}\n\`\`\``;
 }
 

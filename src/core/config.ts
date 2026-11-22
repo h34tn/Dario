@@ -36,6 +36,8 @@ export interface ProjectSettings {
   maxReworkRounds: number;
   /** 改动不超过这么多行时跳过自动追加的审查；0 表示始终审查。 */
   reviewSkipMaxLines: number;
+  /** 交接时附上的代码片段和审查用的 diff，各自最多这么多字符；0 表示不附。 */
+  handoffMaxChars: number;
   defaultTimeoutMinutes: number;
   maxPlanSteps: number;
   preamble: string;
@@ -230,6 +232,7 @@ const projectFileSchema = z
     write_roots: z.array(z.string()).default([]),
     max_rework_rounds: z.number().int().min(0).default(2),
     review_skip_max_lines: z.number().int().min(0).default(0),
+    handoff_max_chars: z.number().int().min(0).default(20000),
     default_timeout_minutes: z.number().positive().default(30),
     max_plan_steps: z.number().int().positive().default(8),
     preamble: z.string().default(''),
@@ -399,6 +402,7 @@ function parseSettings(data: unknown, file: string, projectLevel: boolean): Proj
     writeRoots: p.write_roots,
     maxReworkRounds: p.max_rework_rounds,
     reviewSkipMaxLines: p.review_skip_max_lines,
+    handoffMaxChars: p.handoff_max_chars,
     defaultTimeoutMinutes: p.default_timeout_minutes,
     maxPlanSteps: p.max_plan_steps,
     preamble: p.preamble,
