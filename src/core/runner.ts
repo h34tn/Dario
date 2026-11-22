@@ -47,8 +47,12 @@ export interface RunnerDeps {
 /** 这一步自己的用量。工具报的是会话累计值时，减去续接之前的累计值。 */
 function stepTokens(usage: TokenUsage, base: StepTokens | undefined): StepTokens {
   const own = (now: number, before: number): number => (now >= before ? now - before : now);
-  if (!usage.sessionTotal || !base) return { input: usage.input, cachedInput: usage.cachedInput, output: usage.output };
-  return { input: own(usage.input, base.input), cachedInput: own(usage.cachedInput, base.cachedInput), output: own(usage.output, base.output) };
+  const extra = {
+    ...(usage.requests !== undefined && { requests: usage.requests }),
+    ...(usage.firstInput !== undefined && { firstInput: usage.firstInput }),
+  };
+  if (!usage.sessionTotal || !base) return { input: usage.input, cachedInput: usage.cachedInput, output: usage.output, ...extra };
+  return { input: own(usage.input, base.input), cachedInput: own(usage.cachedInput, base.cachedInput), output: own(usage.output, base.output), ...extra };
 }
 
 const KIND_LABEL: Record<StepKind, string> = { plan: '计划', step: '执行', review: '审查', rework: '返工', summary: '汇总' };
@@ -162,8 +166,10 @@ export class StepRunner {
       emit({ jobId: req.job.id, kind: i === 0 ? 'step_start' : 'fallback', step, text: `${head}：交给 ${agent}${resume ? '（续接会话）' : ''}` });
 
       let tokens: StepTokens | undefined;
+      let promptChars = 0;
       const invoke = async (prompt: string, resumeId: string | undefined, runLabel: string): Promise<AgentRunResult> => {
         if (!resumeId || slot?.step === -1) prompt += imageSection(req.job.images);
+        promptChars = prompt.length;
         const base = resumeId ? slot?.tokens : undefined;
         tokens = undefined;
         try {
@@ -250,6 +256,8 @@ export class StepRunner {
         costUsd: res.costUsd,
         ...(resume && { resumed: true }),
         ...(tokens && { tokens }),
+        ...(res.startupMs !== undefined && { startupMs: res.startupMs }),
+        promptChars,
       };
       emit({
         jobId: req.job.id,

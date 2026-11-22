@@ -114,7 +114,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 | 交互 | 在终端里不带任务直接运行 `dario` | 默认全屏，按下节条件选择行内界面或逐行交互 |
 
 - **单次命令判断标准错误是否连着终端**，与 `-p` 无关：`-p` 只表示执行完就退出。`dario "任务" > 结果.txt` 在终端里仍有动态进度，文件里只有结论。
-- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`attempts`。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output }`，`input` 含命中缓存的 `cached_input`；工具不报用量时为 `null`。
+- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`、`phases`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`cost_usd`、`startup_ms`、`prompt_chars`、`attempts`。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output, requests, first_input }`，`input` 含命中缓存的 `cached_input`，`requests` 和 `first_input` 工具不报时为 `null`；工具不报用量时 `tokens` 为 `null`。`cost_usd`、`startup_ms` 不可知时为 `null`，口径见第 8 节。`phases` 按流程先后列出出现过的步骤种类，每项为 `kind`、`steps`、`duration_ms`、`startup_ms`、`input`、`cached_input`、`output`、`requests`、`cost_usd`；这一阶段都不报用量时 token 各项为 `null`。
 - **`--verbose`**：纯文本方式下，AI 的每条活动（读文件、执行命令等）打印一行。
 - 纯文本与 JSON 两种输出不含任何控制字符，是给脚本和其他 AI 调用的稳定接口。
 
@@ -393,6 +393,8 @@ Dario 边收 AI 的标准输出边按行交给插件的 `progress(line)`，得�
   - `claude` 与 `codebuddy` 加 `--include-partial-messages`，每条消息结束时就有准确的数，运行中实时更新；最后以 `result` 记录为准。子代理的消息不计入。`claude` 报的 `input_tokens` 不含缓存，要加上写入和命中缓存的两项；`codebuddy` 报的已经包含命中缓存的部分。两者都实测过。
   - `codex` 只在一轮结束时报一次，而且报的是整个会话的累计值。续接时 Dario 减去上一轮结束时的累计值（记在会话记录里），得到这一步的用量。所以 Codex 的用量在一步结束时才出现。
   - 声明式插件不统计用量。
+  - `claude` 与 `codebuddy` 还记下**请求次数**和**首次输入**（第一次请求的输入，含命中缓存的部分）。首次输入是工具的系统提示、工具定义、项目说明加上 Dario 的任务说明，每起一次进程都要付一次；续接会话时还包括之前的对话。`codex` 不报每次请求的用量，这两项为空。
+- **开销明细**：每一步另记**启动耗时**（从启动工具到它输出第一行，即进程启动、加载插件与 MCP 的时间；只有流式输出的工具才测得出）和**任务说明字数**（Dario 交给工具的说明，续接时是增量说明）。`dario job` 和单次命令结束时，在各步明细后面按阶段（计划、执行、返工、审查、汇总）汇总步数、耗时、启动耗时、token、请求次数和费用，最后一行合计。这些数据用来看清时间和 token 花在流程的哪一段。一个阶段里的步骤都不报用量时不写 token；只有部分步骤报时，写的是报了的那些步骤之和。
 - `claude` 与 `codebuddy` 每一步的费用取 `result` 记录里只统计本次运行的 `model_usage_since_last_result`，按模型相加；没有这个字段时退回 `total_cost_usd`。续接会话时后者是整个会话的累计值，不能当作这一步的费用。
 - **可写角色的权限**由本机 `agents.yaml` 的 `permissions` 决定，对各家生效，某一家可以在自己的条目里另设：
   - `full`（默认）：全部放行，不逐项审批。任务要由角色自己做完，需要什么工具、命令、MCP 都能用，分寸由各家 AI 自己把握。`claude` 与 `codebuddy` 用 `--permission-mode bypassPermissions`，不带工具清单；`codex` 用 `--dangerously-bypass-approvals-and-sandbox` 代替 `-s workspace-write`。插件从请求的 `unrestricted` 得知。

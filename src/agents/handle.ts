@@ -232,6 +232,8 @@ export class AgentHandle implements AgentPort {
     const meter = this.plugin.meter?.();
     let tokens: TokenUsage | undefined;
     const showActivity = req.onActivity;
+    const launched = Date.now();
+    let startupMs: number | undefined;
     const out = await runProcess({
       command: this.command,
       args: invocation.args,
@@ -241,7 +243,10 @@ export class AgentHandle implements AgentPort {
       timeoutMs: req.timeoutMs,
       startupTimeoutMs: this.plugin.streams ? this.settings.startupTimeoutSeconds * 1000 : undefined,
       onSpawn: (pid) => req.onPid?.(pid),
-      onStdoutLine: (showActivity && this.plugin.progress) || meter || reader?.onLine ? (line) => {
+      // 始终逐行接收：流式输出的工具第一行到达的时间就是启动开销，不论是否显示活动、统计用量。
+      // 不流式输出的工具到结束才有输出，测不出启动开销
+      onStdoutLine: (line) => {
+        if (this.plugin.streams) startupMs ??= Date.now() - launched;
         try {
           observe(reader?.onLine?.(line));
         } catch {
@@ -263,7 +268,7 @@ export class AgentHandle implements AgentPort {
           const normalized = normalizeActivity(activity, req.cwd);
           if (normalized) showActivity(normalized);
         }
-      } : undefined,
+      },
     });
     req.onPid?.(undefined);
 
@@ -308,6 +313,7 @@ export class AgentHandle implements AgentPort {
       reason: result.outcome === 'ok' ? undefined : result.reason,
       text: output?.text ?? '',
       durationMs: out.durationMs,
+      ...(startupMs !== undefined && { startupMs }),
       costUsd: output?.costUsd,
       tokens,
       ...(quota && { quota }),

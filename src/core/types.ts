@@ -75,6 +75,10 @@ export interface StepRecord {
   resumed?: boolean;
   /** 这一步的 token 用量；工具不报用量时为空。 */
   tokens?: StepTokens;
+  /** 从启动工具到它输出第一行的时间，即进程启动、加载插件与 MCP 的开销；不可知时为空。 */
+  startupMs?: number;
+  /** Dario 交给工具的任务说明有多少字（续接时是增量说明）。 */
+  promptChars?: number;
 }
 
 /** 一步的 token 用量。input 是各次请求发给模型的 token 之和，其中 cachedInput 是命中缓存的部分。 */
@@ -82,6 +86,10 @@ export interface StepTokens {
   input: number;
   cachedInput: number;
   output: number;
+  /** 向模型发了几次请求；工具不报时为空。 */
+  requests?: number;
+  /** 第一次请求的输入 token，即起这一步要付的固定开销；工具不报时为空。 */
+  firstInput?: number;
 }
 
 /** 一个角色在本任务里的 AI 会话。担当者换了，会话就不能再续。 */

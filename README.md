@@ -93,6 +93,8 @@ dario -p --to 审核者 --output-format json "检查这次改动" < 任务说明
 
 在终端里运行时，Dario 会显示实时进度：现在是哪一步、哪个角色、哪家 AI、用了多久、用了多少 token（`↑` 新发送的输入，不含命中缓存的部分；`↓` 输出），以及这家 AI 此刻在读哪个文件、执行什么命令。输出被管道或文件接走时自动变成纯文本，给脚本用的输出格式不受影响。
 
+任务结束后（以及 `dario job <任务号>`）会列出各步明细和按阶段的汇总：每一步的启动耗时、请求次数、首次输入（起一次进程就要付的固定开销）和任务说明字数，以及计划、执行、返工、审查、汇总各花了多少时间和 token，方便看出时间和用量花在了哪一段。
+
 不带任务直接运行 `dario` 默认进入全屏界面。历史在上方，输入框、按键提示和状态栏在下方：
 
 ```
@@ -302,7 +304,7 @@ export default {
 
 活动的种类：`read`、`search`、`run`、`edit`、`tool`（这五种带 `target`）、`say`（带 `text`）、`think`。
 
-想在界面上显示 token 用量，再实现一个可选的 `meter()`：每次运行调用一次，返回的函数逐行接收标准输出，用量有变化时返回 `{ input, cachedInput, output }`（到目前为止的累计值，`input` 含命中缓存的 `cachedInput`）。工具只报整个会话的累计值时加上 `sessionTotal: true`，续接时 Dario 会自己减去上一轮的数。
+想在界面上显示 token 用量，再实现一个可选的 `meter()`：每次运行调用一次，返回的函数逐行接收标准输出，用量有变化时返回 `{ input, cachedInput, output }`（到目前为止的累计值，`input` 含命中缓存的 `cachedInput`）。能拿到每次请求的用量时，可以再带上 `requests`（请求次数）和 `firstInput`（第一次请求的输入），`dario job` 的开销明细会用到。工具只报整个会话的累计值时加上 `sessionTotal: true`，续接时 Dario 会自己减去上一轮的数。
 
 要显示额度，可实现 `quota()`。Dario 每次运行调用一次，返回的读取器可以提供 `onLine(line)` 逐行读取标准输出，也可以提供 `afterRun({ sessionId, env })` 在运行结束后读取会话记录，两者可同时提供。有数据时返回本次观测的全部窗口，每个窗口包含标识 `id`、已用百分数 `usedPercent`（如 75 表示 75%），以及可选的窗口长度 `windowMinutes`、重置时刻 `resetsAt` 和主窗口标记 `primary`。额度只用于显示。
 

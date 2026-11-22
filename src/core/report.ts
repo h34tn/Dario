@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Activity, QuotaWindow } from '../plugin.js';
 import type { AgentView } from './engine.js';
 import type { RoleView } from './roles.js';
-import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job } from './types.js';
+import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job, type StepKind, type StepRecord } from './types.js';
 import { formatDuration, formatLocalTime, formatTokens } from './util.js';
 
 function isQuotaWindowActive(window: QuotaWindow, now: Date): boolean {
@@ -146,10 +146,100 @@ export interface JobJson {
     changed_files: string[];
     /** 这一步是否续接了该角色在本任务里已有的会话。 */
     resumed: boolean;
-    /** token 用量；工具不报用量时为 null。input 含命中缓存的部分 cached_input。 */
-    tokens: { input: number; cached_input: number; output: number } | null;
+    /**
+     * token 用量；工具不报用量时为 null。input 含命中缓存的部分 cached_input。
+     * requests 是请求次数，first_input 是第一次请求的输入，工具不报时为 null。
+     */
+    tokens: { input: number; cached_input: number; output: number; requests: number | null; first_input: number | null } | null;
+    cost_usd: number | null;
+    /** 从启动工具到它输出第一行的时间；不可知时为 null。 */
+    startup_ms: number | null;
+    /** Dario 交给工具的任务说明的字数；没有启动工具时为 null。 */
+    prompt_chars: number | null;
     attempts: Array<{ agent: string; outcome: string; reason: string | null }>;
   }>;
+  /** 按步骤种类（plan、step、rework、review、summary）汇总的耗时和用量，按流程先后排列，只列出现过的种类。 */
+  phases: PhaseJson[];
+}
+
+export interface PhaseJson {
+  kind: string;
+  steps: number;
+  duration_ms: number;
+  startup_ms: number;
+  /** 这一阶段的步骤都不报用量时，这四项为 null；只有部分步骤报时，是报了的那些步骤之和。 */
+  input: number | null;
+  cached_input: number | null;
+  output: number | null;
+  requests: number | null;
+  cost_usd: number | null;
+}
+
+const PHASE_ORDER: StepKind[] = ['plan', 'step', 'rework', 'review', 'summary'];
+
+export interface PhaseTotal {
+  kind: StepKind;
+  steps: number;
+  durationMs: number;
+  startupMs: number;
+  input: number;
+  cachedInput: number;
+  output: number;
+  requests: number;
+  /** 有一步报了用量。 */
+  metered: boolean;
+  /** 有一步报了费用就算；都没报时为空。 */
+  costUsd?: number;
+}
+
+function addPhase(total: PhaseTotal, s: StepRecord): void {
+  total.steps += 1;
+  total.durationMs += s.durationMs;
+  total.startupMs += s.startupMs ?? 0;
+  if (s.tokens) total.metered = true;
+  total.input += s.tokens?.input ?? 0;
+  total.cachedInput += s.tokens?.cachedInput ?? 0;
+  total.output += s.tokens?.output ?? 0;
+  total.requests += s.tokens?.requests ?? 0;
+  if (s.costUsd !== undefined) total.costUsd = (total.costUsd ?? 0) + s.costUsd;
+}
+
+const emptyPhase = (kind: StepKind): PhaseTotal =>
+  ({ kind, steps: 0, durationMs: 0, startupMs: 0, input: 0, cachedInput: 0, output: 0, requests: 0, metered: false });
+
+/** 按步骤种类汇总耗时和用量，看清时间和 token 花在流程的哪一段。 */
+export function phaseTotals(job: Job): PhaseTotal[] {
+  const byKind = new Map<StepKind, PhaseTotal>();
+  for (const s of job.steps) {
+    let total = byKind.get(s.kind);
+    if (!total) byKind.set(s.kind, (total = emptyPhase(s.kind)));
+    addPhase(total, s);
+  }
+  return PHASE_ORDER.filter((k) => byKind.has(k)).map((k) => byKind.get(k)!);
+}
+
+function formatPhase(label: string, p: Omit<PhaseTotal, 'kind'>): string {
+  const fresh = Math.max(0, p.input - p.cachedInput);
+  const parts = [
+    `${label}  ${p.steps} 步`,
+    formatDuration(p.durationMs) + (p.startupMs ? `（启动 ${formatDuration(p.startupMs)}）` : ''),
+  ];
+  if (p.metered) parts.push(`新输入 ${formatTokens(fresh)} · 缓存 ${formatTokens(p.cachedInput)} · 输出 ${formatTokens(p.output)} token`);
+  if (p.requests) parts.push(`${p.requests} 次请求`);
+  if (p.costUsd !== undefined) parts.push(`$${p.costUsd.toFixed(2)}`);
+  return '  ' + parts.join(' · ');
+}
+
+/** 各阶段一行，最后一行合计。少于两个阶段时只有一行，没有合计。 */
+export function formatPhases(job: Job): string {
+  const phases = phaseTotals(job);
+  const lines = phases.map((p) => formatPhase(KIND_LABEL[p.kind] ?? p.kind, p));
+  if (phases.length > 1) {
+    const sum = emptyPhase('step');
+    for (const s of job.steps) addPhase(sum, s);
+    lines.push(formatPhase('合计', sum));
+  }
+  return lines.join('\n');
 }
 
 /** 无头方式 JSON 输出的固定结构。 */
@@ -178,8 +268,21 @@ export function jobToJson(job: Job): JobJson {
       duration_ms: s.durationMs,
       changed_files: s.changedFiles,
       resumed: s.resumed === true,
-      tokens: s.tokens ? { input: s.tokens.input, cached_input: s.tokens.cachedInput, output: s.tokens.output } : null,
+      tokens: s.tokens
+        ? {
+          input: s.tokens.input, cached_input: s.tokens.cachedInput, output: s.tokens.output,
+          requests: s.tokens.requests ?? null, first_input: s.tokens.firstInput ?? null,
+        }
+        : null,
+      cost_usd: s.costUsd ?? null,
+      startup_ms: s.startupMs ?? null,
+      prompt_chars: s.promptChars ?? null,
       attempts: s.attempts.map((a) => ({ agent: a.agent, outcome: a.outcome, reason: a.reason ?? null })),
+    })),
+    phases: phaseTotals(job).map((p) => ({
+      kind: p.kind, steps: p.steps, duration_ms: p.durationMs, startup_ms: p.startupMs,
+      input: p.metered ? p.input : null, cached_input: p.metered ? p.cachedInput : null, output: p.metered ? p.output : null,
+      requests: p.requests || null, cost_usd: p.costUsd ?? null,
     })),
   };
 }
@@ -204,7 +307,15 @@ export function formatSteps(job: Job): string {
       const tokens = s.tokens
         ? ` · 输入 ${formatTokens(Math.max(0, s.tokens.input - s.tokens.cachedInput))}（另有缓存命中 ${formatTokens(s.tokens.cachedInput)}）输出 ${formatTokens(s.tokens.output)} token`
         : '';
-      return `  ${s.index + 1}. ${KIND_LABEL[s.kind] ?? s.kind} · ${s.role} · ${s.agent ?? '-'} · ${OUTCOME_LABEL[s.outcome] ?? s.outcome} · ${formatDuration(s.durationMs)}${tokens}${note}`;
+      // 起这一步的固定开销：启动用了多久、第一次请求就带了多少输入、其中 Dario 的任务说明多长
+      const fixed = [
+        s.startupMs !== undefined && `启动 ${formatDuration(s.startupMs)}`,
+        s.tokens?.requests && `${s.tokens.requests} 次请求`,
+        s.tokens?.firstInput && `首次输入 ${formatTokens(s.tokens.firstInput)}`,
+        s.promptChars && `任务说明 ${formatTokens(s.promptChars)} 字`,
+      ].filter(Boolean).join('，');
+      const time = formatDuration(s.durationMs) + (fixed ? `（${fixed}）` : '');
+      return `  ${s.index + 1}. ${KIND_LABEL[s.kind] ?? s.kind} · ${s.role} · ${s.agent ?? '-'} · ${OUTCOME_LABEL[s.outcome] ?? s.outcome} · ${time}${tokens}${note}`;
     })
     .join('\n');
 }
@@ -220,7 +331,7 @@ export function formatJob(job: Job): string {
   const changed = r?.changedFiles ?? job.changedFiles;
   if (changed.length) lines.push('', `改动的文件（${changed.length}）：`, ...changed.map((f) => `  ${f}`));
   if (r?.branch) lines.push('', `产出所在分支：${r.branch}`);
-  if (job.steps.length) lines.push('', '各步：', formatSteps(job));
+  if (job.steps.length) lines.push('', '各步：', formatSteps(job), '', '按阶段：', formatPhases(job));
   const warnings = r?.warnings ?? job.warnings;
   if (warnings.length) lines.push('', '注意：', ...warnings.map((w) => `  - ${w}`));
   return lines.join('\n');

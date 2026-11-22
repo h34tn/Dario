@@ -15,7 +15,7 @@ import {
 } from '../core/defaults.js';
 import { describePlan } from '../core/orchestrator.js';
 import { parseModel, runModel } from '../core/commands.js';
-import { formatModel, formatFallbackQuestion, formatJob, formatQuota, formatRoles, formatSteps, jobToJson } from '../core/report.js';
+import { formatModel, formatFallbackQuestion, formatJob, formatPhases, formatQuota, formatRoles, formatSteps, jobToJson } from '../core/report.js';
 import type { Engine } from '../core/engine.js';
 import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job, type ProgressEvent } from '../core/types.js';
 import { ConfigError, DarioError, ellipsis, formatLocalTime } from '../core/util.js';
@@ -366,7 +366,7 @@ async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, re
     const notes: string[] = [`\n[${job.id}] ${STATUS_LABEL[job.status]}`];
     if (r?.changedFiles.length) notes.push(`改动的文件（${r.changedFiles.length}）：${r.changedFiles.join('、')}`);
     if (r?.branch) notes.push(`产出所在分支：${r.branch}`);
-    if (job.steps.length) notes.push(`各步：\n${formatSteps(job)}`);
+    if (job.steps.length) notes.push(`各步：\n${formatSteps(job)}`, `按阶段：\n${formatPhases(job)}`);
     if (r?.warnings.length) notes.push(`注意：\n${r.warnings.map((w) => `  - ${w}`).join('\n')}`);
     io.stderr(notes.join('\n'));
   }

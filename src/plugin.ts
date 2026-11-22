@@ -35,6 +35,13 @@ export interface TokenUsage {
    * 续接时 Dario 会减去上一轮结束时的累计值。
    */
   sessionTotal?: boolean;
+  /** 这次运行向模型发了几次请求。工具不报每次请求的用量时为空。 */
+  requests?: number;
+  /**
+   * 第一次请求的输入 token（含命中缓存的部分）：工具的系统提示、工具定义、项目说明加上 Dario 发的任务说明，
+   * 是每起一次进程都要付的固定开销。续接会话时还包括之前的对话。工具不报时为空。
+   */
+  firstInput?: number;
 }
 
 /** 工具自己报告的一个限额窗口。 */
@@ -333,6 +340,9 @@ export function streamJsonMeter(opts: { inputIncludesCache: boolean }): (line: s
   // settled 是已有 result 结算过的各段之和；messages 只放最后一条 result 之后的消息
   const messages = new Map<string, TokenUsage>();
   const settled: TokenUsage = { input: 0, cachedInput: 0, output: 0 };
+  let settledRequests = 0;
+  let firstId: string | undefined;
+  let firstInput = 0;
   let current: string | undefined;
   let reported = '';
 
@@ -350,6 +360,7 @@ export function streamJsonMeter(opts: { inputIncludesCache: boolean }): (line: s
       settled.input += segment.input;
       settled.cachedInput += segment.cachedInput;
       settled.output += segment.output;
+      settledRequests += messages.size;
       messages.clear();
     }
     // 子代理的消息不计入，与 result 记录的口径一致
@@ -369,12 +380,15 @@ export function streamJsonMeter(opts: { inputIncludesCache: boolean }): (line: s
       if (id && usage) {
         // 同一条消息的数只增不减：开头报的输出是占位值，有的工具开头报的输入是 0
         const seen = messages.get(id);
-        messages.set(id, seen
+        const merged = seen
           ? { input: Math.max(seen.input, usage.input), cachedInput: Math.max(seen.cachedInput, usage.cachedInput), output: Math.max(seen.output, usage.output) }
-          : usage);
+          : usage;
+        messages.set(id, merged);
+        firstId ??= id;
+        if (id === firstId) firstInput = merged.input;
       }
     }
-    const total = { ...settled };
+    const total: TokenUsage = { ...settled };
     for (const m of messages.values()) {
       total.input += m.input;
       total.cachedInput += m.cachedInput;
@@ -382,6 +396,10 @@ export function streamJsonMeter(opts: { inputIncludesCache: boolean }): (line: s
     }
     // 有的工具在消息开头报的全是 0，等有了真实的数再显示
     if (total.input === 0 && total.output === 0) return undefined;
+    const requests = settledRequests + messages.size;
+    if (requests > 0) total.requests = requests;
+    if (firstInput > 0) total.firstInput = firstInput;
+    // 只按 token 数去重：新消息开头报的 0 只让请求次数加一，等它报出真实用量时一起报
     const key = `${total.input}/${total.cachedInput}/${total.output}`;
     if (key === reported) return undefined;
     reported = key;

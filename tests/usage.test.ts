@@ -29,12 +29,12 @@ describe('内置插件：统计 token 用量', () => {
     ]);
     expect(out).toEqual([
       undefined,
-      { input: 30656, cachedInput: 17421, output: 16 },
+      { input: 30656, cachedInput: 17421, output: 16, requests: 1, firstInput: 30656 },
       undefined,
       undefined,
-      { input: 30656, cachedInput: 17421, output: 129 },
-      { input: 65821, cachedInput: 48075, output: 130 },
-      { input: 65821, cachedInput: 48075, output: 153 },
+      { input: 30656, cachedInput: 17421, output: 129, requests: 1, firstInput: 30656 },
+      { input: 65821, cachedInput: 48075, output: 130, requests: 2, firstInput: 30656 },
+      { input: 65821, cachedInput: 48075, output: 153, requests: 2, firstInput: 30656 },
       // 与最后的 result 记录一致，没有变化就不再报
       undefined,
     ]);
@@ -52,11 +52,11 @@ describe('内置插件：统计 token 用量', () => {
       JSON.stringify({ type: 'result', subtype: 'success', result: '好', usage: usage(5, 150, 1900, 640) }),
     ]);
     expect(out).toEqual([
-      { input: 1002, cachedInput: 900, output: 7 },
+      { input: 1002, cachedInput: 900, output: 7, requests: 1, firstInput: 1002 },
       undefined,
       undefined,
-      { input: 2055, cachedInput: 1900, output: 10 },
-      { input: 2055, cachedInput: 1900, output: 640 },
+      { input: 2055, cachedInput: 1900, output: 10, requests: 2, firstInput: 1002 },
+      { input: 2055, cachedInput: 1900, output: 640, requests: 2, firstInput: 1002 },
     ]);
   });
 
@@ -71,12 +71,12 @@ describe('内置插件：统计 token 用量', () => {
       JSON.stringify({ type: 'result', subtype: 'success', result: '做完了', usage: usage(1, 10, 1000, 8) }),
     ]);
     expect(out).toEqual([
-      { input: 1002, cachedInput: 900, output: 1 },
-      { input: 1002, cachedInput: 900, output: 20 },
-      { input: 1002, cachedInput: 900, output: 25 },
-      { input: 2013, cachedInput: 1900, output: 26 },
-      { input: 2013, cachedInput: 1900, output: 32 },
-      { input: 2013, cachedInput: 1900, output: 33 },
+      { input: 1002, cachedInput: 900, output: 1, requests: 1, firstInput: 1002 },
+      { input: 1002, cachedInput: 900, output: 20, requests: 1, firstInput: 1002 },
+      { input: 1002, cachedInput: 900, output: 25, requests: 1, firstInput: 1002 },
+      { input: 2013, cachedInput: 1900, output: 26, requests: 2, firstInput: 1002 },
+      { input: 2013, cachedInput: 1900, output: 32, requests: 2, firstInput: 1002 },
+      { input: 2013, cachedInput: 1900, output: 33, requests: 2, firstInput: 1002 },
     ]);
   });
 
@@ -94,11 +94,11 @@ describe('内置插件：统计 token 用量', () => {
     ]);
     expect(out).toEqual([
       undefined,
-      { input: 25226, cachedInput: 1024, output: 127 },
+      { input: 25226, cachedInput: 1024, output: 127, requests: 1, firstInput: 25226 },
       undefined,
       undefined,
       undefined,
-      { input: 50624, cachedInput: 26112, output: 154 },
+      { input: 50624, cachedInput: 26112, output: 154, requests: 2, firstInput: 25226 },
       undefined,
     ]);
   });
@@ -115,7 +115,7 @@ describe('内置插件：统计 token 用量', () => {
   it('损坏的行和不相干的行不影响统计', () => {
     const meter = claudePlugin.meter!();
     expect(feed(meter, ['{"usage" 坏掉的行', '不是 JSON 但带 "usage"', '{"type":"user","message":{"usage":{"input_tokens":9}}}'])).toEqual([undefined, undefined, undefined]);
-    expect(meter(event('message_start', { message: { id: 'm1', usage: usage(1, 2, 3, 4) } }))).toEqual({ input: 6, cachedInput: 3, output: 4 });
+    expect(meter(event('message_start', { message: { id: 'm1', usage: usage(1, 2, 3, 4) } }))).toEqual({ input: 6, cachedInput: 3, output: 4, requests: 1, firstInput: 6 });
   });
 });
 
@@ -137,17 +137,29 @@ describe('每一步记下自己的 token 用量', () => {
     const r = await sb.runJson(['-p', '--yes', '任务']);
     expect(r.code).toBe(0);
     expect(r.json.steps.map((s: any) => [s.kind, s.resumed, s.tokens])).toEqual([
-      ['plan', false, { input: 300, cached_input: 0, output: 30 }],
-      ['step', false, { input: 1000, cached_input: 200, output: 50 }],
+      ['plan', false, { input: 300, cached_input: 0, output: 30, requests: null, first_input: null }],
+      ['step', false, { input: 1000, cached_input: 200, output: 50, requests: null, first_input: null }],
       ['review', false, null],
-      ['rework', true, { input: 1500, cached_input: 700, output: 70 }],
+      ['rework', true, { input: 1500, cached_input: 700, output: 70, requests: null, first_input: null }],
       ['review', true, null],
-      ['summary', true, { input: 200, cached_input: 100, output: 15 }],
+      ['summary', true, { input: 200, cached_input: 100, output: 15, requests: null, first_input: null }],
     ]);
     // dario job 的各步列表里也带上用量，新发送的输入和命中缓存的部分分开写
     const detail = (await sb.cli(['job', r.json.job_id])).out;
     expect(detail).toContain('输入 800（另有缓存命中 700）输出 70 token');
     expect(detail).toContain('输入 300（另有缓存命中 0）输出 30 token');
+    // 按阶段汇总：按流程先后排列，返工单列，审查这家不报用量就不写 token
+    expect(r.json.phases.map((p: any) => [p.kind, p.steps, p.input, p.cached_input, p.output])).toEqual([
+      ['plan', 1, 300, 0, 30],
+      ['step', 1, 1000, 200, 50],
+      ['rework', 1, 1500, 700, 70],
+      ['review', 2, null, null, null],
+      ['summary', 1, 200, 100, 15],
+    ]);
+    const phases = detail.slice(detail.indexOf('按阶段：')).split('\n').slice(1, 7);
+    expect(phases[0]).toMatch(/^  计划  1 步 · .* · 新输入 300 · 缓存 0 · 输出 30 token$/);
+    expect(phases[3]).toMatch(/^  审查  2 步 · [^·]*$/);
+    expect(phases[5]).toMatch(/^  合计  6 步 · .* · 新输入 2\.0k · 缓存 1\.0k · 输出 165 token$/);
   });
 
   it('不报用量的工具：记录为空，文字输出里不出现用量', async () => {

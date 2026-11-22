@@ -36,6 +36,8 @@ export interface AgentRunResult {
   text: string;
   reason?: string;
   durationMs: number;
+  /** 从启动工具到它输出第一行的时间；工具不逐行输出时为空。 */
+  startupMs?: number;
   costUsd?: number;
   /** 这次运行最终的 token 用量；工具不报用量时为空。 */
   tokens?: TokenUsage;
