@@ -300,7 +300,11 @@ function issueList(issues: string[], reviewText: string): string {
   return issues.length ? issues.map((s, i) => `${i + 1}. ${s}`).join('\n') : truncate(reviewText, CONTEXT_CHARS);
 }
 
-const REWORK_TASK = '逐条修正上面的问题。只改与这些问题有关的内容，不要顺带做别的改动。';
+// 返工后再审，审的是这一轮交出来的结果：改动让之前的验证不再成立时，必须在本轮重新验证，
+// 否则审查只能再判一次"没有验证"，白白多出一轮返工
+const REWORK_TASK =
+  '逐条修正上面的问题。只改与这些问题有关的内容，不要顺带做别的改动。' +
+  '修改之后，之前做过的测试、测量、截图等验证如果因为这次修改不再成立，在本轮重新做完并给出新结果，不要留给下一轮审查去发现；重新验证不算"别的改动"。';
 
 export function reworkPrompt(project: ProjectConfig, role: RoleDef, originalTask: string, issues: string[], reviewText: string): string {
   return (

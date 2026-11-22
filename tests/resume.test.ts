@@ -131,6 +131,8 @@ describe('同一任务里续接角色的会话', () => {
     const [, , , rework, review2, summary] = sb.calls().map((c) => c.prompt);
     // 返工：问题清单是新的，原任务已经在会话里
     expect(rework).toContain('f.txt 里缺少校验');
+    // 改完要把受影响的验证在本轮重做，不能留给下一轮审查
+    expect(rework).toContain('在本轮重新做完');
     expect(rework).not.toContain('实现功能 ABC');
     // 工作规则这个会话第一步已经收到过，不再重发，只提一句
     expect(rework).not.toContain('不要执行 git commit');
