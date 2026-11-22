@@ -333,7 +333,7 @@ fallback: auto                # auto：不可用时自动换下一家；ask：�
 
 | 规则 | 判定 | 默认 |
 |---|---|---|
-| 没动静 `idle` | 从收到第一行输出起，超过 `minutes` 分钟没有任何一行输出（不论能否认出活动）；最后一条活动是执行命令、之后还没有新输出时，改用 `command_minutes`。阈值乘以本机 `agents.yaml` 里这家 AI 的 `idle_factor`（默认 1）。插件声明 `streams: false` 的工具到结束才有输出，不检查。启动后一直没有输出归启动超时管，不算这一条 | 10 分钟，命令中 30 分钟，`notify` |
+| 没动静 `idle` | 从收到第一行输出起，超过 `minutes` 分钟没有任何一行输出（不论能否认出活动）；最后一条活动是执行命令时改用 `command_minutes`，直到出现别的活动为止（工具发出命令之后常会再输出收尾行、进度行，这些行只重新计时，不算命令结束）。阈值乘以本机 `agents.yaml` 里这家 AI 的 `idle_factor`（默认 1）。插件声明 `streams: false` 的工具到结束才有输出，不检查。启动后一直没有输出归启动超时管，不算这一条 | 10 分钟，命令中 30 分钟，`notify` |
 | 路径越界 `out_of_roots` | 活动里改动的文件不在 `write_roots` 之内。路径按正斜杠、去掉开头的 `./` 比较，绝对路径和 `..` 开头的算越界。`write_roots` 为空时不检查 | `notify` |
 | 禁用命令 `forbidden_command` | 执行的命令按 `&&`、`\|\|`、`;`、`\|`、换行拆成几段，任一段按词前缀命中 `patterns`：`git push` 匹配 `git push origin main`，不匹配 `git pushd`，不区分大小写 | 清单为空，即不检查 |
 

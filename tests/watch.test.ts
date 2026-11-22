@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SuperviseSettings } from '../src/core/config.js';
 import { commandSegments, matchesCommand, StepWatch } from '../src/core/watch.js';
+import { streamJsonActivities } from '../src/plugin.js';
 import { Sandbox } from './helpers.js';
 
 const RULES: SuperviseSettings = {
@@ -40,32 +41,57 @@ describe('干活监控：判断规则', () => {
     expect(w.tick()).toHaveLength(1);
   });
 
-  it('没动静：最后一行是开始执行命令时用命令的阈值，命令结束后的输出恢复普通阈值', () => {
+  it('没动静：执行命令之后用命令的阈值；命令发出后、结束前的收尾行和进度行只重新计时，不算命令结束', () => {
     const c = clock();
     const w = new StepWatch({ rules: rules(), writeRoots: [], streams: true, now: c.now });
     w.line();
     w.activity({ kind: 'run', target: 'npm test' });
+    // 工具发出命令之后又输出几行（消息结束、进度），命令还在跑
+    w.line();
+    w.line();
     c.advance(29);
     expect(w.tick()).toEqual([]);
     c.advance(1);
     expect(w.tick()[0]!.detail).toBe('命令执行中，30分0秒没有任何输出');
-    // 命令的结果回来了，是新的一行
     w.line();
-    c.advance(10);
-    expect(w.tick()[0]!.detail).toBe('10分0秒没有任何输出');
+    c.advance(29);
+    expect(w.tick()).toEqual([]);
   });
 
-  it('没动静：执行命令之后说的话、思考不算命令结束，读文件算', () => {
+  it('没动静：按 Claude Code 真实的输出顺序回放，命令运行期间一直用命令的阈值', () => {
+    // 顺序取自一次真实运行：发出命令的 assistant 记录后面还跟着消息结束的几行，命令运行中有进度行
+    const lines = [
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npx vitest run"}}]},"parent_tool_use_id":null}',
+      '{"type":"stream_event","event":{"type":"content_block_stop"}}',
+      '{"type":"stream_event","event":{"type":"message_delta"}}',
+      '{"type":"stream_event","event":{"type":"message_stop"}}',
+      '{"type":"system","subtype":"task_started"}',
+      '{"type":"tool_progress"}',
+    ];
     const c = clock();
     const w = new StepWatch({ rules: rules(), writeRoots: [], streams: true, now: c.now });
-    w.line();
-    w.activity({ kind: 'say', text: '跑一下测试' });
-    w.activity({ kind: 'run', target: 'npm test' });
-    w.activity({ kind: 'think' });
-    c.advance(15);
+    for (const line of lines) {
+      w.line();
+      for (const a of streamJsonActivities(line)) w.activity(a);
+    }
+    c.advance(29);
     expect(w.tick()).toEqual([]);
-    w.activity({ kind: 'read', target: 'a.ts' });
-    expect(w.tick()).toHaveLength(1);
+    c.advance(1);
+    expect(w.tick()[0]!.detail).toMatch(/^命令执行中，/);
+  });
+
+  it('没动静：命令之后有了别的活动（说话、思考、读文件等）就恢复普通阈值', () => {
+    for (const next of [{ kind: 'think' }, { kind: 'say', text: '测试通过了' }, { kind: 'read', target: 'a.ts' }] as const) {
+      const c = clock();
+      const w = new StepWatch({ rules: rules(), writeRoots: [], streams: true, now: c.now });
+      w.line();
+      w.activity({ kind: 'say', text: '跑一下测试' });
+      w.activity({ kind: 'run', target: 'npm test' });
+      w.line();
+      w.activity(next);
+      c.advance(10);
+      expect(w.tick()[0]!.detail).toBe('10分0秒没有任何输出');
+    }
   });
 
   it('没动静：idle_factor 放宽阈值；工具不逐行输出或 action 为 off 时不检查', () => {

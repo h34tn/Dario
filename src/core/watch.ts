@@ -59,7 +59,10 @@ export class StepWatch {
   private readonly started: number;
   /** 最近一次收到输出的时间。收到第一行之前为空：启动阶段没有输出由启动超时负责，不算"没动静"。 */
   private lastLine: number | undefined;
-  /** 最近一条活动是开始执行命令，之后还没有新的输出。 */
+  /**
+   * 最近一条活动是执行命令，之后还没有别的活动。只看活动不看输出：工具在发出命令之后、
+   * 命令结束之前，常会再输出几行收尾或进度，那些行不代表命令结束了。
+   */
   private inCommand = false;
   /** 当前这段静默已经报过。有了新输出才能再报。 */
   private idleReported = false;
@@ -74,7 +77,6 @@ export class StepWatch {
   /** 工具输出了一行。活动随后由 activity() 送来。 */
   line(): void {
     this.lastLine = this.now();
-    this.inCommand = false;
     this.idleReported = false;
   }
 
@@ -89,7 +91,8 @@ export class StepWatch {
         this.reportedCommands.add(a.target);
         alerts.push(this.alert('forbidden_command', action, `执行了禁用的命令：${a.target}（命中 "${hit}"）`));
       }
-    } else if (a.kind !== 'think' && a.kind !== 'say') {
+    } else {
+      // 有了别的活动，说明命令的结果已经回来、AI 接着在做事
       this.inCommand = false;
     }
     if (a.kind === 'edit') {
