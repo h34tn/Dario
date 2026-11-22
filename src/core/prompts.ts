@@ -102,7 +102,7 @@ const STALE_NOTE = '距离你上次工作，项目里的文件可能已经被其
 const PLAN_FORMAT_REMINDER =
   '可用角色、项目约定、分派规则和输出格式同之前，不再重复：先用几句话说明思路，回复的**最后**输出同样字段的 JSON 代码块（summary、answer、steps）。';
 const REVIEW_FORMAT_REMINDER =
-  '输出格式同之前：先写审查意见，回复的**最后**用 JSON 代码块给出结论 `{"verdict":"pass","issues":[]}`，verdict 只能是 pass 或 fail。';
+  '输出格式同之前：先写审查意见，回复的**最后**用 JSON 代码块给出结论 `{"verdict":"pass","issues":[],"suggestions":[]}`，verdict 只能是 pass 或 fail；issues 只写必须修改的问题，可改可不改或要发起人取舍的写进 suggestions，不触发返工。';
 
 export function stepBrief(project: ProjectConfig, role: RoleDef, access: Access): string {
   return shortHash(`step\n${roleHeader(role, access)}\n${rules(access, project)}`);
@@ -270,10 +270,11 @@ const UNDETECTED_FILES = '（未能自动检测，请用 git status 与 git diff
 const REVIEW_FORMAT = [
   '先写审查意见，然后在回复的**最后**输出一个 JSON 代码块给出结论：',
   '```json',
-  '{"verdict":"pass","issues":[]}',
+  '{"verdict":"pass","issues":[],"suggestions":[]}',
   '```',
   'verdict 只能是 pass（可以接受）或 fail（必须修改）。fail 时在 issues 里逐条写明要改什么，每条都要具体到文件和问题。',
   '只因为会导致错误结果、违反任务要求或明显缺陷才判 fail；风格偏好写进意见但不要因此判 fail。',
+  'issues 只写必须修改的问题。可改可不改的、任务说明有歧义需要发起人取舍的、属于任务范围之外的，写进 suggestions：它们会原样交给发起人决定，不会触发返工，也不要因为它们判 fail。',
 ].join('\n');
 
 export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, extraTask?: string): string {

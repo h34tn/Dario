@@ -48,6 +48,8 @@ export interface Workspace {
   stamp(): Promise<Stamp>;
   /** 自 before 以来发生变化的文件，路径相对于 cwd，使用正斜杠。 */
   changedSince(before: Stamp): Promise<string[]>;
+  /** 这些文件相对 HEAD 改了多少行（增加加删除，未跟踪的文件按行数算）。统计不出来时为 undefined。 */
+  changedLines(files: string[]): Promise<number | undefined>;
   finalize(jobId: string, info: FinalizeInfo): Promise<{ branch?: string; warnings: string[] }>;
 }
 
@@ -105,6 +107,36 @@ async function takeStamp(cwd: string): Promise<Stamp> {
     stamp.set(key, `${xy}|${print}`);
   }
   return stamp;
+}
+
+/** 见 Workspace.changedLines。二进制文件按 0 行算。 */
+export async function countChangedLines(cwd: string, files: string[]): Promise<number | undefined> {
+  if (files.length === 0) return 0;
+  if (!(await gitTopLevel(cwd))) return undefined;
+  const diff = await git(cwd, ['diff', '--numstat', '--relative', 'HEAD', '--', ...files]);
+  if (!diff.ok) return undefined;
+  let total = 0;
+  const tracked = new Set<string>();
+  for (const line of diff.stdout.split('\n')) {
+    const [added, deleted, file] = line.split('\t');
+    if (file === undefined) continue;
+    tracked.add(file.replace(/\\/g, '/'));
+    total += (Number(added) || 0) + (Number(deleted) || 0);
+  }
+  const untracked = await git(cwd, ['ls-files', '--others', '--exclude-standard', '-z', '--', ...files]);
+  if (!untracked.ok) return undefined;
+  for (const file of untracked.stdout.split('\0').filter(Boolean)) {
+    if (tracked.has(file)) continue;
+    try {
+      const buf = fs.readFileSync(path.resolve(cwd, file));
+      if (buf.includes(0)) continue;
+      const text = buf.toString('utf8');
+      total += text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0;
+    } catch {
+      // 读不了的按 0 行算
+    }
+  }
+  return total;
 }
 
 function diffStamps(before: Stamp, after: Stamp): string[] {
@@ -231,6 +263,10 @@ export class InPlaceWorkspace implements Workspace {
     return diffStamps(before, await this.stamp());
   }
 
+  changedLines(files: string[]): Promise<number | undefined> {
+    return countChangedLines(this.cwd, files);
+  }
+
   async finalize(): Promise<{ branch?: string; warnings: string[] }> {
     return { warnings: [] };
   }
@@ -322,6 +358,10 @@ export class IsolatedWorkspace implements Workspace {
 
   async changedSince(before: Stamp): Promise<string[]> {
     return diffStamps(before, await this.stamp());
+  }
+
+  changedLines(files: string[]): Promise<number | undefined> {
+    return countChangedLines(this.cwd, files);
   }
 
   async finalize(jobId: string, info: FinalizeInfo): Promise<{ branch?: string; warnings: string[] }> {

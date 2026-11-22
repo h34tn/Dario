@@ -415,7 +415,7 @@ export class Orchestrator {
     }
 
     const changed = job.changedFiles.length > 0 || job.unknownChanges === true;
-    if (changed && !job.reviewedSinceChange && roles.has(reviewRole)) {
+    if (changed && !job.reviewedSinceChange && roles.has(reviewRole) && !(await this.smallEnoughToSkipReview(job, ws))) {
       const failure = await this.reviewLoop(job, ws, opts, undefined);
       if (failure !== undefined) return failure;
     }
@@ -437,6 +437,23 @@ export class Orchestrator {
       .filter((s) => s.kind === 'step' || s.kind === 'rework' || s.kind === 'review')
       .map((s) => `第 ${s.index + 1} 步（${s.role}，${s.agent ?? '-'}）：${truncate(s.text, 1500)}`)
       .join('\n\n');
+  }
+
+  /**
+   * 改动足够小时跳过自动追加的审查（review_skip_max_lines）。统计不出行数、有检测不到的改动、
+   * 改了允许范围之外的文件或只读角色动了文件时照常审查。
+   */
+  private async smallEnoughToSkipReview(job: Job, ws: Workspace): Promise<boolean> {
+    const { settings } = this.deps.project;
+    const limit = settings.reviewSkipMaxLines;
+    if (limit <= 0 || job.unknownChanges || job.readOnlyViolation) return false;
+    if (outOfScope(job.changedFiles, settings.writeRoots).length > 0) return false;
+    const lines = await ws.changedLines(job.changedFiles);
+    if (lines === undefined || lines > limit) return false;
+    const text = `改动共 ${lines} 行，不超过 review_skip_max_lines（${limit}），跳过了自动审查。`;
+    job.warnings.push(text);
+    this.deps.emit({ jobId: job.id, kind: 'phase', text });
+    return true;
   }
 
   /** 审查并在不通过时返工。通过返回 undefined；失败时返回说明，任务状态已设置。 */
@@ -468,7 +485,11 @@ export class Orchestrator {
         job.warnings.push('审查没有给出明确的"通过 / 不通过"结论，未触发返工。');
         return undefined;
       }
-      if (verdict.verdict === 'pass') return undefined;
+      // 建议不要求返工，交给发起人决定；只有建议、没有必须修改的问题时按通过处理
+      if (verdict.suggestions.length > 0) {
+        job.warnings.push(`审查的建议（没有要求返工，由你决定）：\n${verdict.suggestions.map((s, i) => `    ${i + 1}. ${s}`).join('\n')}`);
+      }
+      if (verdict.verdict === 'pass' || (verdict.issues.length === 0 && verdict.suggestions.length > 0)) return undefined;
 
       const issues = verdict.issues.length ? verdict.issues.map((s, i) => `${i + 1}. ${s}`).join('\n') : truncate(rec.text, 2000);
       if (!job.lastWriter) {

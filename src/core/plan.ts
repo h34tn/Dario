@@ -130,11 +130,15 @@ export function parsePlan(text: string, ctx: PlanContext): { plan: Plan } | { er
 const verdictSchema = z.object({
   verdict: z.enum(['pass', 'fail']),
   issues: z.array(z.string()).default([]),
+  suggestions: z.array(z.string()).default([]),
 });
 
 export interface Verdict {
   verdict: 'pass' | 'fail';
+  /** 必须修改的问题，不通过时据此返工。 */
   issues: string[];
+  /** 可改可不改、或要发起人取舍的建议，不要求返工。 */
+  suggestions: string[];
 }
 
 /** 解析审查结论。没有给出明确结论时返回 undefined。 */

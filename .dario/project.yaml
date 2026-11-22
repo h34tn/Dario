@@ -16,6 +16,9 @@ write_roots:
 # 审查不通过时最多返工几轮
 max_rework_rounds: 2
 
+# 改动不超过这么多行时跳过自动追加的审查。主控自己做的小改动已经跑过全量验证，再起一个审查进程不划算。
+review_skip_max_lines: 30
+
 # 单步时限（分钟）。角色或 AI 上另有设置时以它们为准。
 default_timeout_minutes: 30
 
