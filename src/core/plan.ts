@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ProjectSettings } from './config.js';
 import type { RoleBook } from './roles.js';
+import { normalizeScopePath } from './scope.js';
 import type { Plan, PlanStep } from './types.js';
 
 /** 取文本里最后一个能解析的 JSON：优先 ```json 代码块，其次整段文本。 */
@@ -72,6 +73,7 @@ const planSchema = z.object({
         task: z.string().min(1),
         writes: z.boolean().default(false),
         acceptance: z.string().nullish(),
+        files: z.array(z.string()).nullish(),
       }),
     )
     .default([]),
@@ -112,7 +114,8 @@ export function parsePlan(text: string, ctx: PlanContext): { plan: Plan } | { er
       errors.push(`第 ${n} 步要改文件，但角色 ${roleId} 是只读的`);
       return;
     }
-    steps.push({ role: roleId, task: s.task, writes: s.writes, acceptance: s.acceptance ?? undefined });
+    const files = s.writes ? [...new Set((s.files ?? []).map(normalizeScopePath).filter(Boolean))] : [];
+    steps.push({ role: roleId, task: s.task, writes: s.writes, acceptance: s.acceptance ?? undefined, ...(files.length > 0 && { files }) });
   });
   if (steps.length > ctx.maxPlanSteps) errors.push(`计划有 ${steps.length} 步，超过上限 ${ctx.maxPlanSteps} 步`);
   // 没有步骤就是直接回答：答案是 JSON 之前的正文，只写一遍。JSON 里另外写了 answer 的（旧写法）以它为准

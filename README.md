@@ -154,9 +154,12 @@ supervise:
   idle: { minutes: 10, command_minutes: 30, action: notify }   # 多久没有任何输出算没动静；正在执行命令时用 command_minutes
   out_of_roots: { action: notify }                              # 改了 write_roots 之外的文件
   forbidden_commands: { patterns: ["git push"], action: stop }  # 执行了清单里的命令，按词前缀匹配
+  off_plan: { action: notify }                                  # 改了计划给这一步预计范围之外的文件，只能 off 或 notify
+  loop: { action: off, repeat_command: 3, repeat_read: 5, requests_without_edit: 20 }  # 原地打转：反复做同一件事却没有改动
+  usage: { action: off, factor: 3, min_samples: 5 }             # 用量超过本项目同类步骤历史中位数的 3 倍
 ```
 
-`action` 可选 `off`（不检查）、`notify`（只提示）和 `stop`（中断这一步，任务停下）。默认只提示不打断，禁用命令清单默认为空。某家 AI 平时输出就稀疏、常被误报没动静时，在本机 `~/.dario/agents.yaml` 里给它写 `idle_factor: 2`，阈值对它放宽一倍。这只是发现问题的手段，不是安全边界：AI 写个脚本去执行的命令它查不出来。
+`action` 可选 `off`（不检查）、`notify`（只提示）和 `stop`（中断这一步，任务停下）。默认只提示不打断，禁用命令清单默认为空，原地打转和用量异常默认关闭。主控出计划时会给改文件的步骤写一个预计范围（`files`），确认计划时按 `d` 能看到；它是估计，所以"偏离计划"只提示。某家 AI 平时输出就稀疏、常被误报没动静时，在本机 `~/.dario/agents.yaml` 里给它写 `idle_factor: 2`，阈值对它放宽一倍。这只是发现问题的手段，不是安全边界：AI 写个脚本去执行的命令它查不出来。
 
 项目配置按名字引用 AI，可以为角色建议型号和强度。命令与参数的拼法由插件和本机配置决定。所以克隆别人的仓库再运行 Dario，不会执行对方指定的程序。
 

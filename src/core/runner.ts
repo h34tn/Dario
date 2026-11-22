@@ -8,7 +8,11 @@ import type { RoleBook } from './roles.js';
 import type { StateStore } from './state.js';
 import type { TokenUsage } from '../plugin.js';
 import type { Access, Attempt, FallbackQuestion, Job, ProgressEvent, StepKind, StepRecord, StepTokens } from './types.js';
+import { usageBaseline, type UsageBaseline } from './baseline.js';
 import { StepWatch, type Alert } from './watch.js';
+
+/** 算用量基准时最多看最近多少个任务。 */
+const BASELINE_JOBS = 50;
 
 /** 定时检查的间隔：最多 30 秒，阈值很小时（测试里）按阈值的四分之一，不低于 50 毫秒。 */
 function watchInterval(thresholdMs: number): number {
@@ -39,6 +43,8 @@ export interface StepRequest {
   avoid?: string;
   /** 角色表的 fallback 为 ask 时，换人之前用它询问。不提供表示没法询问，此时不换人。 */
   confirmFallback?: (question: FallbackQuestion) => Promise<boolean>;
+  /** 计划给这一步的预计改动范围；不检查偏离计划时不填。 */
+  scope?: string[];
 }
 
 export interface RunnerDeps {
@@ -65,7 +71,15 @@ const KIND_LABEL: Record<StepKind, string> = { plan: '计划', step: '执行', r
 
 /** 执行一步：按角色表找担当者，不可用时按候选顺序换人。 */
 export class StepRunner {
+  /** 用量基准要读的历史任务，每个任务只读一次。 */
+  private history?: { job: string; jobs: Job[] };
+
   constructor(private readonly deps: RunnerDeps) {}
+
+  private baseline(job: Job, kind: StepKind, agent: string): UsageBaseline {
+    if (this.history?.job !== job.id) this.history = { job: job.id, jobs: this.deps.state.listJobs(BASELINE_JOBS + 1) };
+    return usageBaseline(this.history.jobs, { projectRoot: job.projectRoot, kind, agent, excludeJob: job.id });
+  }
 
   async run(req: StepRequest): Promise<StepRecord> {
     const { roles, catalog, state, project, emit } = this.deps;
@@ -179,7 +193,15 @@ export class StepRunner {
         if (!resumeId || slot?.step === -1) prompt += imageSection(req.job.images);
         promptChars = prompt.length;
         const rules = project.settings.supervise;
-        const watch = new StepWatch({ rules, writeRoots: project.settings.writeRoots, streams: port.streams === true, idleFactor: port.idleFactor });
+        const watch = new StepWatch({
+          rules,
+          writeRoots: project.settings.writeRoots,
+          streams: port.streams === true,
+          idleFactor: port.idleFactor,
+          access,
+          ...(req.scope && { scope: req.scope }),
+          ...(rules.usage.action !== 'off' && { baseline: this.baseline(req.job, req.kind, agent) }),
+        });
         const controller = new AbortController();
         const raise = (found: Alert[]): void => {
           for (const alert of found) {
@@ -229,6 +251,7 @@ export class StepRunner {
             onUsage: (usage) => {
               tokens = stepTokens(usage, base);
               emit({ jobId: req.job.id, kind: 'usage', step: { ...step, tokens }, text: '' });
+              raise(watch.usage(tokens));
             },
             onPid: (pid) => {
               req.job.activePid = pid;

@@ -134,7 +134,8 @@ export interface JobJson {
   warnings: string[];
   branch: string | null;
   unfinished: string | null;
-  plan: { summary: string; steps: Array<{ role: string; task: string; writes: boolean }> } | null;
+  /** steps[].files 是计划给这一步的预计改动范围，没写时为 null。 */
+  plan: { summary: string; steps: Array<{ role: string; task: string; writes: boolean; files: string[] | null }> } | null;
   steps: Array<{
     index: number;
     kind: string;
@@ -258,7 +259,7 @@ export function jobToJson(job: Job): JobJson {
     branch: job.result?.branch ?? job.branch ?? null,
     unfinished: job.result?.unfinished ?? null,
     plan: job.plan
-      ? { summary: job.plan.summary, steps: job.plan.steps.map((s) => ({ role: s.role, task: s.task, writes: s.writes })) }
+      ? { summary: job.plan.summary, steps: job.plan.steps.map((s) => ({ role: s.role, task: s.task, writes: s.writes, files: s.files ?? null })) }
       : null,
     steps: job.steps.map((s) => ({
       index: s.index,

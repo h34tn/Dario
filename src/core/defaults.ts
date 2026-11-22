@@ -71,6 +71,12 @@ supervise:
   out_of_roots: { action: notify }
   # 执行了清单里的命令。按词前缀匹配："git push" 匹配 "git push origin main"。清单为空时不检查。
   forbidden_commands: { patterns: [], action: notify }
+  # 改了计划这一步预计范围（主控出计划时写的 files）之外的文件。范围是估计，只能 off 或 notify。计划没写范围时不检查。
+  off_plan: { action: notify }
+  # 原地打转：同一条命令执行 repeat_command 次、同一个文件读 repeat_read 次，或可写步骤连续 requests_without_edit 次请求，期间都没有改动。
+  loop: { action: off, repeat_command: 3, repeat_read: 5, requests_without_edit: 20 }
+  # 用量异常：新输入或请求次数超过本项目同类步骤（同一种步骤、同一家 AI）历史中位数的 factor 倍。历史少于 min_samples 条时不检查。
+  usage: { action: off, factor: 3, min_samples: 5 }
 `;
 
 export function defaultDispatchRules(leadImplements: boolean): string {

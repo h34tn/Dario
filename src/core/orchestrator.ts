@@ -19,11 +19,13 @@ import {
   stepCarried,
   stepFollowUp,
   stepPrompt,
+  withScope,
   summaryFollowUp,
   summaryPrompt,
 } from './prompts.js';
 import type { RoleBook } from './roles.js';
 import type { StepRunner } from './runner.js';
+import { inScope, normalizeScopePath, reworkScope } from './scope.js';
 import type { StateStore } from './state.js';
 import type { Access, FallbackQuestion, Job, JobStatus, Plan, ProgressEvent, StepKind, StepRecord } from './types.js';
 import { DarioError, ellipsis, truncate } from './util.js';
@@ -59,7 +61,7 @@ function statusForOutcome(outcome: StepRecord['outcome']): JobStatus {
 export function describePlan(plan: Plan, roles: RoleBook): string {
   if (plan.steps.length === 0) return plan.summary || '（无步骤）';
   const lines = plan.steps.map(
-    (s, i) => `${i + 1}. [${roles.label(s.role, 'plan')}${s.writes ? '，改文件' : '，只读'}] ${ellipsis(s.task, 160)}`,
+    (s, i) => `${i + 1}. [${roles.label(s.role, 'plan')}${s.writes ? '，改文件' : '，只读'}] ${ellipsis(s.task, 160)}${s.files?.length ? `\n   范围：${s.files.join('、')}` : ''}`,
   );
   return `${plan.summary ? `${plan.summary}\n` : ''}${lines.join('\n')}`;
 }
@@ -162,13 +164,14 @@ export class Orchestrator {
     job: Job,
     ws: Workspace,
     opts: RunOptions,
-    req: { kind: StepKind; roleId: string; prompt: string; followUp?: string; brief?: string; task?: string; access?: Access; prefer?: string },
+    req: { kind: StepKind; roleId: string; prompt: string; followUp?: string; brief?: string; task?: string; access?: Access; prefer?: string; scope?: string[] },
   ): Promise<StepRecord> {
     this.checkCancel(job);
     const before = await ws.stamp();
     const avoid = this.avoidFor(job, req.roleId, req.kind);
     const rec = await this.deps.runner.run({ job, cwd: ws.cwd, avoid: avoid?.agent, confirmFallback: opts.confirmFallback, ...req });
     rec.changedFiles = await ws.changedSince(before);
+    if (req.scope) this.checkOffPlan(job, rec, req.scope);
     // 角色报告必需的工具或服务用不了：这一步算没做成，任务就此停下并告知发起人。
     // 会话仍然留着，问题解决后再下达任务可以接着做。
     const blocked = rec.outcome === 'ok' ? parseBlocked(rec.text) : undefined;
@@ -201,6 +204,31 @@ export class Orchestrator {
     this.save(job);
     this.checkCancel(job);
     return rec;
+  }
+
+  /**
+   * 偏离计划的复核：这一步实际改动的文件里，有不在计划范围内、运行中又没报过的（例如用命令改的），补报。
+   * 这一步已经结束，只能提示。
+   */
+  private checkOffPlan(job: Job, rec: StepRecord, scope: string[]): void {
+    const action = this.deps.project.settings.supervise.offPlan.action;
+    if (action === 'off' || rec.access !== 'write') return;
+    const seen = new Set((rec.alerts ?? []).filter((a) => a.rule === 'off_plan' && a.target).map((a) => normalizeScopePath(a.target!)));
+    const roleLabel = this.deps.roles.label(rec.role);
+    for (const file of rec.changedFiles) {
+      if (seen.has(normalizeScopePath(file)) || inScope(file, scope)) continue;
+      const alert = { rule: 'off_plan' as const, action, atMs: rec.durationMs, detail: `改动了计划范围之外的文件：${file}（这一步结束后检查发现）`, target: file };
+      (rec.alerts ??= []).push(alert);
+      job.warnings.push(`第 ${rec.index + 1} 步（${roleLabel}，${rec.agent ?? '-'}）：${alert.detail}`);
+      this.deps.state.audit('watch_alert', { job: job.id, step: rec.index, role: rec.role, agent: rec.agent, rule: alert.rule, action, detail: alert.detail });
+      this.deps.emit({
+        jobId: job.id,
+        kind: 'watch',
+        step: { index: rec.index, kind: rec.kind, role: rec.role, roleLabel, agent: rec.agent },
+        alert,
+        text: `第 ${rec.index + 1} 步（${roleLabel}）：${alert.detail}`,
+      });
+    }
   }
 
   /**
@@ -364,21 +392,23 @@ export class Orchestrator {
       const role = roles.get(step.role);
       const context = priorSteps(job) || job.context;
       const access = leadStep ? 'write' : role.access;
-      const prompt = stepPrompt(project, role, access, step.task, context, step.acceptance, job.pulled);
+      const task = withScope(step.task, step.writes ? step.files : undefined);
+      const prompt = stepPrompt(project, role, access, task, context, step.acceptance, job.pulled);
       const brief = leadStep ? undefined : stepBrief(project, role, access);
       const rec = await this.execStep(job, ws, opts, {
         kind: 'step',
         roleId: step.role,
         access,
         task: step.task,
+        ...(step.writes && step.files?.length && { scope: step.files }),
         prompt,
         brief,
         followUp: this.followUp(job, step.role, brief, {
-          full: stepPrompt(project, role, access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
-          carried: () => stepCarried(role, access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
+          full: stepPrompt(project, role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
+          carried: () => stepCarried(role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
           delta: (after, briefed) => leadStep
-            ? leadStepFollowUp(project, role, step.task, job, after, step.acceptance)
-            : stepFollowUp(project, role, access, step.task, job, after, step.acceptance, briefed),
+            ? leadStepFollowUp(project, role, task, job, after, step.acceptance)
+            : stepFollowUp(project, role, access, task, job, after, step.acceptance, briefed),
         }),
       });
       if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
@@ -465,6 +495,7 @@ export class Orchestrator {
         access: 'write',
         prefer: writer.agent,
         task: writer.task,
+        ...(reworkScope(job.plan) && { scope: reworkScope(job.plan) }),
         prompt: reworkText,
         brief: reworkBrief,
         followUp: this.followUp(job, writer.role, reworkBrief, {

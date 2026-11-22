@@ -8,6 +8,9 @@ const RULES: SuperviseSettings = {
   idle: { minutes: 10, commandMinutes: 30, action: 'notify' },
   outOfRoots: { action: 'notify' },
   forbiddenCommands: { patterns: [], action: 'notify' },
+  offPlan: { action: 'notify' },
+  loop: { action: 'off', repeatCommand: 3, repeatRead: 5, requestsWithoutEdit: 20 },
+  usage: { action: 'off', factor: 3, minSamples: 5 },
 };
 
 function rules(patch: Partial<SuperviseSettings> = {}): SuperviseSettings {

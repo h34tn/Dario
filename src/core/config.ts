@@ -53,6 +53,12 @@ export interface SuperviseSettings {
   outOfRoots: { action: WatchAction };
   /** 执行的命令命中清单。清单为空时不检查。 */
   forbiddenCommands: { patterns: string[]; action: WatchAction };
+  /** 改动落在计划这一步的 files 之外。计划的范围是估计，只提示，不中断。 */
+  offPlan: { action: Exclude<WatchAction, 'stop'> };
+  /** 原地打转：同一条命令、同一个文件反复出现，或连续多次请求没有新的改动，期间没有改动。 */
+  loop: { action: WatchAction; repeatCommand: number; repeatRead: number; requestsWithoutEdit: number };
+  /** 用量超过本项目同类步骤历史中位数的 factor 倍。样本少于 minSamples 时不检查。 */
+  usage: { action: WatchAction; factor: number; minSamples: number };
 }
 
 export interface ProjectConfig {
@@ -180,6 +186,24 @@ const superviseSchema = z
       .object({
         patterns: z.array(z.string().trim().min(1)).default([]),
         action: watchAction.default('notify'),
+      })
+      .strict()
+      .default({}),
+    off_plan: z.object({ action: z.enum(['off', 'notify']).default('notify') }).strict().default({}),
+    loop: z
+      .object({
+        action: watchAction.default('off'),
+        repeat_command: z.number().int().min(2).default(3),
+        repeat_read: z.number().int().min(2).default(5),
+        requests_without_edit: z.number().int().positive().default(20),
+      })
+      .strict()
+      .default({}),
+    usage: z
+      .object({
+        action: watchAction.default('off'),
+        factor: z.number().gt(1).default(3),
+        min_samples: z.number().int().positive().default(5),
       })
       .strict()
       .default({}),
@@ -369,6 +393,14 @@ function parseSettings(data: unknown, file: string, projectLevel: boolean): Proj
       idle: { minutes: p.supervise.idle.minutes, commandMinutes: p.supervise.idle.command_minutes, action: p.supervise.idle.action },
       outOfRoots: { action: p.supervise.out_of_roots.action },
       forbiddenCommands: { patterns: p.supervise.forbidden_commands.patterns, action: p.supervise.forbidden_commands.action },
+      offPlan: { action: p.supervise.off_plan.action },
+      loop: {
+        action: p.supervise.loop.action,
+        repeatCommand: p.supervise.loop.repeat_command,
+        repeatRead: p.supervise.loop.repeat_read,
+        requestsWithoutEdit: p.supervise.loop.requests_without_edit,
+      },
+      usage: { action: p.supervise.usage.action, factor: p.supervise.usage.factor, minSamples: p.supervise.usage.min_samples },
     },
   };
 }

@@ -227,7 +227,7 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
   const format = [
     '先用几句话说明思路（直接回答问题时这里就写答案），然后在回复的**最后**输出一个 JSON 代码块，格式如下：',
     '```json',
-    '{"summary":"一句话概括计划","answer":null,"steps":[{"role":"角色 id","task":"交给该角色的完整任务说明","writes":true,"acceptance":"验收标准"}]}',
+    '{"summary":"一句话概括计划","answer":null,"steps":[{"role":"角色 id","task":"交给该角色的完整任务说明","writes":true,"acceptance":"验收标准","files":["预计改动的文件、目录或 glob"]}]}',
     '```',
     '规则：',
     '- 如果任务只是提问、靠阅读就能回答：直接在 JSON 之前把答案完整写出来，JSON 里 steps 留空数组、answer 填 null。答案只写这一遍，不要在 JSON 里再重复。',
@@ -242,6 +242,7 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
     `- 步骤不超过 ${project.settings.maxPlanSteps} 个${leadImplements ? '。' : '，不要把主控自己列为步骤。'}`,
     `- 每一步的 task 必须自包含：写清背景、要做什么、涉及哪些文件。${leadImplements ? '其他角色' : '执行者'}看不到本次对话，也看不到其他步骤的说明。`,
     '- writes 表示这一步是否会创建、修改或删除文件，请如实填写。',
+    '- writes 为 true 的步骤在 files 里列出预计改动的文件、目录或 glob（相对项目根目录，可用 * 和 **），跟着一起改的测试和文档也列上；拿不准具体文件就写到目录。这是估计，用来对照实际改动、提醒发起人，不限制执行。只读步骤不写 files。',
   ].join('\n');
   return (
     `# 你的角色\n你是主控。阅读任务和项目，判断如何完成，并输出一份计划。` +
@@ -256,6 +257,12 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
     section('任务', task) +
     section('上一次输出的问题（请修正后重新输出完整计划）', feedback)
   );
+}
+
+/** 计划给这一步的预计范围，附在任务说明后面。 */
+export function withScope(task: string, files: string[] | undefined): string {
+  if (!files?.length) return task;
+  return `${task}\n\n预计改动的范围（出计划时的估计）：${files.join('、')}。确实需要改动范围之外的文件时可以改，在结果里写明改了哪些、为什么。`;
 }
 
 const UNDETECTED_FILES = '（未能自动检测，请用 git status 与 git diff 查看）';

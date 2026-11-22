@@ -120,6 +120,8 @@ export interface PlanStep {
   task: string;
   writes: boolean;
   acceptance?: string;
+  /** 这一步预计改动的文件、目录或 glob，相对项目根目录。只有改文件的步骤才有；是估计，不是限制。 */
+  files?: string[];
 }
 
 export interface Plan {
