@@ -27,6 +27,10 @@ export interface AgentRunRequest extends ModelSettings {
   onQuota?: (windows: QuotaWindow[]) => void;
   /** token 用量有变化时回调，给出这一次运行到目前为止的累计值。 */
   onUsage?: (usage: TokenUsage) => void;
+  /** 工具每输出一行就回调一次，不论这一行是否能认出活动。用来判断它还有没有动静。 */
+  onLine?: () => void;
+  /** 触发时终止这次运行，结果为 task_failed，原因取 signal.reason。 */
+  signal?: AbortSignal;
   /** 要续接的会话号。只对 resumes 为 true 的 AI 有效，此时 prompt 是这一轮的增量说明。 */
   resume?: string;
 }
@@ -75,6 +79,10 @@ export interface AgentPort {
   listModels(): Promise<ModelList>;
   /** 该 AI 自己的时限，优先于角色和项目的时限。 */
   timeoutMinutes?: number;
+  /** 运行中是否逐行输出。不逐行输出的工具到结束才有输出，无法判断它有没有动静。 */
+  streams?: boolean;
+  /** 判断"没动静"时阈值乘以这个数，本机 agents.yaml 的 idle_factor，默认 1。 */
+  idleFactor?: number;
   detect(): Promise<AgentDetect>;
   run(req: AgentRunRequest): Promise<AgentRunResult>;
 }

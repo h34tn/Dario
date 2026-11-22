@@ -156,6 +156,8 @@ export interface JobJson {
     startup_ms: number | null;
     /** Dario 交给工具的任务说明的字数；没有启动工具时为 null。 */
     prompt_chars: number | null;
+    /** 运行中监控发现的问题，按发现的先后排列；没有时为空数组。 */
+    alerts: Array<{ rule: string; action: string; at_ms: number; detail: string }>;
     attempts: Array<{ agent: string; outcome: string; reason: string | null }>;
   }>;
   /** 按步骤种类（plan、step、rework、review、summary）汇总的耗时和用量，按流程先后排列，只列出现过的种类。 */
@@ -277,6 +279,7 @@ export function jobToJson(job: Job): JobJson {
       cost_usd: s.costUsd ?? null,
       startup_ms: s.startupMs ?? null,
       prompt_chars: s.promptChars ?? null,
+      alerts: (s.alerts ?? []).map((a) => ({ rule: a.rule, action: a.action, at_ms: a.atMs, detail: a.detail })),
       attempts: s.attempts.map((a) => ({ agent: a.agent, outcome: a.outcome, reason: a.reason ?? null })),
     })),
     phases: phaseTotals(job).map((p) => ({
@@ -315,7 +318,9 @@ export function formatSteps(job: Job): string {
         s.promptChars && `任务说明 ${formatTokens(s.promptChars)} 字`,
       ].filter(Boolean).join('，');
       const time = formatDuration(s.durationMs) + (fixed ? `（${fixed}）` : '');
-      return `  ${s.index + 1}. ${KIND_LABEL[s.kind] ?? s.kind} · ${s.role} · ${s.agent ?? '-'} · ${OUTCOME_LABEL[s.outcome] ?? s.outcome} · ${time}${tokens}${note}`;
+      const head = `  ${s.index + 1}. ${KIND_LABEL[s.kind] ?? s.kind} · ${s.role} · ${s.agent ?? '-'} · ${OUTCOME_LABEL[s.outcome] ?? s.outcome} · ${time}${tokens}${note}`;
+      const alerts = (s.alerts ?? []).map((a) => `     ! ${formatDuration(a.atMs)}：${a.detail}${a.action === 'stop' ? '，已中断' : ''}`);
+      return [head, ...alerts].join('\n');
     })
     .join('\n');
 }

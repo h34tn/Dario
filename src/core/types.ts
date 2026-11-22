@@ -1,4 +1,5 @@
 import type { Access, Activity, FailureKind, QuotaWindow } from '../plugin.js';
+import type { Alert } from './watch.js';
 
 export type { Access, FailureKind };
 
@@ -79,6 +80,8 @@ export interface StepRecord {
   startupMs?: number;
   /** Dario 交给工具的任务说明有多少字（续接时是增量说明）。 */
   promptChars?: number;
+  /** 这一步运行中监控发现的问题；没有时为空。 */
+  alerts?: Alert[];
 }
 
 /** 一步的 token 用量。input 是各次请求发给模型的 token 之和，其中 cachedInput 是命中缓存的部分。 */
@@ -214,7 +217,7 @@ export interface FallbackQuestion {
   to: { agent: string; model?: string; modelLabel?: string; effort?: string };
 }
 
-export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity' | 'usage' | 'quota';
+export type ProgressKind = 'accepted' | 'phase' | 'plan' | 'step_start' | 'step_end' | 'fallback' | 'finished' | 'activity' | 'usage' | 'quota' | 'watch';
 
 export interface ProgressStepInfo {
   index: number;
@@ -237,6 +240,8 @@ export interface ProgressEvent {
   /** 换人时，多个被放弃的 AI 用顿号连接。 */
   fallback?: { from: string; reason: string; to: string };
   activity?: Activity;
+  /** watch 事件：监控发现的问题。 */
+  alert?: Alert;
 }
 
 /** 无头方式的退出码，与规格第 4 节一致。 */

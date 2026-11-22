@@ -39,6 +39,20 @@ export interface ProjectSettings {
   preamble: string;
   /** 开工前与远端同步的方式。 */
   syncBeforeTask: SyncMode;
+  /** 干活监控的规则，见 watch.ts。 */
+  supervise: SuperviseSettings;
+}
+
+/** 监控规则触发后的处理：off 不检查，notify 只提示，stop 中断这一步。 */
+export type WatchAction = 'off' | 'notify' | 'stop';
+
+export interface SuperviseSettings {
+  /** 没动静：超过 minutes 分钟没有任何输出；最后一行是开始执行命令时用 commandMinutes。 */
+  idle: { minutes: number; commandMinutes: number; action: WatchAction };
+  /** 改动落在 write_roots 之外。write_roots 为空时不检查。 */
+  outOfRoots: { action: WatchAction };
+  /** 执行的命令命中清单。清单为空时不检查。 */
+  forbiddenCommands: { patterns: string[]; action: WatchAction };
 }
 
 export interface ProjectConfig {
@@ -66,6 +80,8 @@ export interface AgentInstanceConfig {
   free?: boolean;
   /** 这一家可写方式的权限，不写则用本机的总设置。 */
   permissions?: WritePermissions;
+  /** 判断"没动静"时阈值乘以这个数。 */
+  idleFactor?: number;
   options?: Record<string, unknown>;
 }
 
@@ -147,6 +163,29 @@ const rolesFileSchema = z
   })
   .strict();
 
+const watchAction = z.enum(['off', 'notify', 'stop']);
+
+const superviseSchema = z
+  .object({
+    idle: z
+      .object({
+        minutes: z.number().positive().default(10),
+        command_minutes: z.number().positive().default(30),
+        action: watchAction.default('notify'),
+      })
+      .strict()
+      .default({}),
+    out_of_roots: z.object({ action: watchAction.default('notify') }).strict().default({}),
+    forbidden_commands: z
+      .object({
+        patterns: z.array(z.string().trim().min(1)).default([]),
+        action: watchAction.default('notify'),
+      })
+      .strict()
+      .default({}),
+  })
+  .strict();
+
 const projectFileSchema = z
   .object({
     lead_role: z.string().default('lead'),
@@ -158,6 +197,7 @@ const projectFileSchema = z
     max_plan_steps: z.number().int().positive().default(8),
     preamble: z.string().default(''),
     sync_before_task: z.enum(['off', 'pull', 'pull-autostash']).default('off'),
+    supervise: superviseSchema.default({}),
   })
   .strict();
 
@@ -176,6 +216,7 @@ const agentSchema = z
     enabled: z.boolean().optional(),
     free: z.boolean().optional(),
     permissions: z.enum(['full', 'listed']).optional(),
+    idle_factor: z.number().positive().optional(),
     options: z.record(z.unknown()).optional(),
   })
   .strict();
@@ -324,6 +365,11 @@ function parseSettings(data: unknown, file: string, projectLevel: boolean): Proj
     maxPlanSteps: p.max_plan_steps,
     preamble: p.preamble,
     syncBeforeTask: p.sync_before_task,
+    supervise: {
+      idle: { minutes: p.supervise.idle.minutes, commandMinutes: p.supervise.idle.command_minutes, action: p.supervise.idle.action },
+      outOfRoots: { action: p.supervise.out_of_roots.action },
+      forbiddenCommands: { patterns: p.supervise.forbidden_commands.patterns, action: p.supervise.forbidden_commands.action },
+    },
   };
 }
 
@@ -391,6 +437,7 @@ export function loadUserConfig(home: string): UserConfig {
       enabled: c.enabled,
       free: c.free,
       permissions: c.permissions,
+      idleFactor: c.idle_factor,
       options: c.options,
     };
   }

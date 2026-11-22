@@ -64,6 +64,13 @@ function unavailableReason(text: string): string {
   return (line ?? firstLine(text)).slice(0, 300);
 }
 
+function abortReason(signal: AbortSignal | undefined): string {
+  const reason: unknown = signal?.reason;
+  if (typeof reason === 'string' && reason) return reason;
+  if (reason instanceof Error && reason.message && reason.name !== 'AbortError') return reason.message;
+  return '已被 Dario 中断';
+}
+
 /** Dario 的默认失败分类。插件的 classify 返回了结论时以插件为准。 */
 export function classify(plugin: AgentPlugin, raw: RawResult): { result: Classification; output?: AgentOutput } {
   if (raw.spawnError) return { result: { outcome: 'unavailable', reason: `命令无法启动：${raw.spawnError}` } };
@@ -156,6 +163,14 @@ export class AgentHandle implements AgentPort {
     }
   }
 
+  get streams(): boolean {
+    return this.plugin.streams;
+  }
+
+  get idleFactor(): number | undefined {
+    return this.config.idleFactor;
+  }
+
   get timeoutMinutes(): number | undefined {
     return this.config.timeoutMinutes;
   }
@@ -243,10 +258,16 @@ export class AgentHandle implements AgentPort {
       timeoutMs: req.timeoutMs,
       startupTimeoutMs: this.plugin.streams ? this.settings.startupTimeoutSeconds * 1000 : undefined,
       onSpawn: (pid) => req.onPid?.(pid),
+      ...(req.signal && { signal: req.signal }),
       // 始终逐行接收：流式输出的工具第一行到达的时间就是启动开销，不论是否显示活动、统计用量。
       // 不流式输出的工具到结束才有输出，测不出启动开销
       onStdoutLine: (line) => {
         if (this.plugin.streams) startupMs ??= Date.now() - launched;
+        try {
+          req.onLine?.();
+        } catch {
+          // 监控出错不影响运行
+        }
         try {
           observe(reader?.onLine?.(line));
         } catch {
@@ -294,7 +315,11 @@ export class AgentHandle implements AgentPort {
       timedOut: out.timedOut,
       startupTimedOut: out.startupTimedOut,
     };
-    const { result, output } = classify(this.plugin, raw);
+    // 被 Dario 中断：这一步算没做成，不按退出码或报错判成"不可用"去换人
+    const aborted = out.aborted
+      ? { result: { outcome: 'task_failed' as const, reason: abortReason(req.signal) }, output: undefined }
+      : undefined;
+    const { result, output } = aborted ?? classify(this.plugin, raw);
     try {
       observe(await reader?.afterRun?.({ sessionId: output?.sessionId, env }));
     } catch {
@@ -304,6 +329,7 @@ export class AgentHandle implements AgentPort {
     // 只看报错和最终答复；没有答复时才看原始输出（有的工具把这个错误写在标准输出里），免得把 AI 干活过程中的文字当成证据
     const answer = output?.text.trim() ?? '';
     const sessionLost =
+      !out.aborted &&
       resume !== undefined &&
       result.outcome !== 'ok' &&
       result.outcome !== 'timeout' &&

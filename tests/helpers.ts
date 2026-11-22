@@ -74,6 +74,8 @@ export interface SandboxOptions {
   agentsExtra?: Record<string, unknown>;
   /** 假 AI 是否支持续接会话。为 true 时用代码式插件接入。 */
   resumable?: boolean;
+  /** 假 AI 逐行输出并能认出执行命令、改文件的活动（见 writeActivityPlugin）。用代码式插件接入。 */
+  activity?: boolean;
 }
 
 export function sh(cwd: string, command: string, args: string[]): string {
@@ -110,12 +112,13 @@ export class Sandbox {
 
     for (const name of this.agents) {
       if (opts.resumable) this.writeResumablePlugin(name);
+      else if (opts.activity) this.writeActivityPlugin(name);
       else this.writeFakePlugin(name, opts.streams ?? false, undefined, undefined, opts.progressLines);
     }
     fs.writeFileSync(
       path.join(this.home, 'agents.yaml'),
       stringify({
-        plugins: this.agents.map((n) => `./plugins/${n}.${opts.resumable ? 'mjs' : 'yaml'}`),
+        plugins: this.agents.map((n) => `./plugins/${n}.${opts.resumable || opts.activity ? 'mjs' : 'yaml'}`),
         cooldown_minutes: 10,
         startup_timeout_seconds: 2,
         ...(opts.agentsExtra ?? {}),
@@ -182,6 +185,34 @@ export default {
     if (!line.startsWith('USAGE:')) return undefined;
     const [input, cachedInput, output] = line.slice(6).split('/').map(Number);
     return { input, cachedInput, output, sessionTotal: true };
+  },
+};
+`,
+    );
+  }
+
+  /**
+   * 逐行输出、能认出活动的假 AI：输出里 `RUN:<命令>` 的行算执行命令，`EDIT:<路径>` 的行算改文件，其余非空行算说话。
+   * 用来测试干活监控。
+   */
+  writeActivityPlugin(name: string): void {
+    const common = [FAKE_AGENT, '--name', name, '--scenario', this.scenarioFile];
+    fs.writeFileSync(
+      path.join(this.home, 'plugins', `${name}.mjs`),
+      `const common = ${JSON.stringify(common)};
+export default {
+  apiVersion: 1,
+  id: ${JSON.stringify(name)},
+  displayName: ${JSON.stringify(`假 AI ${name}`)},
+  defaultCommand: ${JSON.stringify(process.execPath)},
+  versionArgs: ${JSON.stringify([FAKE_AGENT, '--name', name, '--version'])},
+  streams: true,
+  build: (req) => ({ args: [...common, '--access', req.access], stdin: req.prompt }),
+  parse: (raw) => ({ text: raw.stdout.split('\\n').filter((l) => !/^(RUN|EDIT):/.test(l)).join('\\n').trim() }),
+  progress: (line) => {
+    if (line.startsWith('RUN:')) return [{ kind: 'run', target: line.slice(4) }];
+    if (line.startsWith('EDIT:')) return [{ kind: 'edit', target: line.slice(5) }];
+    return line.trim() ? [{ kind: 'say', text: line.trim() }] : [];
   },
 };
 `,

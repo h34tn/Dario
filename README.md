@@ -145,6 +145,19 @@ dario input-test               # 检查中文输入法和粘贴在你的终端�
 | | `channels.yaml`、`access.yaml` | 渠道设置与名单 |
 | | `state/` | 任务记录、审计日志 |
 
+### 干活监控
+
+AI 干活时，Dario 盯着它的输出，发现问题会在界面、纯文本输出和渠道里提示，并记进任务的注意事项和 JSON 输出的 `alerts`。规则在项目的 `project.yaml` 里设置，不写就用默认值：
+
+```yaml
+supervise:
+  idle: { minutes: 10, command_minutes: 30, action: notify }   # 多久没有任何输出算没动静；正在执行命令时用 command_minutes
+  out_of_roots: { action: notify }                              # 改了 write_roots 之外的文件
+  forbidden_commands: { patterns: ["git push"], action: stop }  # 执行了清单里的命令，按词前缀匹配
+```
+
+`action` 可选 `off`（不检查）、`notify`（只提示）和 `stop`（中断这一步，任务停下）。默认只提示不打断，禁用命令清单默认为空。某家 AI 平时输出就稀疏、常被误报没动静时，在本机 `~/.dario/agents.yaml` 里给它写 `idle_factor: 2`，阈值对它放宽一倍。这只是发现问题的手段，不是安全边界：AI 写个脚本去执行的命令它查不出来。
+
 项目配置按名字引用 AI，可以为角色建议型号和强度。命令与参数的拼法由插件和本机配置决定。所以克隆别人的仓库再运行 Dario，不会执行对方指定的程序。
 
 ### 各角色能用哪些工具

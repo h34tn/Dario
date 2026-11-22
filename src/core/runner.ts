@@ -8,6 +8,12 @@ import type { RoleBook } from './roles.js';
 import type { StateStore } from './state.js';
 import type { TokenUsage } from '../plugin.js';
 import type { Access, Attempt, FallbackQuestion, Job, ProgressEvent, StepKind, StepRecord, StepTokens } from './types.js';
+import { StepWatch, type Alert } from './watch.js';
+
+/** 定时检查的间隔：最多 30 秒，阈值很小时（测试里）按阈值的四分之一，不低于 50 毫秒。 */
+function watchInterval(thresholdMs: number): number {
+  return Math.max(50, Math.min(30000, Math.floor(thresholdMs / 4)));
+}
 
 export interface StepRequest {
   job: Job;
@@ -72,6 +78,8 @@ export class StepRunner {
     const skippedBefore = (agent: string): Attempt[] => skipped.filter((s) => sequence.indexOf(s.agent) < sequence.indexOf(agent));
     const attempts: Attempt[] = usable.length === 0 ? [...skipped] : skippedBefore(usable[0]!);
     const base = { index, kind: req.kind, role: req.roleId, access, changedFiles: [] as string[], task: req.task };
+    // 这一步的监控告警，换人之前那家的也算在内
+    const alerts: Alert[] = [];
     const roleLabel = roles.label(req.roleId);
     const head = `${KIND_LABEL[req.kind]}（${roleLabel}）`;
 
@@ -170,6 +178,25 @@ export class StepRunner {
       const invoke = async (prompt: string, resumeId: string | undefined, runLabel: string): Promise<AgentRunResult> => {
         if (!resumeId || slot?.step === -1) prompt += imageSection(req.job.images);
         promptChars = prompt.length;
+        const rules = project.settings.supervise;
+        const watch = new StepWatch({ rules, writeRoots: project.settings.writeRoots, streams: port.streams === true, idleFactor: port.idleFactor });
+        const controller = new AbortController();
+        const raise = (found: Alert[]): void => {
+          for (const alert of found) {
+            alerts.push(alert);
+            const stops = alert.action === 'stop';
+            req.job.warnings.push(`第 ${index + 1} 步（${roleLabel}，${agent}）：${alert.detail}${stops ? '，已中断' : ''}`);
+            state.audit('watch_alert', { job: req.job.id, step: index, role: req.roleId, agent, rule: alert.rule, action: alert.action, detail: alert.detail });
+            emit({ jobId: req.job.id, kind: 'watch', step, alert, text: `${head}：${alert.detail}${stops ? '，已中断这一步' : ''}` });
+            if (stops && !controller.signal.aborted) controller.abort(`监控发现问题，已中断：${alert.detail}`);
+          }
+        };
+        // 只有"没动静"要靠定时检查；规则关了或工具不逐行输出时不必开定时器
+        const factor = port.idleFactor ?? 1;
+        const timer = rules.idle.action !== 'off' && port.streams === true
+          ? setInterval(() => raise(watch.tick()), watchInterval(Math.min(rules.idle.minutes, rules.idle.commandMinutes) * factor * 60000))
+          : undefined;
+        timer?.unref?.();
         const base = resumeId ? slot?.tokens : undefined;
         tokens = undefined;
         try {
@@ -178,29 +205,39 @@ export class StepRunner {
           // 记录失败不影响执行
         }
         const { model, effort } = roles.modelFor(req.roleId, agent);
-        const out = await port.run({
-          model, effort,
-          access,
-          cwd: req.cwd,
-          prompt,
-          ...(req.job.images?.length && { images: req.job.images.map(image => image.path) }),
-          timeoutMs: timeoutMinutes * 60000,
-          workDir,
-          label: runLabel,
-          resume: resumeId,
-          onActivity: (activity) => emit({ jobId: req.job.id, kind: 'activity', step, activity, text: formatActivity(activity) }),
-          onQuota: (windows) => {
-            if (state.saveQuota(agent, windows)) emit({ jobId: req.job.id, kind: 'quota', step, quota: { agent, windows }, text: '' });
-          },
-          onUsage: (usage) => {
-            tokens = stepTokens(usage, base);
-            emit({ jobId: req.job.id, kind: 'usage', step: { ...step, tokens }, text: '' });
-          },
-          onPid: (pid) => {
-            req.job.activePid = pid;
-            state.saveJob(req.job);
-          },
-        });
+        let out: AgentRunResult;
+        try {
+          out = await port.run({
+            model, effort,
+            access,
+            cwd: req.cwd,
+            prompt,
+            ...(req.job.images?.length && { images: req.job.images.map(image => image.path) }),
+            timeoutMs: timeoutMinutes * 60000,
+            workDir,
+            label: runLabel,
+            resume: resumeId,
+            onLine: () => watch.line(),
+            signal: controller.signal,
+            onActivity: (activity) => {
+              emit({ jobId: req.job.id, kind: 'activity', step, activity, text: formatActivity(activity) });
+              raise(watch.activity(activity));
+            },
+            onQuota: (windows) => {
+              if (state.saveQuota(agent, windows)) emit({ jobId: req.job.id, kind: 'quota', step, quota: { agent, windows }, text: '' });
+            },
+            onUsage: (usage) => {
+              tokens = stepTokens(usage, base);
+              emit({ jobId: req.job.id, kind: 'usage', step: { ...step, tokens }, text: '' });
+            },
+            onPid: (pid) => {
+              req.job.activePid = pid;
+              state.saveJob(req.job);
+            },
+          });
+        } finally {
+          clearInterval(timer);
+        }
         if (out.tokens) tokens = stepTokens(out.tokens, base);
         state.audit('agent_run', {
           job: req.job.id, step: index, kind: req.kind, role: req.roleId, agent,
@@ -258,6 +295,7 @@ export class StepRunner {
         ...(tokens && { tokens }),
         ...(res.startupMs !== undefined && { startupMs: res.startupMs }),
         promptChars,
+        ...(alerts.length > 0 && { alerts }),
       };
       emit({
         jobId: req.job.id,

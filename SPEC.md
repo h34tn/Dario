@@ -114,7 +114,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 | 交互 | 在终端里不带任务直接运行 `dario` | 默认全屏，按下节条件选择行内界面或逐行交互 |
 
 - **单次命令判断标准错误是否连着终端**，与 `-p` 无关：`-p` 只表示执行完就退出。`dario "任务" > 结果.txt` 在终端里仍有动态进度，文件里只有结论。
-- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`、`phases`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`cost_usd`、`startup_ms`、`prompt_chars`、`attempts`。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output, requests, first_input }`，`input` 含命中缓存的 `cached_input`，`requests` 和 `first_input` 工具不报时为 `null`；工具不报用量时 `tokens` 为 `null`。`cost_usd`、`startup_ms` 不可知时为 `null`，口径见第 8 节。`phases` 按流程先后列出出现过的步骤种类，每项为 `kind`、`steps`、`duration_ms`、`startup_ms`、`input`、`cached_input`、`output`、`requests`、`cost_usd`；这一阶段都不报用量时 token 各项为 `null`。
+- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`、`phases`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`cost_usd`、`startup_ms`、`prompt_chars`、`alerts`、`attempts`。`alerts` 是这一步运行中干活监控发现的问题，每项为 `rule`、`action`、`at_ms`（从这次运行开始算）、`detail`，没有时为空数组。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output, requests, first_input }`，`input` 含命中缓存的 `cached_input`，`requests` 和 `first_input` 工具不报时为 `null`；工具不报用量时 `tokens` 为 `null`。`cost_usd`、`startup_ms` 不可知时为 `null`，口径见第 8 节。`phases` 按流程先后列出出现过的步骤种类，每项为 `kind`、`steps`、`duration_ms`、`startup_ms`、`input`、`cached_input`、`output`、`requests`、`cost_usd`；这一阶段都不报用量时 token 各项为 `null`。
 - **`--verbose`**：纯文本方式下，AI 的每条活动（读文件、执行命令等）打印一行。
 - 纯文本与 JSON 两种输出不含任何控制字符，是给脚本和其他 AI 调用的稳定接口。
 
@@ -162,7 +162,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 |---|---|
 | `roles.yaml` | 角色表；可在 `roles.<角色>.models.<AI>` 建议该候选的型号与强度 |
 | `dispatch-rules.md` | 分派规则：什么性质的任务交给哪个角色。附在主控的任务说明里 |
-| `project.yaml` | 主控与审查由哪个角色承担、主控能否自己执行小改动（布尔值 `lead_implements`，默认 `true`）、可写目录范围、单步时限、返工轮数上限、计划步数上限、附给所有 AI 的固定前言、开工前是否先与远端同步 |
+| `project.yaml` | 主控与审查由哪个角色承担、主控能否自己执行小改动（布尔值 `lead_implements`，默认 `true`）、可写目录范围、单步时限、返工轮数上限、计划步数上限、附给所有 AI 的固定前言、开工前是否先与远端同步、干活监控的规则（`supervise`，见第 7 节） |
 
 项目根目录从当前目录向上查找带 `.dario/` 的目录；找不到时当前目录即项目根，使用本机或内置的默认角色表。
 
@@ -170,7 +170,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 
 | 文件 | 内容 |
 |---|---|
-| `agents.yaml` | 要加载的插件；各家 AI 的命令路径、默认型号与强度（`model`、`effort`）、按角色的设置（`roles.<角色>`）、放行的工具清单、额外传递的环境变量、时限、是否停用、是否免费（`free: true` 表示额度固定按 0% 显示，不采集）；不可用后的冷却时间；启动无输出的判定时间 |
+| `agents.yaml` | 要加载的插件；各家 AI 的命令路径、默认型号与强度（`model`、`effort`）、按角色的设置（`roles.<角色>`）、放行的工具清单、额外传递的环境变量、时限、是否停用、是否免费（`free: true` 表示额度固定按 0% 显示，不采集）；不可用后的冷却时间；启动无输出的判定时间；"没动静"阈值的倍数（`idle_factor`） |
 | `channels.yaml` | 渠道设置 |
 | `access.yaml` | 各渠道里谁是成员、谁是管理员 |
 | `roles.yaml`、`project.yaml`、`dispatch-rules.md` | 可选。项目没有自己的配置时作为默认值 |
@@ -327,6 +327,22 @@ fallback: auto                # auto：不可用时自动换下一家；ask：�
 
 每一步前后各取一次 git 状态快照，差异即这一步改动的文件。目录不是 git 仓库时无法检测，改为按"执行过可写步骤"来决定是否追加审查。只读角色改了文件会被记录并警告。
 
+### 干活监控
+
+每次运行 AI 时，Dario 按项目 `project.yaml` 的 `supervise` 盯着它的输出，发现问题就提示或中断。只看输出和活动，不调用模型。判断在 `src/core/watch.ts`，接线在执行一步的地方。
+
+| 规则 | 判定 | 默认 |
+|---|---|---|
+| 没动静 `idle` | 从收到第一行输出起，超过 `minutes` 分钟没有任何一行输出（不论能否认出活动）；最后一条活动是执行命令、之后还没有新输出时，改用 `command_minutes`。阈值乘以本机 `agents.yaml` 里这家 AI 的 `idle_factor`（默认 1）。插件声明 `streams: false` 的工具到结束才有输出，不检查。启动后一直没有输出归启动超时管，不算这一条 | 10 分钟，命令中 30 分钟，`notify` |
+| 路径越界 `out_of_roots` | 活动里改动的文件不在 `write_roots` 之内。路径按正斜杠、去掉开头的 `./` 比较，绝对路径和 `..` 开头的算越界。`write_roots` 为空时不检查 | `notify` |
+| 禁用命令 `forbidden_command` | 执行的命令按 `&&`、`\|\|`、`;`、`\|`、换行拆成几段，任一段按词前缀命中 `patterns`：`git push` 匹配 `git push origin main`，不匹配 `git pushd`，不区分大小写 | 清单为空，即不检查 |
+
+- 每条规则的 `action`：`off` 不检查；`notify` 只提示；`stop` 中断这一步。默认值对任何项目都不打断，要中断由项目自己打开。
+- 去重：同一段静默只报一次，有了新输出后下一段静默可以再报；同一个越界文件、同一条禁用命令各报一次。
+- 定时检查的间隔取阈值的四分之一，最多 30 秒，不少于 50 毫秒。
+- 发现问题时：发出 `watch` 进度事件（界面在历史区显示一行提示，纯文本方式打到标准错误，渠道转发到任务所在的会话）；记进这一步的 `alerts` 和任务的注意事项；写一条 `watch_alert` 审计。`stop` 时终止进程树，这一步记为"任务失败"，原因是"监控发现问题，已中断：…"，不换人，任务停下。
+- 这是发现问题的手段，不是安全边界：靠活动认出的改动和命令，绕开工具的写法（例如写个脚本去执行、在命令里改文件）查不出来。实际改动以这一步结束后的改动检测为准，越界由第 10 节处理。
+
 ## 8. AI 接入：插件
 
 ### 插件做什么
@@ -416,7 +432,7 @@ Dario 边收 AI 的标准输出边按行交给插件的 `progress(line)`，得�
 
 - 用 `cross-spawn` 启动，能正确处理 Windows 上以 `.cmd` 脚本形式安装的命令和带特殊字符的参数。
 - 只把名单内的环境变量传给 AI：一组系统变量、代理设置、插件声明的变量、用户配置里列出的变量。
-- 超时或启动后无输出时终止整个进程树。
+- 超时、启动后无输出或被干活监控中断时，终止整个进程树。被中断的运行记为任务失败，不判为不可用。
 - 每次运行的任务说明、标准输出、标准错误都存到任务目录。
 
 ## 9. 渠道
@@ -494,6 +510,7 @@ Dario 边收 AI 的标准输出边按行交给插件的 `progress(line)`，得�
 | 会话失效 | 续接的运行失败，且报错文字像"找不到这个会话" | 同一家 AI 新开会话重跑这一步，见第 7 节 |
 | 受阻 | 这一步正常结束，但回复里有单独一行 `DARIO_BLOCKED: <原因>` | 这一步记为没有完成，任务停下，后面的步骤不再执行，结论里写明原因。会话保留，恢复后再下达任务可以接着做 |
 | 超时 | 超过时限 | 终止进程树 |
+| 监控中断 | 干活监控的规则触发，且该规则的 `action` 为 `stop`，见第 7 节 | 终止进程树，这一步记为任务失败，不换人，任务停下 |
 | 越界 | 见第 10 节 | 见第 10 节 |
 | 中断 | 推进任务的 Dario 进程已不存在 | 标为"中断"，不自动重跑 |
 
@@ -549,7 +566,8 @@ Dario/
 │   │   ├── display-width.ts    终端字符显示宽度
 │   │   ├── defaults.ts         内置默认配置，也是 dario init 生成的内容
 │   │   ├── roles.ts            角色表、担当者、换人顺序
-│   │   ├── runner.ts           执行一步：找担当者、换人
+│   │   ├── runner.ts           执行一步：找担当者、换人、接上干活监控
+│   │   ├── watch.ts            干活监控的判断：没动静、路径越界、禁用命令
 │   │   ├── orchestrator.ts     直派与主控分派
 │   │   ├── plan.ts             计划与审查结论的解析、校验
 │   │   ├── prompts.ts          各类任务说明的拼装
@@ -734,3 +752,4 @@ rise · 主控 claude · 实现 codex · 测试 codex · 审查 claude · 排队
 - **取机器人自身标识的接口**：用于判断群消息是否 @了机器人。取不到时退回到"消息里有 @ 就处理"。
 - **富文本消息的格式**：按通常结构解析，未对照真实消息核对。
 - **macOS 与 Linux**：未运行过。
+- **干活监控的默认阈值**：10 分钟和命令中 30 分钟是为了少误报取的宽松值，没有在各家工具的真实长任务上统计过；各家工具两行输出之间最长隔多久，也没有实测。

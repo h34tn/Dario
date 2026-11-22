@@ -115,6 +115,8 @@ export interface ProcessRequest {
   startupTimeoutMs?: number;
   onSpawn?: (pid: number) => void;
   onStdoutLine?: (line: string) => void;
+  /** 触发时终止整个进程树，结果标为 aborted。 */
+  signal?: AbortSignal;
 }
 
 export interface ProcessOutcome {
@@ -124,6 +126,8 @@ export interface ProcessOutcome {
   spawnError?: string;
   timedOut: boolean;
   startupTimedOut: boolean;
+  /** 被调用方通过 signal 中断。 */
+  aborted: boolean;
   durationMs: number;
 }
 
@@ -145,11 +149,13 @@ export function runProcess(req: ProcessRequest): Promise<ProcessOutcome> {
     let stderr = '';
     let timedOut = false;
     let startupTimedOut = false;
+    let aborted = false;
     let spawnError: string | undefined;
     let settled = false;
     let gotOutput = false;
     let overall: NodeJS.Timeout | undefined;
     let startup: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
 
     const finish = (exitCode: number | null): void => {
       if (settled) return;
@@ -157,7 +163,8 @@ export function runProcess(req: ProcessRequest): Promise<ProcessOutcome> {
       if (pending) sendLine(pending);
       if (overall) clearTimeout(overall);
       if (startup) clearTimeout(startup);
-      resolve({ exitCode, stdout, stderr, spawnError, timedOut, startupTimedOut, durationMs: Date.now() - started });
+      if (onAbort) req.signal?.removeEventListener('abort', onAbort);
+      resolve({ exitCode, stdout, stderr, spawnError, timedOut, startupTimedOut, aborted, durationMs: Date.now() - started });
     };
 
     let child: ReturnType<typeof spawn>;
@@ -218,6 +225,14 @@ export function runProcess(req: ProcessRequest): Promise<ProcessOutcome> {
         startupTimedOut = true;
         killProcessTree(child.pid);
       }, req.startupTimeoutMs);
+    }
+    if (req.signal) {
+      onAbort = () => {
+        aborted = true;
+        killProcessTree(child.pid);
+      };
+      if (req.signal.aborted) onAbort();
+      else req.signal.addEventListener('abort', onAbort, { once: true });
     }
 
     child.on('close', (code) => finish(code));

@@ -61,6 +61,16 @@ preamble: ""
 # pull：先 git fetch；本地落后时 git pull --rebase。工作区有未提交的改动又落后于远端时，不自动暂存，任务不开始并说明情况。
 # pull-autostash：同上，但有未提交的改动时用 --autostash 自动暂存、拉取后放回。
 sync_before_task: off
+
+# 干活监控：运行中发现问题时怎么处理。action 可选 off（不检查）、notify（只提示）、stop（中断这一步，任务停下）。
+# 这只是发现问题的手段，不是安全边界：绕过检查的写法（例如写个脚本去执行）它查不出来。
+supervise:
+  # 没动静：超过 minutes 分钟没有任何输出；正在执行命令时用 command_minutes。到结束才输出的工具不检查。
+  idle: { minutes: 10, command_minutes: 30, action: notify }
+  # 改了 write_roots 之外的文件。write_roots 为空时不检查。
+  out_of_roots: { action: notify }
+  # 执行了清单里的命令。按词前缀匹配："git push" 匹配 "git push origin main"。清单为空时不检查。
+  forbidden_commands: { patterns: [], action: notify }
 `;
 
 export function defaultDispatchRules(leadImplements: boolean): string {
@@ -116,6 +126,7 @@ cooldown_minutes: 10
 
 # 启动后多久没有任何输出就判为不可用（秒）
 startup_timeout_seconds: 120
+# 某家 AI 平时输出就稀疏、常被误报"没动静"时，在它的条目里写 idle_factor: 2，把项目设的阈值对它放宽一倍。
 
 # 额外传给所有 AI 的环境变量
 env_pass: []

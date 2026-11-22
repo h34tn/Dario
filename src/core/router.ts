@@ -350,7 +350,7 @@ export class ChannelRouter {
     const forward = (e: ProgressEvent): void => {
       if (e.jobId !== job.id) return;
       if (e.kind === 'plan') this.reply(message, `[${job.id}] 计划：\n${e.text}`, job.id);
-      else if (e.kind === 'step_start' || e.kind === 'step_end' || e.kind === 'fallback') this.reply(message, `[${job.id}] ${e.text}`, job.id);
+      else if (e.kind === 'step_start' || e.kind === 'step_end' || e.kind === 'fallback' || e.kind === 'watch') this.reply(message, `[${job.id}] ${e.text}`, job.id);
     };
     const off = this.engine.onProgress(forward);
     try {
