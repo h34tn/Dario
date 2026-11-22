@@ -179,6 +179,61 @@ describe('交接时附上上下文', () => {
     expect(reviewer.prompt).toContain('其中 README.md 在任务开始前就有未提交的改动');
   });
 
+  it('后面的步骤拿到前面步骤改动的 diff，被告知在此基础上接着做', async () => {
+    sb = new Sandbox({ git: true });
+    sb.setScenario({
+      a1: [{ text: plan([{ role: 'coder', task: '实现', writes: true }, { role: 'coder', task: '补测试', writes: true }]) }, { text: '汇总' }],
+      a2: [
+        { text: '写好了', files: [{ path: 'src/a.txt', content: 'a1\n' }] },
+        { text: '补好了', files: [{ path: 'src/a.test.txt', content: 't1\n' }] },
+      ],
+      a3: [{ text: verdict(true) }],
+    });
+    const r = await sb.runJson(['-p', '--yes', '任务']);
+    expect(r.code).toBe(0);
+    const [first, second] = sb.calls().filter((c) => c.name === 'a2');
+    expect(first!.prompt).not.toContain('# 前面步骤的改动');
+    expect(second!.prompt).toContain('# 前面步骤的改动');
+    expect(second!.prompt).toContain('在这个基础上接着做');
+    expect(second!.prompt).toContain('+++ b/src/a.txt\n@@ -0,0 +1,1 @@\n+a1');
+    // diff 接在任务后面、验收标准之前
+    expect(second!.prompt.indexOf('# 任务\n补测试')).toBeLessThan(second!.prompt.indexOf('# 前面步骤的改动'));
+  });
+
+  it('续接的会话只附它上次工作之后别人改过的文件；关掉时不附', async () => {
+    const scenario = () => ({
+      a1: [{ text: plan([
+        { role: 'coder', task: '实现 a', writes: true },
+        { role: 'lead', task: '顺手改 b', writes: true },
+        { role: 'coder', task: '接着做', writes: true },
+      ]) }, { text: '改好了 b', files: [{ path: 'src/b.txt', content: 'b1\n' }] }, { text: '汇总' }],
+      a2: [
+        { text: '写好了', files: [{ path: 'src/a.txt', content: 'a1\n' }] },
+        { text: '做完了', files: [{ path: 'src/c.txt', content: 'c1\n' }] },
+      ],
+      a3: [{ text: verdict(true) }],
+    });
+    sb = new Sandbox({ git: true, resumable: true });
+    sb.setScenario(scenario());
+    let r = await sb.runJson(['-p', '--yes', '任务']);
+    expect(r.json.steps.map((s: any) => s.kind)).toEqual(['plan', 'step', 'step', 'step', 'review', 'summary']);
+    // 主控续接做自己的步骤：执行者刚改的 a 附上
+    const leadStep = sb.calls().filter((c) => c.name === 'a1')[1]!;
+    expect(leadStep.prompt).toContain('# 前面步骤的改动');
+    expect(leadStep.prompt).toContain('+a1');
+    // 执行者续接：只附主控改的 b，它自己改的 a 不再附
+    const again = sb.calls().filter((c) => c.name === 'a2')[1]!;
+    expect(again.prompt).toContain('+b1');
+    expect(again.prompt).not.toContain('+a1');
+    sb.cleanup();
+
+    sb = new Sandbox({ git: true, resumable: true, projectYaml: 'handoff_max_chars: 0\n' });
+    sb.setScenario(scenario());
+    r = await sb.runJson(['-p', '--yes', '任务']);
+    expect(r.code).toBe(0);
+    expect(sb.calls().some((c) => c.prompt.includes('前面步骤的改动'))).toBe(false);
+  });
+
   it('返工后续接审查会话：只附它上次审查之后改过的文件的 diff', async () => {
     sb = new Sandbox({ git: true, resumable: true });
     sb.setScenario({

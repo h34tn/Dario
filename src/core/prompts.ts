@@ -136,7 +136,7 @@ export function planCarried(leadImplements: boolean, task: string, context?: str
   );
 }
 
-export function reviewCarried(role: RoleDef, job: Job, extraTask?: string, diff?: ReviewDiff): string {
+export function reviewCarried(role: RoleDef, job: Job, extraTask?: string, diff?: ChangeDiff): string {
   const files = job.changedFiles.length ? job.changedFiles.map((f) => `- ${f}`).join('\n') : UNDETECTED_FILES;
   return (
     newTaskHeader(role, 'read-only') +
@@ -281,6 +281,13 @@ export function withRefs(task: string, refs: string | undefined): string {
   return refs ? `${task}${section('主控标出的相关代码', refs)}` : task;
 }
 
+const PRIOR_DIFF = '前面的步骤已经改了下面这些文件。先据此弄清已经做了什么（包括已经补了哪些测试），在这个基础上接着做，不必重做已经完成的部分；需要更多上下文时再打开文件。';
+
+/** 前面步骤的改动接在任务说明后面，接手的角色不必为了弄清前面改了什么逐个翻文件。 */
+export function withChanges(task: string, diff: ChangeDiff | undefined): string {
+  return diff ? `${task}${diffSection(diff, '前面步骤的改动', PRIOR_DIFF)}` : task;
+}
+
 const UNDETECTED_FILES = '（未能自动检测，请用 git status 与 git diff 查看）';
 
 const REVIEW_FORMAT = [
@@ -296,8 +303,8 @@ const REVIEW_FORMAT = [
 const READ_FILES = '请实际阅读改动的文件。';
 const READ_DIFF = '改动的 diff 已经附在上面，先据此审查；判断对不对需要更多上下文时再打开相关文件，不必为了确认改了什么逐个重读。';
 
-/** 附给审查的 diff：Dario 在派活这一刻取的，相对 HEAD。 */
-export interface ReviewDiff {
+/** 附给审查或后续步骤的 diff：Dario 在派活这一刻取的，相对 HEAD。 */
+export interface ChangeDiff {
   text: string;
   /** 超出长度上限、没有附上（或只附了一部分）的文件。 */
   omitted: string[];
@@ -305,20 +312,20 @@ export interface ReviewDiff {
   preexisting: string[];
 }
 
-function diffSection(diff: ReviewDiff | undefined, title = '改动的 diff'): string {
+function diffSection(diff: ChangeDiff | undefined, title = '改动的 diff', lead?: string): string {
   if (!diff) return '';
-  const notes = ['相对最近一次提交（HEAD）的改动，没被 git 跟踪的新文件按全文列出。'];
+  const notes = [...(lead ? [lead] : []), '相对最近一次提交（HEAD）的改动，没被 git 跟踪的新文件按全文列出。'];
   if (diff.preexisting.length) notes.push(`其中 ${diff.preexisting.join('、')} 在任务开始前就有未提交的改动，diff 里也包含那部分，不全是这次任务改的。`);
   if (diff.omitted.length) notes.push(`超出长度上限，这些文件的 diff 没有附上或没有附全：${diff.omitted.join('、')}。请用 git diff HEAD -- <文件> 查看。`);
   return section(title, `${notes.join('\n')}\n\n${diff.text}`.trim());
 }
 
-function reviewAsk(extraTask: string | undefined, diff: ReviewDiff | undefined): string {
+function reviewAsk(extraTask: string | undefined, diff: ChangeDiff | undefined): string {
   const read = diff ? READ_DIFF : READ_FILES;
   return extraTask ? `${extraTask}\n${read}` : `审查上面的改动是否正确、完整地完成了原始任务。${read}`;
 }
 
-export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, extraTask?: string, diff?: ReviewDiff): string {
+export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, extraTask?: string, diff?: ChangeDiff): string {
   const files = job.changedFiles.length ? job.changedFiles.map((f) => `- ${f}`).join('\n') : UNDETECTED_FILES;
   return (
     `# 你的角色\n${roleHeader(role, 'read-only')}` +
@@ -334,7 +341,7 @@ export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, ex
 }
 
 /** after 是这个会话上一次审查的步骤下标。 */
-export function reviewFollowUp(project: ProjectConfig, role: RoleDef, job: Job, after: number, extraTask?: string, briefed = false, diff?: ReviewDiff): string {
+export function reviewFollowUp(project: ProjectConfig, role: RoleDef, job: Job, after: number, extraTask?: string, briefed = false, diff?: ChangeDiff): string {
   const recheck = `审查你上次审查之后的改动是否正确、完整地完成了原始任务；你上一轮提出过问题的，逐条确认是否已经解决，并确认修改没有引入新的问题。${diff ? READ_DIFF : READ_FILES}`;
   return (
     continueHeader(role, 'read-only', '这是同一个任务的又一轮审查，', briefed) +

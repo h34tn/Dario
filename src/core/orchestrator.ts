@@ -15,13 +15,14 @@ import {
   reviewCarried,
   reviewFollowUp,
   reviewPrompt,
-  type ReviewDiff,
+  type ChangeDiff,
   reworkFollowUp,
   reworkPrompt,
   stepBrief,
   stepCarried,
   stepFollowUp,
   stepPrompt,
+  withChanges,
   withRefs,
   withScope,
   summaryFollowUp,
@@ -402,7 +403,11 @@ export class Orchestrator {
       const access = leadStep ? 'write' : role.access;
       const scoped = withScope(step.task, step.writes ? step.files : undefined);
       // 主控自己的步骤续接时它刚读过这些代码，不再附；新开会话和其他角色都附上
-      const task = withRefs(scoped, step.refs?.length ? readRefs(ws.cwd, step.refs, project.settings.handoffMaxChars, job.changedFiles) : undefined);
+      const withCode = withRefs(scoped, step.refs?.length ? readRefs(ws.cwd, step.refs, project.settings.handoffMaxChars, job.changedFiles) : undefined);
+      // 前面步骤的改动附上 diff；续接的会话只附它上次工作之后别人改过的文件
+      const task = withChanges(withCode, await this.changeDiff(job, ws, job.changedFiles));
+      const lastStep = job.sessions?.[step.role]?.step ?? -1;
+      const sinceDiff = lastStep >= 0 ? await this.changeDiff(job, ws, filesChangedAfter(job, lastStep)) : undefined;
       const prompt = stepPrompt(project, role, access, task, context, step.acceptance, job.pulled);
       const brief = leadStep ? undefined : stepBrief(project, role, access);
       const rec = await this.execStep(job, ws, opts, {
@@ -416,9 +421,12 @@ export class Orchestrator {
         followUp: this.followUp(job, step.role, brief, {
           full: stepPrompt(project, role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
           carried: () => stepCarried(role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
-          delta: (after, briefed) => leadStep
-            ? leadStepFollowUp(project, role, scoped, job, after, step.acceptance)
-            : stepFollowUp(project, role, access, task, job, after, step.acceptance, briefed),
+          delta: (after, briefed) => {
+            const since = after === lastStep ? sinceDiff : undefined;
+            return leadStep
+              ? leadStepFollowUp(project, role, withChanges(scoped, since), job, after, step.acceptance)
+              : stepFollowUp(project, role, access, withChanges(withCode, since), job, after, step.acceptance, briefed);
+          },
         }),
       });
       if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
@@ -466,8 +474,8 @@ export class Orchestrator {
     return true;
   }
 
-  /** 给审查附的 diff。取不到（不是 git 仓库、关掉了、没有改动）时为 undefined，审查照旧自己去读文件。 */
-  private async reviewDiff(job: Job, ws: Workspace, files: string[]): Promise<ReviewDiff | undefined> {
+  /** 给审查和后续步骤附的 diff。取不到（不是 git 仓库、关掉了、没有改动）时为 undefined，照旧让角色自己去读文件。 */
+  private async changeDiff(job: Job, ws: Workspace, files: string[]): Promise<ChangeDiff | undefined> {
     const got = await diffText(ws.cwd, files, this.deps.project.settings.handoffMaxChars);
     if (!got) return undefined;
     const before = new Set(job.dirtyAtStart ?? []);
@@ -481,9 +489,9 @@ export class Orchestrator {
     for (;;) {
       this.setStatus(job, 'reviewing');
       const reviewer = roles.get(reviewRole);
-      const diff = await this.reviewDiff(job, ws, job.changedFiles);
+      const diff = await this.changeDiff(job, ws, job.changedFiles);
       const lastReview = job.sessions?.[reviewRole]?.step ?? -1;
-      const sinceDiff = lastReview >= 0 ? await this.reviewDiff(job, ws, filesChangedAfter(job, lastReview)) : undefined;
+      const sinceDiff = lastReview >= 0 ? await this.changeDiff(job, ws, filesChangedAfter(job, lastReview)) : undefined;
       const reviewText = reviewPrompt(project, reviewer, job, extraTask, diff);
       const brief = reviewBrief(project, reviewer);
       const rec = await this.execStep(job, ws, opts, {
