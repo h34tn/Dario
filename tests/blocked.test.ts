@@ -7,6 +7,9 @@ describe('受阻标记的解析', () => {
   it('取单独一行的标记，中英文冒号、列表符号和反引号都认', () => {
     expect(parseBlocked('做到一半。\nDARIO_BLOCKED: Unity MCP 连不上，重试 5 次都被拒绝')).toBe('Unity MCP 连不上，重试 5 次都被拒绝');
     expect(parseBlocked('说明\n- `DARIO_BLOCKED：服务没有启动`\n')).toBe('服务没有启动');
+    // 句末标点由 Dario 拼句子时自己加，避免出现"。。"
+    expect(parseBlocked('DARIO_BLOCKED: 构建无法完成。')).toBe('构建无法完成');
+    expect(parseBlocked('DARIO_BLOCKED: 服务连不上！`')).toBe('服务连不上');
     expect(parseBlocked('第一次\nDARIO_BLOCKED: 甲\n后来\nDARIO_BLOCKED: 乙')).toBe('乙');
     expect(parseBlocked('DARIO_BLOCKED:')).toBe('没有写明原因');
   });

@@ -13,7 +13,8 @@ export function parseBlocked(text: string): string | undefined {
   const hits = [...text.matchAll(/^[ \t>*`-]*DARIO_BLOCKED[:：][ \t]*(.*)$/gm)];
   const last = hits.at(-1);
   if (!last) return undefined;
-  return last[1]!.replace(/[`*]+$/, '').trim() || '没有写明原因';
+  // 去掉句末标点：拼进"已停下：……。恢复之后……"时由 Dario 自己加句号
+  return last[1]!.replace(/[`*]+$/, '').trim().replace(/[。．.！!；;，,]+$/, '').trim() || '没有写明原因';
 }
 
 function rules(access: Access, project: ProjectConfig, includePreamble = true): string {
