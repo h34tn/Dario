@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SyncMode } from './config.js';
-import type { Strategy } from './types.js';
+import type { PulledUpdate, Strategy } from './types.js';
 import { DarioError, normPath, realPath } from './util.js';
 
 export class WorkspaceError extends DarioError {
@@ -19,6 +19,8 @@ export type Stamp = Map<string, string> | null;
 export interface SyncReport {
   notes: string[];
   warnings: string[];
+  /** 真的拉到了新提交时才有。 */
+  pulled?: PulledUpdate;
 }
 
 export interface FinalizeInfo {
@@ -177,6 +179,7 @@ export async function syncWithRemote(cwd: string, mode: SyncMode): Promise<SyncR
         '想让 Dario 自动暂存后拉取，把 .dario/project.yaml 的 sync_before_task 改为 pull-autostash。',
     );
   }
+  const head = (await git(cwd, ['rev-parse', 'HEAD'])).stdout.trim();
   const pull = await gitRemote(cwd, ['pull', '--rebase', ...(dirty.length > 0 ? ['--autostash'] : [])]);
   if (await rebaseInProgress(cwd)) {
     await git(cwd, ['rebase', '--abort']);
@@ -192,7 +195,12 @@ export async function syncWithRemote(cwd: string, mode: SyncMode): Promise<SyncR
     );
   }
   if (!pull.ok) throw new WorkspaceError(`开工前拉取 ${upstream} 失败，任务没有开始：${tail(pull.stderr || pull.stdout)}`);
-  report.notes.push(`开工前已拉取 ${upstream}：前进 ${behind} 个提交${dirty.length > 0 ? '，未提交的改动已自动暂存并放回' : ''}。`);
+  // 拉取前后两个提交之间变化的文件。本地没推送的提交变基后内容不变，不会出现在这里
+  const diff = head ? await git(cwd, ['diff', '--name-only', '--relative', '-z', head, 'HEAD']) : undefined;
+  const files = diff?.ok ? diff.stdout.split('\0').filter(Boolean).sort() : [];
+  if (files.length > 0) report.pulled = { upstream, commits: behind, from: head, files };
+  const count = diff?.ok ? `，${files.length} 个文件有变化` : '';
+  report.notes.push(`开工前已拉取 ${upstream}：前进 ${behind} 个提交${count}${dirty.length > 0 ? '，未提交的改动已自动暂存并放回' : ''}。`);
   return report;
 }
 

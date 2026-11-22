@@ -60,6 +60,26 @@ describe('内置插件：统计 token 用量', () => {
     ]);
   });
 
+  it('Claude Code：一次运行里有多条 result 时各段相加，后一段的消息接着前一段累计', () => {
+    // 后台命令结束的通知引出新一轮回答：每条 result 只统计上一条之后的那一段
+    const out = feed(claudePlugin.meter!(), [
+      event('message_start', { message: { id: 'm1', usage: usage(2, 100, 900, 1) } }),
+      event('message_delta', { usage: usage(2, 100, 900, 20) }, { api_message_id: 'm1' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '等通知', usage: usage(2, 100, 900, 25) }),
+      event('message_start', { message: { id: 'm2', usage: usage(1, 10, 1000, 1) } }),
+      event('message_delta', { usage: usage(1, 10, 1000, 7) }, { api_message_id: 'm2' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '做完了', usage: usage(1, 10, 1000, 8) }),
+    ]);
+    expect(out).toEqual([
+      { input: 1002, cachedInput: 900, output: 1 },
+      { input: 1002, cachedInput: 900, output: 20 },
+      { input: 1002, cachedInput: 900, output: 25 },
+      { input: 2013, cachedInput: 1900, output: 26 },
+      { input: 2013, cachedInput: 1900, output: 32 },
+      { input: 2013, cachedInput: 1900, output: 33 },
+    ]);
+  });
+
   it('CodeBuddy：input_tokens 已含命中缓存的部分；开头报的 0 不显示，重复的结束事件只算一次', () => {
     // 数字取自本机实测（CodeBuddy 2.184.0）
     const zero = { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };

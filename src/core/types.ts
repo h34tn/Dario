@@ -137,6 +137,16 @@ export interface JobResult {
   unfinished?: string;
 }
 
+/** 开工前拉取远端时变化的文件。 */
+export interface PulledUpdate {
+  upstream: string;
+  commits: number;
+  /** 拉取之前的提交。 */
+  from: string;
+  /** 相对项目根目录、使用正斜杠的路径；项目根目录之外的文件不列。 */
+  files: string[];
+}
+
 export interface Job {
   images?: { n: number; path: string }[];
   id: string;
@@ -154,6 +164,8 @@ export interface Job {
   contextJob?: string;
   /** 同一话题上一个任务的结论摘要。 */
   context?: string;
+  /** 开工前从远端拉取带来的更新；没有拉取、或拉取没有带来变化时不填。 */
+  pulled?: PulledUpdate;
   plan?: Plan;
   /** 计划里下一个要执行的步骤下标。 */
   cursor: number;

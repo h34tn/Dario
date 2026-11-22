@@ -258,6 +258,22 @@ describe('内置插件：解析真实输出', () => {
     expect(claudePlugin.parse(raw({ stdout: none })).costUsd).toBe(0);
   });
 
+  it('Claude Code 一次运行里有多条 result（后台命令的通知引出新一轮回答）：费用把各段加起来，答复取最后一条', () => {
+    // 结构取自本机实测（Claude Code，J0048 第 2 步）：两条 result 各自只统计自己那一段
+    const first =
+      '{"type":"result","subtype":"success","is_error":false,"result":"正在等后台计时跑完","session_id":"s1","total_cost_usd":4.716,' +
+      '"result_index":0,"model_usage_since_last_result":{"claude-opus-5-5":{"costUSD":2.61}}}';
+    const second =
+      '{"type":"result","subtype":"success","is_error":false,"result":"五档都量成了","session_id":"s1","total_cost_usd":5.076,' +
+      '"result_index":1,"model_usage_since_last_result":{"claude-opus-5-5":{"costUSD":0.36}}}';
+    const out = claudePlugin.parse(raw({ stdout: `${first}\n{"type":"assistant"}\n${second}` }));
+    expect(out.text).toBe('五档都量成了');
+    expect(out.costUsd).toBeCloseTo(2.97, 10);
+    // 没有分段字段的旧版本：total_cost_usd 是累计值，取最后一条，不相加
+    const old = (cost: number, text: string) => `{"type":"result","subtype":"success","result":"${text}","total_cost_usd":${cost}}`;
+    expect(claudePlugin.parse(raw({ stdout: `${old(1, '一')}\n${old(1.5, '二')}` })).costUsd).toBe(1.5);
+  });
+
   it('Codex 的 JSONL：取最终答复，配置警告不算失败', () => {
     expect(codexPlugin.parse(raw({ stdout: CODEX_STDOUT, resultFileText: '你好\n' }))).toMatchObject({ text: '你好' });
     expect(codexPlugin.parse(raw({ stdout: CODEX_STDOUT })).text).toBe('你好');

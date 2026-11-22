@@ -329,9 +329,11 @@ export function streamJsonMeter(opts: { inputIncludesCache: boolean }): (line: s
     const input = opts.inputIncludesCache ? n(u.input_tokens) : n(u.input_tokens) + n(u.cache_creation_input_tokens) + cached;
     return { input, cachedInput: cached, output: n(u.output_tokens) };
   };
+  // 一次运行可能有多条 result（后台命令结束的通知会引出新一轮回答），每条只统计上一条之后的那一段。
+  // settled 是已有 result 结算过的各段之和；messages 只放最后一条 result 之后的消息
   const messages = new Map<string, TokenUsage>();
+  const settled: TokenUsage = { input: 0, cachedInput: 0, output: 0 };
   let current: string | undefined;
-  let final: TokenUsage | undefined;
   let reported = '';
 
   return (line) => {
@@ -339,7 +341,17 @@ export function streamJsonMeter(opts: { inputIncludesCache: boolean }): (line: s
     if (!line.includes('"usage"')) return undefined;
     const record = jsonRecord(line);
     if (!record) return undefined;
-    if (record.type === 'result') final = read(record.usage) ?? final;
+    if (record.type === 'result') {
+      // 这一段以 result 记录为准；记录里没有用量时按已收到的消息结算
+      const segment = read(record.usage) ?? [...messages.values()].reduce(
+        (sum, m) => ({ input: sum.input + m.input, cachedInput: sum.cachedInput + m.cachedInput, output: sum.output + m.output }),
+        { input: 0, cachedInput: 0, output: 0 },
+      );
+      settled.input += segment.input;
+      settled.cachedInput += segment.cachedInput;
+      settled.output += segment.output;
+      messages.clear();
+    }
     // 子代理的消息不计入，与 result 记录的口径一致
     else if (record.parent_tool_use_id == null) {
       let id: string | undefined;
@@ -362,14 +374,11 @@ export function streamJsonMeter(opts: { inputIncludesCache: boolean }): (line: s
           : usage);
       }
     }
-    let total = final;
-    if (!total) {
-      total = { input: 0, cachedInput: 0, output: 0 };
-      for (const m of messages.values()) {
-        total.input += m.input;
-        total.cachedInput += m.cachedInput;
-        total.output += m.output;
-      }
+    const total = { ...settled };
+    for (const m of messages.values()) {
+      total.input += m.input;
+      total.cachedInput += m.cachedInput;
+      total.output += m.output;
     }
     // 有的工具在消息开头报的全是 0，等有了真实的数再显示
     if (total.input === 0 && total.output === 0) return undefined;
@@ -469,18 +478,21 @@ function runCostUsd(result: Record<string, unknown>): number | undefined {
 }
 
 /**
- * 解析 Claude Code 风格的 stream-json 输出：取最后一条 type 为 result 的记录。
+ * 解析 Claude Code 风格的 stream-json 输出：答复取最后一条 type 为 result 的记录。
  * Claude Code 与 CodeBuddy 都使用这种格式。
+ * 一次运行可能有多条 result：AI 先答一次，后台命令结束的通知又引出一轮新的回答。
+ * 每条只统计它自己那一段，所以费用要把各段加起来；没有分段字段时 total_cost_usd 是累计值，取最后一条。
  */
 export function parseStreamJsonResult(stdout: string): AgentOutput {
-  const events = parseJsonLines(stdout);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i]!;
-    if (e.type !== 'result') continue;
+  const results = parseJsonLines(stdout).filter((e) => e.type === 'result');
+  const e = results.at(-1);
+  if (e) {
+    const segmented = results.every((r) => object(r.model_usage_since_last_result));
+    const costUsd = segmented ? results.reduce((sum, r) => sum + runCostUsd(r)!, 0) : runCostUsd(e);
     return {
       text: typeof e.result === 'string' ? e.result : '',
       isError: e.is_error === true || (typeof e.subtype === 'string' && e.subtype !== 'success'),
-      costUsd: runCostUsd(e),
+      costUsd,
       usage: e.usage,
       sessionId: typeof e.session_id === 'string' && e.session_id ? e.session_id : undefined,
     };

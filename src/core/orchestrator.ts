@@ -117,6 +117,11 @@ export class Orchestrator {
   private async syncPhase(job: Job, ws: Workspace): Promise<void> {
     if (!ws.syncRemote) return;
     const report = await ws.syncRemote();
+    // 记在任务上：各角色第一次上场时据此得知哪些文件刚被更新，等待确认后换进程继续时也还在
+    if (report.pulled) {
+      job.pulled = report.pulled;
+      this.save(job);
+    }
     for (const text of report.notes) this.deps.emit({ jobId: job.id, kind: 'phase', text });
     for (const text of report.warnings) {
       job.warnings.push(text);
@@ -246,7 +251,7 @@ export class Orchestrator {
     const role = roles.get(roleId);
     job.branch = (await ws.enterExec(job.id)).branch;
     this.setStatus(job, 'running');
-    const prompt = stepPrompt(project, role, role.access, job.task, job.context);
+    const prompt = stepPrompt(project, role, role.access, job.task, job.context, undefined, job.pulled);
     const brief = stepBrief(project, role, role.access);
     const rec = await this.execStep(job, ws, opts, {
       kind: 'step',
@@ -256,8 +261,8 @@ export class Orchestrator {
       brief,
       // 直派只有一步，能续接的只有上一个任务带过来的会话
       followUp: this.followUp(job, roleId, brief, {
-        full: stepPrompt(project, role, role.access, job.task, this.carriedContext(job, roleId)),
-        carried: () => stepCarried(role, role.access, job.task, this.carriedContext(job, roleId)),
+        full: stepPrompt(project, role, role.access, job.task, this.carriedContext(job, roleId), undefined, job.pulled),
+        carried: () => stepCarried(role, role.access, job.task, this.carriedContext(job, roleId), undefined, job.pulled),
         delta: () => undefined,
       }),
     });
@@ -276,7 +281,7 @@ export class Orchestrator {
     let feedback: string | undefined;
     let plan: Plan | undefined;
     for (let attempt = 0; attempt < 2 && !plan; attempt++) {
-      const prompt = planPrompt(project, roles, job.task, job.context, feedback);
+      const prompt = planPrompt(project, roles, job.task, job.context, feedback, job.pulled);
       const problem = feedback;
       const brief = planBrief(project, roles);
       const rec = await this.execStep(job, ws, opts, {
@@ -287,8 +292,8 @@ export class Orchestrator {
         prompt,
         brief,
         followUp: this.followUp(job, lead, brief, {
-          full: planPrompt(project, roles, job.task, this.carriedContext(job, lead), feedback),
-          carried: () => planCarried(project.settings.leadImplements, job.task, this.carriedContext(job, lead)),
+          full: planPrompt(project, roles, job.task, this.carriedContext(job, lead), feedback, job.pulled),
+          carried: () => planCarried(project.settings.leadImplements, job.task, this.carriedContext(job, lead), job.pulled),
           delta: () => (problem !== undefined ? planFollowUp(problem) : undefined),
         }),
       });
@@ -359,7 +364,7 @@ export class Orchestrator {
       const role = roles.get(step.role);
       const context = priorSteps(job) || job.context;
       const access = leadStep ? 'write' : role.access;
-      const prompt = stepPrompt(project, role, access, step.task, context, step.acceptance);
+      const prompt = stepPrompt(project, role, access, step.task, context, step.acceptance, job.pulled);
       const brief = leadStep ? undefined : stepBrief(project, role, access);
       const rec = await this.execStep(job, ws, opts, {
         kind: 'step',
@@ -369,8 +374,8 @@ export class Orchestrator {
         prompt,
         brief,
         followUp: this.followUp(job, step.role, brief, {
-          full: stepPrompt(project, role, access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance),
-          carried: () => stepCarried(role, access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance),
+          full: stepPrompt(project, role, access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
+          carried: () => stepCarried(role, access, step.task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
           delta: (after, briefed) => leadStep
             ? leadStepFollowUp(project, role, step.task, job, after, step.acceptance)
             : stepFollowUp(project, role, access, step.task, job, after, step.acceptance, briefed),

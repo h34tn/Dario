@@ -1,6 +1,6 @@
 import type { ProjectConfig, RoleDef } from './config.js';
 import type { RoleBook } from './roles.js';
-import type { Access, Job, StepRecord } from './types.js';
+import type { Access, Job, PulledUpdate, StepRecord } from './types.js';
 import { shortHash, truncate } from './util.js';
 
 const CONTEXT_CHARS = 4000;
@@ -55,6 +55,24 @@ export function imageSection(images: Job['images']): string {
   ].join('\n'));
 }
 
+const PULLED_LIST_MAX = 60;
+
+/**
+ * 开工前从远端拉下来的更新。每个会话在本任务里第一次上场时收到；同一任务里续接时它已经知道，不再重复。
+ * 已经在运行的程序（打开着的编辑器、常驻的服务）未必加载了新内容，这一点要明说：它们可能在用到一半时才去重新加载。
+ */
+function pulledSection(pulled: PulledUpdate | undefined): string {
+  if (!pulled?.files.length) return '';
+  const shown = pulled.files.slice(0, PULLED_LIST_MAX).map((f) => `- ${f}`);
+  if (pulled.files.length > PULLED_LIST_MAX) shown.push(`- ……另有 ${pulled.files.length - PULLED_LIST_MAX} 个，用 git diff --name-only ${pulled.from} HEAD 查看`);
+  return section('开工前从远端拉取的更新', [
+    `这个任务开始前，Dario 从 ${pulled.upstream} 拉取了 ${pulled.commits} 个提交，下面这些文件因此有变化：`,
+    ...shown,
+    '它们的内容可能和你记得的不一样，用到时请重新读取。',
+    '已经在运行的程序（例如打开着的编辑器、常驻的服务）可能还没加载这些新内容，中途才去重新加载会打断正在做的事。要用它们运行或验证之前，先让它们完成刷新或重新编译，确认就绪后再开始。',
+  ].join('\n'));
+}
+
 /** 已完成各步的摘要，附在后续步骤的任务说明里。after 给出时只取下标在它之后的步骤。 */
 export function priorSteps(job: Job, after = -1): string {
   const done = job.steps.filter((s) => s.index > after && s.kind !== 'plan' && s.outcome === 'ok');
@@ -103,15 +121,16 @@ function newTaskHeader(role: RoleDef, access: Access): string {
 }
 
 /** 发给从上一个任务带过来、且已经收到过同样固定说明的会话：只交代新任务。 */
-export function stepCarried(role: RoleDef, access: Access, task: string, context?: string, acceptance?: string): string {
-  return newTaskHeader(role, access) + section('上文', context) + section('任务', task) + section('验收标准', acceptance);
+export function stepCarried(role: RoleDef, access: Access, task: string, context?: string, acceptance?: string, pulled?: PulledUpdate): string {
+  return newTaskHeader(role, access) + section('上文', context) + pulledSection(pulled) + section('任务', task) + section('验收标准', acceptance);
 }
 
-export function planCarried(leadImplements: boolean, task: string, context?: string): string {
+export function planCarried(leadImplements: boolean, task: string, context?: string, pulled?: PulledUpdate): string {
   return (
     `# 你的角色\n这是同一次会话里的新任务。你仍然是主控，仍处于只读方式，只做阅读和判断，要动手的工作${leadImplements ? '列入计划，小改动可以按之前的规则留给自己' : '分派出去'}。之前的对话仍然有效。${STALE_NOTE}` +
     `\n${PLAN_FORMAT_REMINDER}` +
     section('上文', context) +
+    pulledSection(pulled) +
     section('任务', task)
   );
 }
@@ -121,6 +140,7 @@ export function reviewCarried(role: RoleDef, job: Job, extraTask?: string): stri
   return (
     newTaskHeader(role, 'read-only') +
     section('原始任务', job.task) +
+    pulledSection(job.pulled) +
     section('已完成的工作', priorSteps(job)) +
     section('本次改动的文件', files) +
     section('审查要求', extraTask ?? '审查上面的改动是否正确、完整地完成了原始任务。请实际阅读改动的文件。') +
@@ -148,11 +168,12 @@ function staleFiles(job: Job, after: number): string | undefined {
   return `${files.map((f) => `- ${f}`).join('\n')}\n这些文件的内容已经和你记得的不一样，用到时请重新读取。`;
 }
 
-export function stepPrompt(project: ProjectConfig, role: RoleDef, access: Access, task: string, context?: string, acceptance?: string): string {
+export function stepPrompt(project: ProjectConfig, role: RoleDef, access: Access, task: string, context?: string, acceptance?: string, pulled?: PulledUpdate): string {
   return (
     `# 你的角色\n${roleHeader(role, access)}` +
     section('工作规则', rules(access, project)) +
     section('上文', context) +
+    pulledSection(pulled) +
     section('任务', task) +
     section('验收标准', acceptance)
   );
@@ -192,7 +213,7 @@ export function planFollowUp(feedback: string): string {
   );
 }
 
-export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string, context?: string, feedback?: string): string {
+export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string, context?: string, feedback?: string, pulled?: PulledUpdate): string {
   const { leadImplements, leadRole } = project.settings;
   const available = roles
     .ids()
@@ -231,6 +252,7 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
     section('分派规则', project.dispatchRules) +
     section('输出格式', format) +
     section('上文', context) +
+    pulledSection(pulled) +
     section('任务', task) +
     section('上一次输出的问题（请修正后重新输出完整计划）', feedback)
   );
@@ -253,6 +275,7 @@ export function reviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, ex
     `# 你的角色\n${roleHeader(role, 'read-only')}` +
     section('工作规则', rules('read-only', project)) +
     section('原始任务', job.task) +
+    pulledSection(job.pulled) +
     section('已完成的工作', priorSteps(job)) +
     section('本次改动的文件', files) +
     section('审查要求', extraTask ?? '审查上面的改动是否正确、完整地完成了原始任务。请实际阅读改动的文件。') +

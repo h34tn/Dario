@@ -63,9 +63,32 @@ describe('开工前与远端同步', () => {
 
   it('落后且工作区干净：拉到最新', async () => {
     remoteAdvances();
+    const before = git(mine, 'rev-parse', 'HEAD');
     const report = await syncWithRemote(mine, 'pull');
-    expect(report.notes[0]).toContain('前进 1 个提交');
+    expect(report.notes[0]).toContain('前进 1 个提交，1 个文件有变化');
+    expect(report.pulled).toEqual({ upstream: 'origin/main', commits: 1, from: before, files: ['a.txt'] });
     expect(read(mine, 'a.txt')).toBe('2\n');
+  });
+
+  it('不落后：不报拉下来的文件', async () => {
+    expect((await syncWithRemote(mine, 'pull')).pulled).toBeUndefined();
+  });
+
+  it('只列远端带来的变化：本地没推送的提交变基后不算；路径相对项目目录，目录之外的不列', async () => {
+    fs.mkdirSync(path.join(theirs, 'sub'));
+    commit(theirs, 'sub/x.txt', '1\n', '子目录');
+    git(theirs, 'push', '--quiet');
+    git(mine, 'pull', '--quiet', '--rebase');
+    commit(mine, 'c.txt', '我的\n', '我的提交');
+    commit(theirs, 'sub/x.txt', '2\n', '同事改子目录');
+    commit(theirs, 'b.txt', '2\n', '同事改根目录');
+    git(theirs, 'push', '--quiet');
+    expect((await syncWithRemote(mine, 'pull')).pulled?.files).toEqual(['b.txt', 'sub/x.txt']);
+    // 项目根目录是仓库里的子目录时，只列这个目录下的文件，路径相对它
+    commit(theirs, 'sub/x.txt', '3\n', '再改子目录');
+    commit(theirs, 'a.txt', '3\n', '再改根目录');
+    git(theirs, 'push', '--quiet');
+    expect((await syncWithRemote(path.join(mine, 'sub'), 'pull')).pulled?.files).toEqual(['x.txt']);
   });
 
   it('本地有没推送的提交：变基到远端之上，不产生合并提交', async () => {
