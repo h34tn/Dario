@@ -306,7 +306,7 @@ fallback: auto                # auto：不可用时自动换下一家；ask：�
 
 | 工具 | 默认上限 | 调低的办法 |
 |---|---|---|
-| Claude Code | 模型的上下文上限；上下文为 100 万的模型约在 96.7 万 token 时压缩 | `agents.yaml` 的 `extra_args` 里加 `--autocompact <token 数>`（不低于 10 万）；或环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`、`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`，Dario 会把这两个变量传给它 |
+| Claude Code | 模型的上下文上限；上下文为 100 万的模型约在 96.7 万 token 时压缩 | `agents.yaml` 的 `extra_args` 里加 `--autocompact <token 数>`（不低于 10 万；工具会留出约 3.3 万的余量，实际约在设定值减 3.3 万时压缩，例如设 15 万约在 11.7 万压缩）；或环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`、`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`，Dario 会把这两个变量传给它 |
 | Codex | 模型自带的默认值，随模型而定 | `extra_args` 里加 `-c model_auto_compact_token_limit=<token 数>` |
 
 `agents.yaml` 里三个内置插件的 `options` 认三个键：`extra_args` 两种方式都追加；`write_args` 只在可写方式追加，`read_only_args` 只在只读方式追加。后两个用于只该给一种方式的设置，例如某个 MCP 服务只对可写角色放行。
