@@ -43,6 +43,8 @@ export interface WatchOptions {
   access?: Access;
   /** 本项目同类步骤的用量基准；不检查用量异常时为空。 */
   baseline?: UsageBaseline;
+  /** 这一步另外禁止的命令，命中即中断，不受项目设置影响（例如收尾时的 git push）。 */
+  blockedCommands?: string[];
   now?: () => number;
 }
 
@@ -148,6 +150,11 @@ export class StepWatch {
     if (a.kind === 'read') alerts.push(...this.repeat('read', normalizeTarget(a.target), this.readCounts, this.opts.rules.loop.repeatRead));
     if (a.kind === 'run') {
       this.inCommand = true;
+      const blocked = this.opts.blockedCommands?.find((p) => matchesCommand(a.target, p));
+      if (blocked && !this.reportedCommands.has(a.target)) {
+        this.reportedCommands.add(a.target);
+        alerts.push(this.alert('forbidden_command', 'stop', `执行了这一步禁止的命令：${a.target}（命中 "${blocked}"）`, a.target));
+      }
       const { patterns, action } = this.opts.rules.forbiddenCommands;
       const hit = action === 'off' ? undefined : patterns.find((p) => matchesCommand(a.target, p));
       if (hit && action !== 'off' && !this.reportedCommands.has(a.target)) {

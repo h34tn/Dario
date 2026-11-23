@@ -177,6 +177,15 @@ export interface JobJson {
    * 请主控判断的开销单列为 supervise，steps 是判断的次数；它和干活的一方同时进行，耗时不计入各步耗时之和。
    */
   phases: PhaseJson[];
+  /** 收尾的结果；没有开启收尾或任务不需要收尾时为 null。 */
+  finish: {
+    mode: string;
+    outcome: string;
+    reason: string | null;
+    rounds: number;
+    commits: Array<{ sha: string; subject: string }>;
+    pushed: { remote: string; branch: string; head: string } | null;
+  } | null;
 }
 
 export interface PhaseJson {
@@ -195,7 +204,7 @@ export interface PhaseJson {
 /** 步骤种类，加上"监督"：请主控判断监控告警的开销。 */
 export type PhaseKind = StepKind | 'supervise';
 
-const PHASE_ORDER: PhaseKind[] = ['plan', 'step', 'rework', 'review', 'summary', 'supervise'];
+const PHASE_ORDER: PhaseKind[] = ['plan', 'step', 'rework', 'review', 'finish', 'summary', 'supervise'];
 
 export interface PhaseTotal {
   kind: PhaseKind;
@@ -338,10 +347,16 @@ export function jobToJson(job: Job): JobJson {
       input: p.metered ? p.input : null, cached_input: p.metered ? p.cachedInput : null, output: p.metered ? p.output : null,
       requests: p.requests || null, cost_usd: p.costUsd ?? null,
     })),
+    finish: job.finish
+      ? {
+        mode: job.finish.mode, outcome: job.finish.outcome, reason: job.finish.reason ?? null, rounds: job.finish.rounds,
+        commits: job.finish.commits, pushed: job.finish.pushed ?? null,
+      }
+      : null,
   };
 }
 
-const KIND_LABEL: Record<string, string> = { plan: '计划', step: '执行', review: '审查', rework: '返工', summary: '汇总', supervise: '监督' };
+const KIND_LABEL: Record<string, string> = { plan: '计划', step: '执行', review: '审查', rework: '返工', finish: '收尾', summary: '汇总', supervise: '监督' };
 const DECISION_LABEL: Record<string, string> = { continue: '主控判断继续', correct: '主控要求纠偏', stop: '主控中止' };
 const OUTCOME_LABEL: Record<string, string> = {
   ok: '完成',

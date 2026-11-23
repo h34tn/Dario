@@ -8,12 +8,14 @@ import { ACTIVE_STATUSES, STATUS_LABEL, type Job, type StepRecord } from './type
  * - step：计划里 cursor 指的那一步。
  * - review：从 cursor 接着走正常流程（计划里的审查步骤，或计划走完后的自动审查）。
  * - rework：拿最近一次审查的问题直接返工，不先重审。extraRound 表示审查已经返工到上限，续接时多给一轮。
+ * - finish：停在收尾，重新收尾；已有的本地提交保留。
  */
 export type ResumePoint =
   | { kind: 'direct'; role: string; failed?: StepRecord }
   | { kind: 'step'; role: string; failed?: StepRecord }
   | { kind: 'review'; role: string; failed?: StepRecord }
-  | { kind: 'rework'; role: string; issues: string[]; reviewText: string; extraRound: boolean; failed?: StepRecord };
+  | { kind: 'rework'; role: string; issues: string[]; reviewText: string; extraRound: boolean; failed?: StepRecord }
+  | { kind: 'finish'; role: string; failed?: StepRecord };
 
 export type ResumeCheck = { ok: true; point: ResumePoint; where: string } | { ok: false; reason: string };
 
@@ -61,6 +63,12 @@ export function resumeCheck(job: Job, roles: Roles): ResumeCheck {
   if (step && (leadStep || step.role !== roles.reviewRole)) {
     const failed = last?.kind === 'step' ? failedRec(last) : undefined;
     return { ok: true, point: { kind: 'step', role: step.role, failed }, where: `计划第 ${job.cursor + 1} 步（${roles.label(step.role)}）` };
+  }
+
+  // 停在收尾（没做成，或者做到一半停下）：计划和审查都已走完
+  if (step === undefined && (job.finish?.outcome === 'failed' || job.finish?.outcome === 'running')) {
+    const failed = last && (last.kind === 'finish' || last.kind === 'review') ? failedRec(last) : undefined;
+    return { ok: true, point: { kind: 'finish', role: roles.leadRole, failed }, where: '收尾' };
   }
 
   // 停在审查或返工：计划里的审查步骤，或者计划走完后自动追加的审查

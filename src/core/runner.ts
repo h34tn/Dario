@@ -61,6 +61,10 @@ export interface StepRequest {
   confirmFallback?: (question: FallbackQuestion) => Promise<boolean>;
   /** 计划给这一步的预计改动范围；不检查偏离计划时不填。 */
   scope?: string[];
+  /** 这一步另外设置给 AI 的环境变量。 */
+  env?: Record<string, string>;
+  /** 这一步禁止的命令，命中即中断。 */
+  blockedCommands?: string[];
 }
 
 export interface RunnerDeps {
@@ -83,7 +87,7 @@ function stepTokens(usage: TokenUsage, base: StepTokens | undefined): StepTokens
   return { input: own(usage.input, base.input), cachedInput: own(usage.cachedInput, base.cachedInput), output: own(usage.output, base.output), ...extra };
 }
 
-const KIND_LABEL: Record<StepKind, string> = { plan: '计划', step: '执行', review: '审查', rework: '返工', summary: '汇总' };
+const KIND_LABEL: Record<StepKind, string> = { plan: '计划', step: '执行', review: '审查', rework: '返工', finish: '收尾', summary: '汇总' };
 
 /** 执行一步：按角色表找担当者，不可用时按候选顺序换人。 */
 export class StepRunner {
@@ -296,6 +300,7 @@ export class StepRunner {
           idleFactor: port.idleFactor,
           access,
           ...(req.scope && { scope: req.scope }),
+          ...(req.blockedCommands?.length && { blockedCommands: req.blockedCommands }),
           ...(rules.usage.action !== 'off' && { baseline: this.baseline(req.job, req.kind, agent) }),
         });
         const controller = new AbortController();
@@ -385,6 +390,7 @@ export class StepRunner {
             workDir,
             label: runLabel,
             resume: resumeId,
+            ...(req.env && { env: req.env }),
             onLine: () => watch.line(),
             signal: controller.signal,
             onActivity: (activity) => {

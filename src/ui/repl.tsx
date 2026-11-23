@@ -34,7 +34,7 @@ export async function finishInPlain(session: Session, opts: ReplOptions, error: 
     if (!plan || prompt) return;
     // 角色名的显示本身也可能是渲染出错的原因，降级时直接显示计划中的角色标识。
     opts.printLine(['这份计划会改动文件：', plan.summary, ...plan.steps.map((step, i) =>
-      `${i + 1}. [${step.role}${step.role === opts.engine.roles.leadRole ? '自己做' : ''}，${step.writes ? '改文件' : '只读'}] ${step.task}`)].filter(Boolean).join('\n'));
+      `${i + 1}. [${step.role}${step.role === opts.engine.roles.leadRole ? '自己做' : ''}，${step.writes ? '改文件' : '只读'}] ${step.task}`), plan.finish].filter(Boolean).join('\n'));
     const rl = readline.createInterface({ input: opts.stdin, output: opts.stdout });
     prompt = rl;
     rl.once('close', () => {

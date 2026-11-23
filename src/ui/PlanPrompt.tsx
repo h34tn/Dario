@@ -53,6 +53,7 @@ export function PlanPrompt({ plan, roleLabel, color, onDecide }: PlanPromptProps
         {details && step.acceptance && lines('验收：', '验收：', step.acceptance)}
       </Box>;
     })}
+    {plan.finish && lines('', '', plan.finish)}
     <Text wrap="truncate-end">{clip('执行吗？  y 执行   n 取消   d 查看每一步的完整任务说明', limit, wide, ellipsis)}</Text>
   </Box>;
 }

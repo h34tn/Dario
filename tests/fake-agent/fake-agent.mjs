@@ -15,6 +15,7 @@
  *   silent      不输出任何内容（配合 hang 测试"启动后无输出"）
  *   files       [{ path, content }]，相对当前目录写文件；content 为 null 表示删除
  *   spawnChild  启动一个长时间存活的子进程，并把它的进程号写到 <剧本>.child.pid
+ *   commands    [[命令, ...参数]]，写完文件后在当前目录依次执行（用收到的环境变量），失败的写到 <剧本>.commands.log
  *   echoPrompt  把收到的任务说明原样作为答复
  *   sessionLost 带 --resume 调用时报"会话找不到"并以退出码 1 结束
  *   usage       [输入, 其中命中缓存, 输出]，带 --emit-session 时在会话号之后输出一行 `USAGE:输入/缓存/输出`
@@ -23,7 +24,7 @@
  * 否则新开一个，会话号为 <name>-s<这是第几次调用>。
  * 每次调用会在 <剧本>.log.jsonl 里追加一行记录：名字、权限、参数、收到的任务说明、环境变量名。
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -94,6 +95,10 @@ for (const f of response.files ?? []) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, f.content);
   }
+}
+for (const [command, ...args] of response.commands ?? []) {
+  const r = spawnSync(command, args, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true });
+  if (r.status !== 0) fs.appendFileSync(`${scenarioFile}.commands.log`, `${command} ${args.join(' ')} -> ${r.status}: ${r.stderr}${r.stdout}`);
 }
 if (response.delayMs) await new Promise((r) => setTimeout(r, response.delayMs));
 if (!response.silent) {

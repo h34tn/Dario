@@ -282,9 +282,9 @@ describe('命令行', () => {
     const r = await sb.runJson(['-p', '--to', 'coder', '写一个文件']);
     expect(r.code).toBe(0);
     expect(Object.keys(r.json).sort()).toEqual(
-      ['branch', 'changed_files', 'conclusion', 'exit_code', 'fallback_happened', 'job_id', 'mode', 'phases', 'plan', 'status', 'steps', 'unfinished', 'warnings'].sort(),
+      ['branch', 'changed_files', 'conclusion', 'exit_code', 'fallback_happened', 'finish', 'job_id', 'mode', 'phases', 'plan', 'status', 'steps', 'unfinished', 'warnings'].sort(),
     );
-    expect(r.json).toMatchObject({ status: 'done', exit_code: 0, mode: 'direct', changed_files: ['src/new.txt'], plan: null, branch: null });
+    expect(r.json).toMatchObject({ status: 'done', exit_code: 0, mode: 'direct', changed_files: ['src/new.txt'], plan: null, branch: null, finish: null });
     expect(Object.keys(r.json.steps[0]).sort()).toEqual(
       ['agent', 'alerts', 'attempts', 'changed_files', 'consults', 'cost_usd', 'duration_ms', 'index', 'kind', 'outcome', 'prompt_chars', 'reason', 'resumed', 'role', 'startup_ms', 'tokens'].sort(),
     );

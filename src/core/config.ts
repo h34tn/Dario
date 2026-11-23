@@ -45,6 +45,19 @@ export interface ProjectSettings {
   syncBeforeTask: SyncMode;
   /** 干活监控的规则，见 watch.ts。 */
   supervise: SuperviseSettings;
+  /** 收尾：做完后是否提交、推送，见 finish.ts。 */
+  finish: FinishSettings;
+}
+
+/** none 不收尾；commit 主控提交；push 主控提交并同步，Dario 核对后推送。 */
+export type FinishMode = 'none' | 'commit' | 'push';
+
+export interface FinishSettings {
+  mode: FinishMode;
+  /** 交给主控的项目收尾说明。只是文字，Dario 不执行其中的命令。 */
+  instructions: string;
+  /** 主控的提交与同步最多运行几轮。 */
+  maxRounds: number;
 }
 
 /**
@@ -238,6 +251,14 @@ const projectFileSchema = z
     preamble: z.string().default(''),
     sync_before_task: z.enum(['off', 'pull', 'pull-autostash']).default('off'),
     supervise: superviseSchema.default({}),
+    finish: z
+      .object({
+        mode: z.enum(['none', 'commit', 'push']).default('none'),
+        instructions: z.string().default(''),
+        max_rounds: z.number().int().min(1).max(10).default(3),
+      })
+      .strict()
+      .default({}),
   })
   .strict();
 
@@ -422,6 +443,7 @@ function parseSettings(data: unknown, file: string, projectLevel: boolean): Proj
       maxInterventions: p.supervise.max_interventions,
       consultTimeoutMinutes: p.supervise.consult_timeout_minutes,
     },
+    finish: { mode: p.finish.mode, instructions: p.finish.instructions, maxRounds: p.finish.max_rounds },
   };
 }
 

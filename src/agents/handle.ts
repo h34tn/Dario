@@ -239,7 +239,7 @@ export class AgentHandle implements AgentPort {
       ...(resume && { resume }),
     });
 
-    const env = this.envFor(invocation.env);
+    const env = this.envFor({ ...req.env, ...invocation.env });
     let reader: QuotaReader | undefined;
     try {
       if (!this.free) reader = this.plugin.quota?.();

@@ -247,6 +247,9 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
     leadImplements
       ? '- 分派给其他角色时，role 必须是"可用角色"里的 id；writes 为 true 的步骤只能交给其中可写的角色。'
       : '- role 必须是"可用角色"里的 id；writes 为 true 的步骤只能交给可写的角色。',
+    ...(project.settings.finish.mode !== 'none'
+      ? [`- 审查通过后 Dario 会安排收尾：由你按项目的收尾说明提交${project.settings.finish.mode === 'push' ? '、与远端同步，再由 Dario 核对后推送' : ''}。不要把提交、推送列为步骤。`]
+      : []),
     `- 步骤不超过 ${project.settings.maxPlanSteps} 个${leadImplements ? '。' : '，不要把主控自己列为步骤。'}`,
     `- 每一步的 task 必须自包含：写清背景、要做什么、涉及哪些文件。${leadImplements ? '其他角色' : '执行者'}看不到本次对话，也看不到其他步骤的说明。`,
     '- writes 表示这一步是否会创建、修改或删除文件，请如实填写。',
@@ -498,22 +501,96 @@ function stepResults(steps: StepRecord[]): string {
 
 const SUMMARY_TASK = '给发起人写一段最终结论：任务是否完成、做了什么、有哪些遗留问题或需要人确认的地方。直接写结论，不要复述过程，不要输出 JSON。';
 
-export function summaryPrompt(job: Job, steps: StepRecord[]): string {
+export function summaryPrompt(job: Job, steps: StepRecord[], finish?: string): string {
   return (
     `# 你的角色\n你是主控。下面是你之前安排的各个步骤的执行结果。你处于只读方式，不要修改任何文件。` +
     section('原始任务', job.task) +
     section('各步结果', stepResults(steps)) +
     section('改动的文件', job.changedFiles.map((f) => `- ${f}`).join('\n')) +
+    section('收尾', finish) +
     section('任务', SUMMARY_TASK)
   );
 }
 
 /** 发给出计划的那个会话：原始任务和计划它都记得，只补各步的执行结果。 */
-export function summaryFollowUp(job: Job, steps: StepRecord[]): string {
+export function summaryFollowUp(job: Job, steps: StepRecord[], finish?: string): string {
   return (
     `# 你的角色\n你仍然是主控。你出的计划已经执行结束，下面是各步的执行结果。你处于只读方式，不要修改任何文件，也不要再输出计划。之前的对话仍然有效。` +
     section('各步结果', stepResults(steps)) +
     section('改动的文件', job.changedFiles.map((f) => `- ${f}`).join('\n')) +
+    section('收尾', finish) +
     section('任务', SUMMARY_TASK)
   );
+}
+
+/** 交给主控收尾（提交与同步）那一轮的说明。 */
+export interface FinishBrief {
+  mode: 'commit' | 'push';
+  /** 推送的目标，例如 origin/main；只提交时为空。 */
+  target?: string;
+  /** 本任务改动、审查过的文件，要提交的就是这些。 */
+  files: string[];
+  /** 工作区里其他有未提交改动的文件，不是本任务的。 */
+  others: string[];
+  /** 这是第几轮。 */
+  round: number;
+  /** 又回到主控这里的原因：推送被拒、核对发现 HEAD 落后、复审没通过等。 */
+  again?: string;
+  /** 复审没通过时要修改的问题；issues 为空时用审查的原文。 */
+  issues?: string[];
+  issuesText?: string;
+}
+
+function finishRules(b: FinishBrief): string {
+  const lines = [
+    '- 只提交"要提交的文件"。"其他有未提交改动的文件"不是本任务的：不要提交，不要丢弃，也不要修改。',
+    '- 按"项目的收尾说明"分组提交、写提交信息；说明里没写的，按改动的性质分成合理的几个提交，提交信息写清做了什么。',
+  ];
+  if (b.mode === 'push') {
+    lines.push(
+      `- 提交之后 git fetch，HEAD 落后于 ${b.target} 时 rebase 到它上面（工作区里还有其他未提交改动时加 --autostash）。有冲突由你自己解决，解决之后按收尾说明做必要的验证。`,
+    );
+  }
+  lines.push(
+    `- 不要推送：${b.mode === 'push' ? '推送由 Dario 在核对之后完成，' : ''}这一轮里执行 git push 会被拦截并中断。`,
+    '- 不要改写远端已有的提交，不要强制操作，不要用 --no-verify 之类跳过钩子，不要动已有的 git stash 记录。',
+    '- 要提交的内容已经审查过。除解决冲突外不要再改它们；确实需要改的，在回复里写明改了什么、为什么，Dario 会把差别交给审核者复审。',
+    `- 做不成（例如钩子或检查一直不通过、冲突解决不了）时停下，说明原因，并在回复的最后单独写一行 \`${BLOCKED_MARK}: <一句话原因>\`。`,
+    `- 完成后在回复里说明：分了哪几个提交${b.mode === 'push' ? '、是否同步了远端、冲突怎么解决的' : ''}、按收尾说明跑了哪些检查、结果如何。`,
+  );
+  return lines.join('\n');
+}
+
+function finishBody(project: ProjectConfig, b: FinishBrief): string {
+  const what = b.mode === 'push' ? `提交并与 ${b.target} 同步，之后由 Dario 核对、推送` : '提交，不推送';
+  return (
+    section('这一轮要做的事', `计划已经执行完，改动审查通过。现在由你收尾：${what}。这是第 ${b.round} 轮。${b.again ? `\n${b.again}` : ''}`) +
+    section('复审没有通过，需要修改的问题', b.issues?.length ? b.issues.map((s, i) => `${i + 1}. ${s}`).join('\n') : b.issuesText) +
+    section('收尾规则', finishRules(b)) +
+    section('项目约定', project.settings.preamble) +
+    section('项目的收尾说明', project.settings.finish.instructions) +
+    section('要提交的文件', b.files.map((f) => `- ${f}`).join('\n')) +
+    section('其他有未提交改动的文件（不是本任务的）', b.others.map((f) => `- ${f}`).join('\n'))
+  );
+}
+
+/** 新开会话时的完整说明：带上原始任务和各步结果，据此分组。 */
+export function finishPrompt(project: ProjectConfig, job: Job, b: FinishBrief): string {
+  return `# 你的角色\n你是主控，这一步你可以执行 git 提交。` + section('原始任务', job.task) + section('各步结果', priorSteps(job)) + finishBody(project, b);
+}
+
+/** 续接主控的会话：任务和计划它都记得。 */
+export function finishFollowUp(project: ProjectConfig, b: FinishBrief): string {
+  return `# 你的角色\n你仍然是主控，之前的对话仍然有效。这一步你可以执行 git 提交。${STALE_NOTE}` + finishBody(project, b);
+}
+
+/** 收尾核对发现提交和审过的内容对不上时，交给审核者只审这部分差别。resumed 表示续接审查的会话。 */
+export function finishReviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, diff: string, resumed: boolean): string {
+  const ask =
+    '本任务的改动已经审查通过。主控收尾时与远端同步、解决冲突，或者在收尾中做了修改，下面这些文件提交里的改动因此和审过的不一样。' +
+    '对比"审过时的改动"和"现在提交里的改动"，只审两者的差别：冲突解决得对不对，有没有丢掉或改坏审过的内容，额外的改动是否必要且正确。没有变化的部分不必重审。';
+  const head = resumed
+    ? continueHeader(role, 'read-only', '这是同一个任务里收尾时的复审，')
+    : `# 你的角色\n${roleHeader(role, 'read-only')}` + section('工作规则', rules('read-only', project)) + section('原始任务', job.task);
+  return head + section('对不上的文件', diff) + section('审查要求', ask) + section('输出格式', REVIEW_FORMAT);
 }

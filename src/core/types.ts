@@ -9,6 +9,7 @@ export type JobStatus =
   | 'awaiting_approval'
   | 'running'
   | 'reviewing'
+  | 'finishing'
   | 'done'
   | 'failed'
   | 'cancelled'
@@ -17,7 +18,7 @@ export type JobStatus =
   | 'out_of_scope';
 
 /** 有进程正在推进的状态。 */
-export const ACTIVE_STATUSES: readonly JobStatus[] = ['queued', 'planning', 'running', 'reviewing'];
+export const ACTIVE_STATUSES: readonly JobStatus[] = ['queued', 'planning', 'running', 'reviewing', 'finishing'];
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
   queued: '排队',
@@ -25,6 +26,7 @@ export const STATUS_LABEL: Record<JobStatus, string> = {
   awaiting_approval: '等待确认',
   running: '执行中',
   reviewing: '审查中',
+  finishing: '收尾中',
   done: '完成',
   failed: '失败',
   cancelled: '已取消',
@@ -52,7 +54,7 @@ export interface Attempt {
   durationMs?: number;
 }
 
-export type StepKind = 'plan' | 'step' | 'review' | 'rework' | 'summary';
+export type StepKind = 'plan' | 'step' | 'review' | 'rework' | 'finish' | 'summary';
 
 export type StepOutcome = 'ok' | FailureKind | 'all_unavailable';
 
@@ -169,6 +171,30 @@ export interface Plan {
   /** 任务只是提问、不需要分派时，主控直接给出的答案。 */
   answer?: string | null;
   steps: PlanStep[];
+  /** 开启收尾时，结束后会做什么（只提交，或提交并推送到哪里）。由 Dario 在出计划后写上，随计划给人确认。 */
+  finish?: string;
+}
+
+/** 审过的一个文件：审查时的基准（HEAD 里的内容）和审过的内容，都是 git 对象号；文件不存在时为 null。 */
+export interface ReviewedFile {
+  base: string | null;
+  blob: string | null;
+}
+
+/** 收尾的记录，见 finish.ts。 */
+export interface FinishRecord {
+  mode: 'commit' | 'push';
+  /** running 进行中（或停在半截）；skipped 没有做（原因在 reason）。 */
+  outcome: 'running' | 'done' | 'failed' | 'skipped';
+  reason?: string;
+  /** 主控的提交与同步运行了几轮。续接时重新计算。 */
+  rounds: number;
+  /** 收尾开始时的 HEAD。 */
+  startHead?: string;
+  /** 审过的内容，键是相对项目根目录的路径。 */
+  reviewed?: Record<string, ReviewedFile>;
+  commits: Array<{ sha: string; subject: string }>;
+  pushed?: { remote: string; branch: string; head: string };
 }
 
 export type FailureCode =
@@ -177,7 +203,8 @@ export type FailureCode =
   | 'plan_invalid'
   | 'review_rejected'
   | 'workspace'
-  | 'out_of_scope';
+  | 'out_of_scope'
+  | 'finish_failed';
 
 export interface JobResult {
   conclusion: string;
@@ -247,6 +274,8 @@ export interface Job {
   /** 隔离执行时的任务分支。 */
   branch?: string;
   failureCode?: FailureCode;
+  /** 收尾；项目没有开启或任务不需要收尾时没有。 */
+  finish?: FinishRecord;
   warnings: string[];
   result?: JobResult;
   /** 正在推进该任务的 Dario 进程。 */

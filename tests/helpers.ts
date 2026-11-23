@@ -41,6 +41,8 @@ export interface FakeResponse {
   sessionLost?: boolean;
   /** [输入, 其中命中缓存, 输出]，按整个会话的累计值报。只对支持续接的假 AI 有效。 */
   usage?: [number, number, number];
+  /** 写完文件后依次执行的命令，失败的记在 <剧本>.commands.log。 */
+  commands?: string[][];
 }
 
 export interface FakeCall {
@@ -238,7 +240,7 @@ export default {
   /** 设置剧本并清空调用计数与记录。 */
   setScenario(scenario: Record<string, FakeResponse[]>): void {
     fs.writeFileSync(this.scenarioFile, JSON.stringify(scenario));
-    for (const suffix of ['.count.json', '.log.jsonl', '.child.pid']) fs.rmSync(this.scenarioFile + suffix, { force: true });
+    for (const suffix of ['.count.json', '.log.jsonl', '.child.pid', '.commands.log']) fs.rmSync(this.scenarioFile + suffix, { force: true });
   }
 
   calls(): FakeCall[] {

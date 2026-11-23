@@ -94,7 +94,7 @@ export function wrapAnsi(text: string, width: number, wide: boolean, joins?: Row
   return lines;
 }
 
-const phases = { plan: '计划', step: '执行', review: '审查', rework: '返工', summary: '汇总' };
+const phases = { plan: '计划', step: '执行', review: '审查', rework: '返工', finish: '收尾', summary: '汇总' };
 
 function elapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -157,6 +157,7 @@ export function planLines(plan: Plan, roleLabel: (id: string) => string, details
     if (details && step.files?.length) append('范围：', '范围：', clean(step.files.join('、')));
     if (details && step.refs?.length) append('参考：', '参考：', clean(step.refs.join('、')));
   }
+  if (plan.finish) append('', '', clean(plan.finish));
   return rows;
 }
 

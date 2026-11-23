@@ -33,6 +33,8 @@ export interface AgentRunRequest extends ModelSettings {
   signal?: AbortSignal;
   /** 要续接的会话号。只对 resumes 为 true 的 AI 有效，此时 prompt 是这一轮的增量说明。 */
   resume?: string;
+  /** 这一次运行另外设置的环境变量（例如收尾时临时禁用推送的 git 配置）。 */
+  env?: Record<string, string>;
 }
 
 export interface AgentRunResult {
