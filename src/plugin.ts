@@ -88,6 +88,11 @@ export interface InvokeRequest {
   options: Record<string, unknown>;
   /** 要续接的会话号。只有声明了 resumes 的插件会收到；有值时 prompt 只是这一轮的增量说明。 */
   resume?: string;
+  /**
+   * 压缩界限：会话历史超过这么多 token 时由工具压缩成摘要。只有声明了 compacts 的插件会收到；
+   * 没有值时按工具自己的默认值。
+   */
+  compactLimit?: number;
 }
 
 export interface Invocation {
@@ -152,6 +157,8 @@ export interface AgentPlugin {
    * 读写权限仍然每次按 req.access 给出，不能沿用会话上一轮的权限。
    */
   resumes?: boolean;
+  /** 是否支持设定压缩界限。为 true 时 build 要处理 req.compactLimit。 */
+  compacts?: boolean;
   /** 该工具需要的环境变量名，支持以 * 结尾的前缀写法。 */
   envPass?: string[];
   /** 仅在任务附图时追加到默认清单；用户自定清单仍优先。 */

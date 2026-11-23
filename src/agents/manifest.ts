@@ -13,11 +13,12 @@ import { looksUnavailable, PLUGIN_API_VERSION, type AgentPlugin, type InvokeRequ
  *     read_only: [--profile, headless]
  *     write: [--profile, headless]
  *   model_args: [--model, "{model}"]   # 只在配置了模型时追加
+ *   compact_args: [--compact-at, "{compact_limit}"]   # 只在设了压缩界限、且总开关打开时追加
  *   prompt: stdin                      # stdin（默认）或 arg（作为最后一个参数）
  *   output: stdout                     # stdout（默认）或 file（工具把答复写到 {result_file}）
  *   streams: false
  *
- * 参数里可用的占位符：{cwd}、{model}、{result_file}。
+ * 参数里可用的占位符：{cwd}、{model}、{result_file}、{compact_limit}。
  */
 const manifestSchema = z
   .object({
@@ -27,6 +28,7 @@ const manifestSchema = z
     version_args: z.array(z.string()).optional(),
     args: z.object({ read_only: z.array(z.string()), write: z.array(z.string()) }).strict(),
     model_args: z.array(z.string()).default([]),
+    compact_args: z.array(z.string()).default([]),
     prompt: z.enum(['stdin', 'arg']).default('stdin'),
     output: z.enum(['stdout', 'file']).default('stdout'),
     streams: z.boolean().default(false),
@@ -57,7 +59,8 @@ export function pluginFromManifest(text: string, file: string): AgentPlugin {
   }
 
   const fill = (arg: string, req: InvokeRequest): string =>
-    arg.replaceAll('{cwd}', req.cwd).replaceAll('{model}', req.model ?? '').replaceAll('{result_file}', req.resultFile);
+    arg.replaceAll('{cwd}', req.cwd).replaceAll('{model}', req.model ?? '').replaceAll('{result_file}', req.resultFile)
+      .replaceAll('{compact_limit}', String(req.compactLimit ?? ''));
 
   return {
     apiVersion: PLUGIN_API_VERSION,
@@ -66,6 +69,7 @@ export function pluginFromManifest(text: string, file: string): AgentPlugin {
     defaultCommand: m.command,
     versionArgs: m.version_args,
     streams: m.streams,
+    compacts: m.compact_args.length > 0,
     ...(m.progress && {
       progress(line: string) {
         const text = line.trim();
@@ -75,7 +79,7 @@ export function pluginFromManifest(text: string, file: string): AgentPlugin {
     envPass: m.env_pass,
     build(req) {
       const base = req.access === 'write' ? m.args.write : m.args.read_only;
-      const args = [...base, ...(req.model ? m.model_args : [])].map((a) => fill(a, req));
+      const args = [...base, ...(req.model ? m.model_args : []), ...(req.compactLimit ? m.compact_args : [])].map((a) => fill(a, req));
       const extra = req.options.extra_args;
       if (Array.isArray(extra)) args.push(...extra.map(String));
       if (m.prompt === 'arg') return { args: [...args, req.prompt] };

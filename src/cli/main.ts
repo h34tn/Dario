@@ -14,7 +14,7 @@ import {
   DEFAULT_ROLES_YAML,
 } from '../core/defaults.js';
 import { describePlan } from '../core/orchestrator.js';
-import { parseModel, runModel } from '../core/commands.js';
+import { parseCompact, parseModel, runCompact, runModel } from '../core/commands.js';
 import { formatModel, formatFallbackQuestion, formatJob, formatPhases, formatQuota, formatRoles, formatSteps, jobToJson } from '../core/report.js';
 import type { Engine } from '../core/engine.js';
 import { exitCodeForJob, STATUS_LABEL, type FallbackQuestion, type Job, type ProgressEvent } from '../core/types.js';
@@ -54,6 +54,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
   dario role <角色> --reset        取消临时指定
   dario model [角色] [型号] [强度]  交互指令 /model；可用 --effort <档位>、--save、--default、--reset
   dario agents                     列出各家 AI
+  dario compact [on|off]           查看、开启或关闭各家的压缩界限
   dario health [AI]                实际调用一次，确认可用（会消耗额度）
   dario jobs                       最近的任务
   dario job <任务号>               任务详情
@@ -80,7 +81,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
 
 退出码：0 完成 · 1 任务失败 · 2 用法或配置错误 · 3 没有可用的 AI · 4 计划等待确认 · 5 取消或超时`;
 
-const SUBCOMMANDS = new Set(['roles', 'role', 'model', 'agents', 'health', 'jobs', 'job', 'approve', 'resume', 'cancel', 'init', 'check', 'serve', 'input-test', 'help']);
+const SUBCOMMANDS = new Set(['roles', 'role', 'model', 'agents', 'compact', 'health', 'jobs', 'job', 'approve', 'resume', 'cancel', 'init', 'check', 'serve', 'input-test', 'help']);
 
 interface Parsed {
   plain: boolean;
@@ -456,6 +457,12 @@ async function dispatch(argv: string[], io: CliIO): Promise<number> {
         const st = !a.enabled ? '已停用' : !a.installed ? '未安装' : a.unavailable ? `暂时不可用（${a.unavailable}）` : '可用';
         io.stdout(`${a.id}（插件 ${a.plugin}${a.model || a.effort ? `，模型 ${formatModel(a.id, a.model, a.effort, engine.roles.modelLabel)}` : ''}）：${st}${a.version ? ` · ${a.version}` : ''} · ${formatQuota(a.quota, new Date())}`);
       }
+      return 0;
+    }
+    case 'compact': {
+      const cmd = parseCompact(args);
+      if (cmd.kind === 'invalid') throw new ConfigError(cmd.message.replace('/compact', 'dario compact'));
+      io.stdout(runCompact(engine, cmd));
       return 0;
     }
     case 'health': {

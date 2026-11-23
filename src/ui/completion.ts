@@ -16,6 +16,7 @@ const commands = [
   ['/role <角色> <AI>', '临时指定担当者'],
   ['/model [角色] [型号] [强度]', '查看或设置角色的型号和强度'],
   ['/agents', '列出各家 AI'],
+  ['/compact [on|off]', '查看、开启或关闭各家的压缩界限'],
   ['/health [AI]', '实际调用一次，确认可用'],
   ['/status [任务号]', '查看任务'],
   ['/approve <任务号>', '批准等待确认的计划'],
@@ -46,6 +47,9 @@ export function suggest(line: string, ctx: CompletionContext): Suggestion[] {
     const base = command === '/role' ? `/role ${args[0]} ` : '/health ';
     options = ctx.agents.map(label => ({ label, hint: '', value: base + label }));
     if (command === '/role') options.push({ label: 'reset', hint: '恢复为角色表里的顺序', value: base + 'reset' });
+  } else if (command === '/compact' && args.length === 1) {
+    options = [{ label: 'on', hint: '按各家设的界限压缩' }, { label: 'off', hint: '按工具自己的默认值压缩' }]
+      .map(item => ({ ...item, value: '/compact ' + item.label, submitOnSelect: true }));
   } else return [];
   return options.filter(item => item.label.toLowerCase().startsWith(prefix));
 }

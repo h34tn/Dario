@@ -99,6 +99,8 @@ export interface AgentInstanceConfig {
   permissions?: WritePermissions;
   /** 判断"没动静"时阈值乘以这个数。 */
   idleFactor?: number;
+  /** 压缩界限（token）。插件支持、且总开关打开时才传给工具。 */
+  compactLimit?: number;
   options?: Record<string, unknown>;
 }
 
@@ -135,6 +137,8 @@ export interface UserConfig {
   startupTimeoutSeconds: number;
   /** 可写角色的权限，对各家生效；某一家可以在自己的条目里另设。 */
   permissions: WritePermissions;
+  /** 是否把各家的压缩界限传给工具。关闭时各家按工具自己的默认值压缩。运行中可由 /compact 改写。 */
+  useCompactLimit: boolean;
   envPass: string[];
   channels: { feishu?: FeishuChannelConfig };
   access: Record<string, AccessEntry>;
@@ -257,6 +261,7 @@ const agentSchema = z
     free: z.boolean().optional(),
     permissions: z.enum(['full', 'listed']).optional(),
     idle_factor: z.number().positive().optional(),
+    compact_limit: z.number().int().positive().optional(),
     options: z.record(z.unknown()).optional(),
   })
   .strict();
@@ -268,6 +273,7 @@ const agentsFileSchema = z
     cooldown_minutes: z.number().positive().default(10),
     startup_timeout_seconds: z.number().positive().default(120),
     permissions: z.enum(['full', 'listed']).default('full'),
+    use_compact_limit: z.boolean().default(true),
     env_pass: z.array(z.string()).nullish(),
   })
   .strict();
@@ -490,6 +496,7 @@ export function loadUserConfig(home: string): UserConfig {
       free: c.free,
       permissions: c.permissions,
       idleFactor: c.idle_factor,
+      compactLimit: c.compact_limit,
       options: c.options,
     };
   }
@@ -526,6 +533,7 @@ export function loadUserConfig(home: string): UserConfig {
     cooldownMinutes: a.cooldown_minutes,
     startupTimeoutSeconds: a.startup_timeout_seconds,
     permissions: a.permissions,
+    useCompactLimit: a.use_compact_limit,
     envPass: a.env_pass ?? [],
     channels: { feishu },
     access,

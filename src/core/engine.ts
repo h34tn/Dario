@@ -14,6 +14,14 @@ import type { StateStore } from './state.js';
 import { ACTIVE_STATUSES, type Job, type Origin, type ProgressEvent, type RoleSession, type Strategy } from './types.js';
 import { ConfigError, DarioError, isPidAlive, normPath, nowIso } from './util.js';
 import { InPlaceWorkspace, IsolatedWorkspace, type IsolatedOptions, type Workspace } from './workspace.js';
+import { editYamlFile } from './yaml-edit.js';
+
+export interface CompactLimits {
+  /** 总开关：关闭时各家按工具自己的默认值压缩。 */
+  enabled: boolean;
+  /** 启用的各家 AI：本机设的界限，以及插件是否支持。 */
+  agents: { id: string; limit?: number; supported: boolean }[];
+}
 
 export interface EngineDeps {
   user: UserConfig;
@@ -360,6 +368,23 @@ export class Engine {
       state.audit('health', { agent: port.id, outcome: res.outcome, reason: res.reason });
     }
     return results;
+  }
+
+  compactLimits(): CompactLimits {
+    return {
+      enabled: this.deps.user.useCompactLimit,
+      agents: this.deps.catalog.list().filter(p => p.enabled)
+        .map(p => ({ id: p.id, ...(p.compactLimit && { limit: p.compactLimit }), supported: p.compacts === true })),
+    };
+  }
+
+  /** 打开或关闭压缩界限，写入本机 agents.yaml，下一步起生效。返回写入的文件。 */
+  setCompactLimits(enabled: boolean): string {
+    const file = path.join(this.deps.user.home, 'agents.yaml');
+    editYamlFile(file, [{ keys: ['use_compact_limit'], value: enabled }], true);
+    this.deps.user.useCompactLimit = enabled;
+    this.deps.state.audit('compact_limit', { enabled });
+    return file;
   }
 
   setRole(role: string, agent: string, save: boolean): string {

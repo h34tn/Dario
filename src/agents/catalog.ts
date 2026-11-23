@@ -76,7 +76,11 @@ export async function buildCatalog(user: UserConfig, env: NodeJS.ProcessEnv = pr
     instances.set(id, merged);
   }
 
-  const settings = { startupTimeoutSeconds: user.startupTimeoutSeconds, permissions: user.permissions, envPass: user.envPass, env };
+  const settings = {
+    startupTimeoutSeconds: user.startupTimeoutSeconds, permissions: user.permissions, envPass: user.envPass, env,
+    // /compact 运行中改写这个开关，每次运行时读最新值
+    get useCompactLimit() { return user.useCompactLimit; },
+  };
   const handles = new Map<string, AgentPort>();
   for (const [id, cfg] of instances) {
     const pluginId = cfg.plugin ?? id;

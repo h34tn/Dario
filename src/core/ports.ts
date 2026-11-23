@@ -83,6 +83,10 @@ export interface AgentPort {
   streams?: boolean;
   /** 判断"没动静"时阈值乘以这个数，本机 agents.yaml 的 idle_factor，默认 1。 */
   idleFactor?: number;
+  /** 本机 agents.yaml 里给它设的压缩界限（token）。 */
+  compactLimit?: number;
+  /** 插件是否支持设定压缩界限。 */
+  compacts?: boolean;
   detect(): Promise<AgentDetect>;
   run(req: AgentRunRequest): Promise<AgentRunResult>;
 }

@@ -4,7 +4,7 @@ import { isMap, isScalar, isSeq, parseDocument, stringify, type ParsedNode, type
 import { displayWidth } from './display-width.js';
 import { ConfigError, withLock, writeFileAtomic } from './util.js';
 
-interface Change { keys: string[]; value: string | string[] | null | undefined }
+interface Change { keys: string[]; value: string | boolean | string[] | null | undefined }
 
 function render(value: unknown, flow = false): string {
   return stringify(value, { collectionStyle: flow ? 'flow' : 'block', lineWidth: 0, flowCollectionPadding: false }).trimEnd();
@@ -144,9 +144,9 @@ function edit(source: string, { keys, value }: Change, file: string): string {
         if (item.value !== value[i]) result = result.slice(0, item.range[0]) + scalarText(value[i]!, item.type) + result.slice(item.range[1]);
       }
     } else {
-      if (!isScalar(node) || typeof value !== 'string') throw fail();
+      if (!isScalar(node) || (typeof value !== 'string' && typeof value !== 'boolean')) throw fail();
       const [start, end] = node.range;
-      const replacement = scalarText(value, node.type);
+      const replacement = typeof value === 'boolean' ? String(value) : scalarText(value, node.type);
       if (node.type === 'BLOCK_LITERAL' || node.type === 'BLOCK_FOLDED') throw fail();
       const gap = /^ {2,}(?=#)/.exec(source.slice(end))?.[0] ?? '';
       const padding = gap && ' '.repeat(Math.max(1, gap.length + displayWidth(source.slice(start, end)) - displayWidth(replacement)));

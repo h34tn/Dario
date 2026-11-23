@@ -12,6 +12,8 @@ export interface HandleSettings {
   permissions?: WritePermissions;
   /** 用户配置里传给所有 AI 的环境变量。 */
   envPass: string[];
+  /** 是否把压缩界限传给工具，不给时按传。运行中可能改变，每次运行时读取。 */
+  readonly useCompactLimit?: boolean;
   env: NodeJS.ProcessEnv;
 }
 
@@ -179,6 +181,14 @@ export class AgentHandle implements AgentPort {
     return this.config.idleFactor;
   }
 
+  get compactLimit(): number | undefined {
+    return this.config.compactLimit;
+  }
+
+  get compacts(): boolean {
+    return this.plugin.compacts === true;
+  }
+
   get timeoutMinutes(): number | undefined {
     return this.config.timeoutMinutes;
   }
@@ -225,6 +235,7 @@ export class AgentHandle implements AgentPort {
 
     const model = req.model ?? this.model;
     const effort = req.effort ?? this.effort;
+    const compactLimit = this.compacts && this.settings.useCompactLimit !== false ? this.compactLimit : undefined;
     const invocation = this.plugin.build({
       access: req.access,
       cwd: req.cwd,
@@ -237,6 +248,7 @@ export class AgentHandle implements AgentPort {
       options: this.config.options ?? {},
       ...(unrestricted && { unrestricted }),
       ...(resume && { resume }),
+      ...(compactLimit && { compactLimit }),
     });
 
     const env = this.envFor(invocation.env);

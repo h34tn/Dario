@@ -1,6 +1,6 @@
 import os from 'node:os';
 import readline from 'node:readline';
-import { HELP_TEXT, runModel, parseCommand } from '../core/commands.js';
+import { HELP_TEXT, runCompact, runModel, parseCommand } from '../core/commands.js';
 import type { Engine } from '../core/engine.js';
 import { describePlan } from '../core/orchestrator.js';
 import { formatFallbackQuestion, formatJob, formatQuota, formatModel, formatRoles } from '../core/report.js';
@@ -76,6 +76,9 @@ export async function runRepl(
             break;
           case 'role':
             out(cmd.reset ? engine.resetRole(cmd.role) : engine.setRole(cmd.role, cmd.agent!, cmd.save));
+            break;
+          case 'compact':
+            out(runCompact(engine, cmd));
             break;
           case 'health':
             out('正在检查，会实际调用一次 AI…');

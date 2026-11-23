@@ -122,7 +122,7 @@ rise · 主控 claude · 执行者 codex · 测试者 claude · 审核者 claude
 - 后一个任务自动带上前一个任务的结论，各角色也接着用上一个任务的 AI 会话，不必重新读一遍项目，同一个会话已经知道的内容 Dario 不再重发：角色说明、工作规则和项目约定只在会话第一次发（项目配置改了会重发一次），上一个任务的结论也只发给没参加那个任务的角色；`/new` 清空，从头开始。同一个问题做完、要换一个问题时，记得 `/new`。
 - 退出后再进来（比如更新 Dario 之后）可以接着做：启动时加 `-c`（`--continue`），或者进来后输入 `/continue`。想回到更早的某个任务，在后面写任务号：`dario -c J0027` 或 `/continue J0027`（任务号用 `dario jobs` 查）；会话还原成那个任务刚结束时的样子，只能接本项目里已经结束的任务。上文和各角色的 AI 会话都会接上，并回显上一个任务的结论。每个项目只保留最近一次会话，`/new` 会把它删掉。
 - `/continue` 只是带着之前的记忆下达新任务，新任务照常从出计划开始。要让没做完的任务从停下的那一步接着做，用 `/resume`（见上文）。
-- 会话变长后由各家工具自己压缩，Dario 不另设上限。想让它早点压缩，在 `~/.dario/agents.yaml` 里给对应的 AI 加参数：Claude Code 用 `extra_args: ["--autocompact", "200000"]`，Codex 用 `extra_args: ["-c", "model_auto_compact_token_limit=200000"]`。
+- 会话变长后由各家工具自己压缩，Dario 不另设上限。想让它早点压缩，在 `~/.dario/agents.yaml` 里给对应的 AI 写 `compact_limit: 200000`（Claude Code 和 Codex 支持，Dario 替你换成各自的参数）。`/compact` 查看各家的界限，`/compact off` 暂时不传界限、各家回到工具自己的默认值，`/compact on` 恢复；开关写在同一个文件的 `use_compact_limit` 里，重启后保留，下一步起生效。写在 `extra_args` 里的压缩参数不受这个开关控制。
 - `/diff` 查看上一个任务改了什么。
 - Esc 中断当前任务；Ctrl+C 连按两次退出。输入框里有内容时，这两个键先清空输入。
 - Enter 提交，Shift+Enter 换行。长行自动折行，上下键在屏幕行之间移动，到第一行或最后一行再翻历史输入。粘贴不超过 8 行时直接插入光标处，可以继续编辑；超过 8 行显示为“[已粘贴 N 行]”，提交时放在正文前。全屏界面可以在输入框或它的边线上点右键粘贴。
@@ -286,6 +286,7 @@ args:
   read_only: [--profile, headless]
   write: [--profile, headless]
 model_args: [--model, "{model}"]   # 配置了模型时才追加
+compact_args: [--compact-at, "{compact_limit}"]   # 可选：设了压缩界限且 /compact 开着时才追加
 prompt: arg                        # stdin（默认）或 arg（作为最后一个参数）
 output: stdout                     # stdout（默认）或 file（工具把答复写到 {result_file}）
 streams: false
@@ -300,7 +301,7 @@ plugins:
   - ./plugins/dsh.yaml
 ```
 
-之后就可以在角色表的 `candidates` 里写 `dsh`。参数里可用的占位符：`{cwd}`、`{model}`、`{result_file}`。
+之后就可以在角色表的 `candidates` 里写 `dsh`。参数里可用的占位符：`{cwd}`、`{model}`、`{result_file}`、`{compact_limit}`。
 
 ### 代码式：一个 JS 模块
 
@@ -314,9 +315,10 @@ export default {
   defaultCommand: 'mytool',
   streams: true,                    // 启动后是否很快有输出
   resumes: true,                    // 可选：支持续接会话
+  compacts: true,                   // 可选：支持压缩界限，build 里处理 req.compactLimit
   envPass: ['MYTOOL_*'],
   build(req) {
-    // req: access, cwd, prompt, model, effort, allowedTools, resultFile, options, resume
+    // req: access, cwd, prompt, model, effort, allowedTools, resultFile, options, resume, compactLimit
     const args = ['run', '--json', req.access === 'write' ? '--allow-write' : '--read-only'];
     // 续接时 req.resume 是上一次 parse 给出的会话号；读写权限仍按这一次的 req.access 给
     if (req.resume) args.push('--resume', req.resume);

@@ -2,7 +2,7 @@ import type { RoleView } from '../core/roles.js';
 import { findModel, type ModelList } from '../core/ports.js';
 import os from 'node:os';
 import path from 'node:path';
-import { HELP_TEXT, refreshHolderModels, runModel, parseCommand, type Command } from '../core/commands.js';
+import { HELP_TEXT, refreshHolderModels, runCompact, runModel, parseCommand, type Command } from '../core/commands.js';
 import type { AgentView, Engine } from '../core/engine.js';
 import { formatJob, formatQuota, formatModel, formatRoles, quotaPercent } from '../core/report.js';
 import { ACTIVE_STATUSES, STATUS_LABEL, type FallbackQuestion, type Job, type Plan } from '../core/types.js';
@@ -406,6 +406,7 @@ export class Session {
       case 'role':
         this.append('text', cmd.reset ? engine.resetRole(cmd.role) : engine.setRole(cmd.role, cmd.agent!, cmd.save));
         return this.refreshStatus();
+      case 'compact': return this.append('text', runCompact(engine, cmd));
       case 'health':
         this.append('notice', '正在检查，会实际调用一次 AI…');
         for (const r of await engine.health(cmd.agent)) this.append('text', `${r.agent}：${r.ok ? '可用' : '不可用'} — ${r.detail}`);

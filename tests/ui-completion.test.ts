@@ -6,7 +6,7 @@ const ctx = { roles: [{ id: 'coder', alias: ['实现'] }], agents: ['claude', 'c
 const values = (line: string) => suggest(line, ctx).map(s => s.value);
 
 it('按顺序列出全部指令并按是否带参数补空格', () => {
-  expect(values('/')).toEqual(['/to ', '/roles', '/role ', '/model ', '/agents', '/health ',
+  expect(values('/')).toEqual(['/to ', '/roles', '/role ', '/model ', '/agents', '/compact ', '/health ',
     '/status ', '/approve ', '/resume ', '/cancel ', '/diff', '/continue ', '/new', '/plain', '/help', '/exit']);
   expect(values('/r')).toEqual(['/roles', '/role ', '/resume ']);
   expect(values('/role\ncoder')).toEqual([]);
@@ -27,6 +27,12 @@ it('担当者与健康检查按前缀过滤，最后一个参数不加空格', (
   expect(suggest('/role 实现 re', ctx)[0]?.hint).toBe('恢复为角色表里的顺序');
   expect(values('/health c')).toEqual(['/health claude', '/health codex']);
   expect(values('/status ')).toEqual([]);
+});
+
+it('压缩界限补全开和关，选中即执行', () => {
+  expect(suggest('/compact o', ctx).map(s => [s.value, s.submitOnSelect])).toEqual([['/compact on', true], ['/compact off', true]]);
+  expect(values('/compact of')).toEqual(['/compact off']);
+  expect(values('/compact on ')).toEqual([]);
 });
 
 it('补全后光标按字素落在末尾，退出历史浏览并保留粘贴块', () => {

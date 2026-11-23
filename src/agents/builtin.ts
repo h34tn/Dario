@@ -23,16 +23,20 @@ function extraArgs(req: InvokeRequest, codex = false): string[] {
   const list = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
   const extra = list(req.options.extra_args);
   const accessArgs = list(req.access === 'write' ? req.options.write_args : req.options.read_only_args);
-  if (!req.effort) return [...extra, ...accessArgs];
+  // Dario 给出的设置：Codex 是 -c 的配置项，另两家是命令行参数
+  const own: [key: string, value: string][] = [];
+  if (req.effort) own.push(codex ? ['model_reasoning_effort', `"${req.effort}"`] : ['--effort', req.effort]);
+  if (req.compactLimit) own.push(codex ? ['model_auto_compact_token_limit', String(req.compactLimit)] : ['--autocompact', String(req.compactLimit)]);
+  if (!own.length) return [...extra, ...accessArgs];
+  // extra_args 里的同一项去掉，免得工具收到两个不同的值
   const args: string[] = [];
   for (let i = 0; i < extra.length; i++) {
     const arg = extra[i]!;
-    const oldEffort = codex ? arg === '-c' && /^model_reasoning_effort=/.test(extra[i + 1] ?? '') : arg === '--effort';
-    if (oldEffort) i++;
+    const replaced = own.some(([key]) => codex ? arg === '-c' && (extra[i + 1] ?? '').startsWith(key + '=') : arg === key);
+    if (replaced) i++;
     else args.push(arg);
   }
-  const effortArgs = codex ? ['-c', `model_reasoning_effort="${req.effort}"`] : ['--effort', req.effort];
-  return [...args, ...accessArgs, ...effortArgs];
+  return [...args, ...accessArgs, ...own.flatMap(([key, value]) => codex ? ['-c', `${key}=${value}`] : [key, value])];
 }
 
 const READ_TOOLS = ['Read', 'Grep', 'Glob', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)'];
@@ -100,6 +104,7 @@ export const claudePlugin: AgentPlugin = defineAgent({
   defaultCommand: 'claude',
   streams: true,
   resumes: true,
+  compacts: true,
   // 后两个是 Claude Code 自动压缩会话历史的阈值设置：用户为自己调过的上限，续接时照样生效
   envPass: ['ANTHROPIC_*', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_USE_*', 'CLAUDE_CODE_GIT_BASH_PATH', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'],
   defaultAllowedTools: { readOnly: READ_TOOLS, write: ['Read', 'Grep', 'Glob', ...EDIT_TOOLS, ...EXEC_TOOLS] },
@@ -164,6 +169,7 @@ export const codexPlugin: AgentPlugin = defineAgent({
   defaultCommand: 'codex',
   streams: true,
   resumes: true,
+  compacts: true,
   envPass: ['OPENAI_*', 'CODEX_*'],
   build: (req) => {
     // 沙箱方式是 exec 自己的参数，续接时必须写在 resume 之前才对这一轮生效

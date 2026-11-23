@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { HELP_TEXT, runModel, parseCommand, requiresAdmin, type Command } from './commands.js';
+import { HELP_TEXT, runCompact, runModel, parseCommand, requiresAdmin, type Command } from './commands.js';
 import type { AccessEntry } from './config.js';
 import type { Engine } from './engine.js';
 import type { ChannelPort, InboundMessage } from './ports.js';
@@ -205,6 +205,9 @@ export class ChannelRouter {
         return;
       case 'role':
         this.reply(m, cmd.reset ? this.engine.resetRole(cmd.role) : this.engine.setRole(cmd.role, cmd.agent!, cmd.save));
+        return;
+      case 'compact':
+        this.reply(m, runCompact(this.engine, cmd));
         return;
       case 'health': {
         this.reply(m, '正在检查，稍候。');

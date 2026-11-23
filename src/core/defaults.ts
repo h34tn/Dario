@@ -136,17 +136,18 @@ agents: {}
   #     read_only: [Read, Grep, Glob]
   #     write: [Read, Grep, Glob, Edit, Write, Bash, PowerShell, mcp__某个服务]
   #   env_pass: [MY_PROXY_*]             # 额外传给它的环境变量
+  #   # 压缩界限：会话历史超过这么多 token 就由工具压缩成摘要（Claude Code 要求不低于 100000）。不写时按模型的上下文上限，
+  #   # 上下文为 100 万的模型约在 96.7 万才压缩，而压缩之前续接的每一轮都要重发全部历史。
+  #   # 工具会留出约 3.3 万的余量，实际约在设定值减 3.3 万时压缩。常被中途压缩就调高，想更省就调低。
+  #   # 用 /compact on|off 统一开关，见下面的 use_compact_limit。
+  #   compact_limit: 200000
   #   options:                           # 追加给工具的参数：extra_args 两种方式都加，write_args 只在可写方式加，read_only_args 只在只读方式加
-  #     # 压缩界限：会话历史超过这么多 token 就由工具压缩成摘要（不低于 100000）。不写时按模型的上下文上限，
-  #     # 上下文为 100 万的模型约在 96.7 万才压缩，而压缩之前续接的每一轮都要重发全部历史。
-  #     # 工具会留出约 3.3 万的余量，实际约在设定值减 3.3 万时压缩。常被中途压缩就调高，想更省就调低。
-  #     extra_args: ["--autocompact", "200000"]
+  #     extra_args: ["--max-turns", "50"]
   # claude-test:                         # 同一家 AI 再配一份，用 plugin 指明是哪一家，在角色表里按这个名字引用
   #   plugin: claude
   #   model: opus
   # codex:
-  #   options:
-  #     extra_args: ["-c", "model_auto_compact_token_limit=200000"]   # Codex 的压缩界限
+  #   compact_limit: 200000              # Codex 的压缩界限
   # codebuddy:
   #   model: glm-5.3                     # 不写则用 CodeBuddy 自己的默认模型
 
@@ -155,6 +156,9 @@ agents: {}
 # listed：只放行 allowed_tools 清单里的工具（没写清单时是读取、搜索、文件编辑和命令执行）。
 # 主控出计划、汇总和审核者审查时只读；主控执行自己的步骤或返工时用可写权限。某一家要单独设置，在它的条目里写 permissions。
 permissions: full
+
+# 是否把各家的 compact_limit 传给工具。false 时各家按工具自己的默认值压缩。界面里用 /compact on|off 切换，会改写这一项。
+use_compact_limit: true
 
 # 某家 AI 被判为不可用后，多久之内不再尝试（分钟）
 cooldown_minutes: 10

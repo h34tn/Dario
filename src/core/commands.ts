@@ -15,6 +15,12 @@ export interface ModelCommand {
   reset: boolean;
 }
 
+/** 查看压缩界限；带 on 时打开或关闭。 */
+export interface CompactCommand {
+  kind: 'compact';
+  on?: boolean;
+}
+
 export type Command =
   | { kind: 'task'; text: string; role?: string }
   | ModelCommand
@@ -26,6 +32,7 @@ export type Command =
   | { kind: 'resume'; jobId?: string; note?: string }
   | { kind: 'role'; role: string; agent?: string; reset: boolean; save: boolean }
   | { kind: 'health'; agent?: string }
+  | CompactCommand
   | { kind: 'status'; jobId?: string }
   | { kind: 'cancel'; jobId?: string }
   | { kind: 'approve'; jobId?: string }
@@ -39,6 +46,7 @@ export const HELP_TEXT = [
   '/role <角色> reset     取消临时指定',
   '/model [角色] [型号] [强度]  查看或设置型号（--save、--default、--reset）',
   '/agents                列出各家 AI',
+  '/compact [on|off]      查看、开启或关闭各家的压缩界限',
   '/health [AI]           实际调用一次，确认可用',
   '/status [任务号]       查看任务',
   '/approve [任务号]      批准等待确认的计划',
@@ -92,6 +100,7 @@ export function parseCommand(input: string): Command {
     }
     case 'health':
       return { kind: 'health', agent: words[0] };
+    case 'compact': return parseCompact(words);
     case 'status':
     case 'jobs':
     case 'job':
@@ -119,6 +128,29 @@ export function parseModel(words: string[], effort?: string): ModelCommand | Ext
   }
   return { kind: 'model', role, value, effort: effort ?? level, reset,
     target: flag === '--save' ? 'project' : flag === '--default' ? 'default' : 'local' };
+}
+
+export function parseCompact(words: string[]): CompactCommand | Extract<Command, { kind: 'invalid' }> {
+  const word = words[0]?.toLowerCase();
+  if (words.length > 1 || (word && !['on', 'off'].includes(word))) return { kind: 'invalid', message: '用法：/compact [on|off]' };
+  return { kind: 'compact', ...(word && { on: word === 'on' }) };
+}
+
+export function runCompact(engine: Engine, cmd: CompactCommand): string {
+  const lines: string[] = [];
+  if (cmd.on !== undefined) lines.push(`压缩界限已${cmd.on ? '开启' : '关闭'}，已写入 ${engine.setCompactLimits(cmd.on)}，下一步起生效。`);
+  const { enabled, agents } = engine.compactLimits();
+  const set = agents.filter(a => a.limit);
+  if (!set.length) {
+    lines.push(`压缩界限：${enabled ? '开启' : '关闭'}。还没有给任何 AI 设界限，各家按工具自己的默认值压缩。`,
+      '要设界限，在 ~/.dario/agents.yaml 里给对应的 AI 写 compact_limit: <token 数>。');
+    return lines.join('\n');
+  }
+  lines.push(enabled ? '压缩界限：开启' : '压缩界限：关闭，各家按工具自己的默认值压缩。开启后按下面的界限：');
+  for (const a of set) lines.push(`  ${a.id}  ${a.limit} token${a.supported ? '' : '（插件不支持，不生效）'}`);
+  const rest = agents.filter(a => !a.limit && a.supported).map(a => a.id);
+  if (enabled && rest.length) lines.push(`${rest.join('、')} 没设界限，按工具自己的默认值压缩。`);
+  return lines.join('\n');
 }
 
 /** 每个担当者只查一次，各家独立刷新显示名。 */
@@ -164,5 +196,6 @@ export async function runModel(engine: Engine, cmd: ModelCommand): Promise<strin
 
 /** 管理员才能执行的指令。 */
 export function requiresAdmin(cmd: Command): boolean {
-  return (cmd.kind === 'model' && !!(cmd.value || cmd.effort || cmd.reset)) || cmd.kind === 'role' || cmd.kind === 'health' || cmd.kind === 'pause' || cmd.kind === 'unpause';
+  return (cmd.kind === 'model' && !!(cmd.value || cmd.effort || cmd.reset)) || (cmd.kind === 'compact' && cmd.on !== undefined) ||
+    cmd.kind === 'role' || cmd.kind === 'health' || cmd.kind === 'pause' || cmd.kind === 'unpause';
 }

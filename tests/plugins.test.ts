@@ -91,6 +91,33 @@ describe('内置插件：命令行参数', () => {
     });
   }
 
+  for (const plugin of [claudePlugin, codexPlugin]) {
+    it(`${plugin.displayName} 给了压缩界限时替换旧参数，与强度并存`, () => {
+      const codex = plugin === codexPlugin;
+      const limit = (n: number) => codex ? ['-c', `model_auto_compact_token_limit=${n}`] : ['--autocompact', String(n)];
+      const effort = codex ? ['-c', 'model_reasoning_effort="high"'] : ['--effort', 'high'];
+      const other = ['-c', 'unrelated=true'];
+      const old = [...limit(150000), ...other];
+      const baseline = plugin.build(req()).args;
+      const insertion = codex ? baseline.length - 1 : baseline.indexOf('--allowedTools');
+      const expected = (extra: string[]) => [...baseline.slice(0, insertion), ...extra, ...baseline.slice(insertion)];
+      expect(plugin.compacts).toBe(true);
+      expect(plugin.build(req({ options: { extra_args: old } })).args).toEqual(expected(old));
+      expect(plugin.build(req({ compactLimit: 200000, effort: 'high', options: { extra_args: old } })).args)
+        .toEqual(expected([...other, ...effort, ...limit(200000)]));
+    });
+  }
+
+  it('声明式插件只在给了压缩界限时追加 compact_args，并以此声明支持', () => {
+    const manifest = (extra: string) => pluginFromManifest(`id: m\ncommand: m\nargs: { read_only: [-p], write: [-p] }\n${extra}`, 'm.yaml');
+    const plugin = manifest('compact_args: [--compact-at, "{compact_limit}"]');
+    expect(plugin.compacts).toBe(true);
+    expect(plugin.build(req()).args).toEqual(['-p']);
+    expect(plugin.build(req({ compactLimit: 120000 })).args).toEqual(['-p', '--compact-at', '120000']);
+    expect(manifest('').compacts).toBe(false);
+    expect(codebuddyPlugin.compacts).toBeUndefined();
+  });
+
   it('型号查询解析可见的 Codex 型号、各自档位', () => {
     const codex = codexPlugin.modelsQuery!;
     expect(codex.args).toEqual(['debug', 'models']);
