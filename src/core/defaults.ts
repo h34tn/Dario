@@ -123,14 +123,30 @@ plugins: []
 agents: {}
   # claude:
   #   command: C:/path/to/claude.exe     # 可执行文件，默认按名字在 PATH 里找
-  #   model: sonnet                      # 模型
+  #   model: sonnet                      # 默认型号，用界面里的 /model 修改；型号必须在工具自己返回的清单里
+  #   effort: high                       # 默认强度
+  #   roles:                             # 某个角色单独设型号或强度，用 /model 选角色后修改
+  #     lead: { model: opus, effort: high }
   #   timeout_minutes: 30
   #   enabled: true
   #   free: true                         # 免费模型，额度固定按 0% 显示，不采集
-  #   allowed_tools:                     # 放行的工具清单；不写时可写方式放行读取、搜索、文件编辑和命令执行
+  #   permissions: listed                # 只对这一家改可写权限，覆盖下面的全局设置
+  #   idle_factor: 2                     # 平时输出就稀疏、常被误报"没动静"时，把项目设的阈值对它放宽一倍
+  #   allowed_tools:                     # 权限为 listed 时放行的工具清单；不写时可写方式放行读取、搜索、文件编辑和命令执行
   #     read_only: [Read, Grep, Glob]
   #     write: [Read, Grep, Glob, Edit, Write, Bash, PowerShell, mcp__某个服务]
   #   env_pass: [MY_PROXY_*]             # 额外传给它的环境变量
+  #   options:                           # 追加给工具的参数：extra_args 两种方式都加，write_args 只在可写方式加，read_only_args 只在只读方式加
+  #     # 压缩界限：会话历史超过这么多 token 就由工具压缩成摘要（不低于 100000）。不写时按模型的上下文上限，
+  #     # 上下文为 100 万的模型约在 96.7 万才压缩，而压缩之前续接的每一轮都要重发全部历史。
+  #     # 工具会留出约 3.3 万的余量，实际约在设定值减 3.3 万时压缩。常被中途压缩就调高，想更省就调低。
+  #     extra_args: ["--autocompact", "200000"]
+  # claude-test:                         # 同一家 AI 再配一份，用 plugin 指明是哪一家，在角色表里按这个名字引用
+  #   plugin: claude
+  #   model: opus
+  # codex:
+  #   options:
+  #     extra_args: ["-c", "model_auto_compact_token_limit=200000"]   # Codex 的压缩界限
   # codebuddy:
   #   model: glm-5.3                     # 不写则用 CodeBuddy 自己的默认模型
 
@@ -145,7 +161,6 @@ cooldown_minutes: 10
 
 # 启动后多久没有任何输出就判为不可用（秒）
 startup_timeout_seconds: 120
-# 某家 AI 平时输出就稀疏、常被误报"没动静"时，在它的条目里写 idle_factor: 2，把项目设的阈值对它放宽一倍。
 
 # 额外传给所有 AI 的环境变量
 env_pass: []
