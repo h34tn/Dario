@@ -36,8 +36,12 @@ it('上下选角色和型号，切换型号后回落到默认强度，返回时�
   await key('right');
   await key('enter');
   expect(engine.setModel).toHaveBeenLastCalledWith('coder', { model: '常规', effort: 'low' }, 'local');
-  expect(snap().picker).toBeUndefined();
+  expect(snap().picker).toMatchObject({ step: 'roles', roleIndex: 1, message: expect.stringContaining('已保存型号') });
   expect(log()).toContain('已保存型号');
+  await key('up');
+  expect(snap().picker).toMatchObject({ step: 'roles', roleIndex: 0, message: undefined });
+  await key('back');
+  expect(snap().picker).toBeUndefined();
 });
 
 it('清单失败只调当前强度，清单外的当前型号置顶，直接进入后返回即关闭', async () => {

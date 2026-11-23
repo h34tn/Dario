@@ -509,8 +509,11 @@ export class Session {
       this.update({ picker: saving });
       try {
         const message = await this.engine.setModel(p.roles[p.roleIndex]!.id, settings, 'local');
-        if (this.snapshot.picker === saving) this.update({ picker: undefined });
         this.append('text', message);
+        // 从角色列表进来的保存后回到列表，方便接着改别的角色；直接指定角色的保存即关闭。
+        const roles = p.direct ? undefined : await this.engine.rolesView().catch(() => undefined);
+        if (this.snapshot.picker === saving) this.update({ picker: roles
+          ? { step: 'roles', roles, modelLabel: p.modelLabel, roleIndex: p.roleIndex, direct: false, message } : undefined });
         await this.refreshStatus();
       } catch (error) {
         if (this.snapshot.picker === saving) this.update({ picker: { ...p, message: error instanceof Error ? error.message : String(error) } });
