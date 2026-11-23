@@ -1,4 +1,4 @@
-import { parseVerdict } from './plan.js';
+import { parseVerdict, verdictPasses } from './plan.js';
 import type { RoleBook } from './roles.js';
 import { ACTIVE_STATUSES, STATUS_LABEL, type Job, type StepRecord } from './types.js';
 
@@ -26,10 +26,10 @@ interface Roles {
   label: (roleId: string) => string;
 }
 
-/** 审查不通过、要求返工的问题；通过或没有明确结论时为 undefined。规则与审查循环一致：只有建议、没有问题的 fail 算通过。 */
+/** 审查不通过、要求返工的问题；通过或没有明确结论时为 undefined。规则与审查循环一致（verdictPasses）。 */
 function rejection(rec: StepRecord): { issues: string[]; reviewText: string } | undefined {
   const verdict = parseVerdict(rec.text);
-  if (!verdict || verdict.verdict === 'pass' || (verdict.issues.length === 0 && verdict.suggestions.length > 0)) return undefined;
+  if (!verdict || verdictPasses(verdict)) return undefined;
   return { issues: verdict.issues, reviewText: rec.text };
 }
 

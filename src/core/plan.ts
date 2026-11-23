@@ -160,6 +160,14 @@ export function parseLeadDecision(text: string): LeadDecision | undefined {
   return { action, message: message.trim(), snoozeMinutes: snooze_minutes };
 }
 
+/**
+ * 审查结论算不算通过：没有必须修改的问题，并且判了 pass，或者判了 fail 但只有建议。
+ * 判了 pass 却列了必须修改的问题，结论自相矛盾，按不通过处理。
+ */
+export function verdictPasses(v: Verdict): boolean {
+  return v.issues.length === 0 && (v.verdict === 'pass' || v.suggestions.length > 0);
+}
+
 export function parseVerdict(text: string): Verdict | undefined {
   const parsed = verdictSchema.safeParse(extractJson(text));
   return parsed.success ? parsed.data : undefined;

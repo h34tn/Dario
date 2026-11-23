@@ -20,7 +20,7 @@ import {
   type PushTarget,
 } from './finish.js';
 import { diffText, readRefs } from './handoff.js';
-import { parsePlan, parseVerdict } from './plan.js';
+import { parsePlan, parseVerdict, verdictPasses } from './plan.js';
 import {
   carriedPrompt,
   filesChangedAfter,
@@ -791,7 +791,7 @@ export class Orchestrator {
     if (verdict.suggestions.length > 0) {
       job.warnings.push(`收尾复审的建议（没有要求返工，由你决定）：\n${verdict.suggestions.map((s, i) => `    ${i + 1}. ${s}`).join('\n')}`);
     }
-    if (verdict.verdict === 'pass' || (verdict.issues.length === 0 && verdict.suggestions.length > 0)) return undefined;
+    if (verdictPasses(verdict)) return undefined;
     return { issues: verdict.issues, reviewText: rec.text };
   }
 
@@ -921,7 +921,7 @@ export class Orchestrator {
     if (verdict.suggestions.length > 0) {
       job.warnings.push(`审查的建议（没有要求返工，由你决定）：\n${verdict.suggestions.map((s, i) => `    ${i + 1}. ${s}`).join('\n')}`);
     }
-    if (verdict.verdict === 'pass' || (verdict.issues.length === 0 && verdict.suggestions.length > 0)) {
+    if (verdictPasses(verdict)) {
       job.lastReview = 'pass';
       return undefined;
     }

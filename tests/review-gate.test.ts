@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseVerdict } from '../src/core/plan.js';
+import { parseVerdict, verdictPasses } from '../src/core/plan.js';
 import { countChangedLines } from '../src/core/workspace.js';
 import { gitInit, plan, Sandbox, sh, verdict } from './helpers.js';
 
@@ -41,6 +41,34 @@ describe('审查结论里的建议', () => {
   it('解析：没写 suggestions 时为空数组', () => {
     expect(parseVerdict(verdict(true))).toEqual({ verdict: 'pass', issues: [], suggestions: [] });
     expect(parseVerdict(review(false, ['a'], ['b']))).toEqual({ verdict: 'fail', issues: ['a'], suggestions: ['b'] });
+  });
+
+  it('算不算通过：判了 pass 却列了问题的按不通过；只有建议的 fail 按通过', () => {
+    const passes = (text: string): boolean => verdictPasses(parseVerdict(text)!);
+    expect(passes(review(true, [], []))).toBe(true);
+    expect(passes(review(true, [], ['b']))).toBe(true);
+    expect(passes(review(false, [], ['b']))).toBe(true);
+    expect(passes(review(true, ['a'], []))).toBe(false);
+    expect(passes(review(false, ['a'], ['b']))).toBe(false);
+    expect(passes(review(false, [], []))).toBe(false);
+  });
+});
+
+describe('自相矛盾的审查结论', () => {
+  let sb: Sandbox;
+  afterEach(() => sb?.cleanup());
+
+  it('判了 pass 却列了必须修改的问题：照样返工', async () => {
+    sb = new Sandbox({ git: true });
+    sb.setScenario({
+      a1: [{ text: plan([{ role: 'coder', task: '加一个文件', writes: true }]) }, { text: '汇总' }],
+      a2: [{ text: '写好了', files: [{ path: 'x.txt', content: '1\n' }] }, { text: '改好了', files: [{ path: 'x.txt', content: '2\n' }] }],
+      a3: [{ text: review(true, ['x.txt 的内容不对'], []) }, { text: verdict(true) }],
+    });
+    const r = await sb.runJson(['-p', '--yes', '任务']);
+    expect(r.code).toBe(0);
+    expect(r.json.steps.map((s: any) => s.kind)).toEqual(['plan', 'step', 'review', 'rework', 'review', 'summary']);
+    expect(sb.calls().filter((c) => c.name === 'a2')[1]!.prompt).toContain('x.txt 的内容不对');
   });
 });
 
