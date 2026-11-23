@@ -2,7 +2,6 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SyncMode } from './config.js';
-import { countBetween, upstreamTarget, type PushTarget } from './finish.js';
 import type { PulledUpdate, Strategy } from './types.js';
 import { DarioError, normPath, realPath } from './util.js';
 
@@ -28,8 +27,6 @@ export interface FinalizeInfo {
   changed: string[];
   /** 存在越界改动（范围之外，或只读角色改了文件）。 */
   violation: boolean;
-  /** 收尾已经把提交推送出去了。 */
-  pushed?: boolean;
 }
 
 /**
@@ -54,8 +51,6 @@ export interface Workspace {
   /** 这些文件相对 HEAD 改了多少行（增加加删除，未跟踪的文件按行数算）。统计不出来时为 undefined。 */
   changedLines(files: string[]): Promise<number | undefined>;
   finalize(jobId: string, info: FinalizeInfo): Promise<{ branch?: string; warnings: string[] }>;
-  /** 收尾推送到哪里；推送不了时返回原因。 */
-  pushTarget(): Promise<PushTarget | string>;
 }
 
 interface GitResult {
@@ -78,7 +73,7 @@ export function git(cwd: string, args: string[], opts: { timeoutMs?: number; env
   });
 }
 
-export async function gitTopLevel(cwd: string): Promise<string | undefined> {
+async function gitTopLevel(cwd: string): Promise<string | undefined> {
   const r = await git(cwd, ['rev-parse', '--show-toplevel']);
   return r.ok ? r.stdout.trim() : undefined;
 }
@@ -144,6 +139,18 @@ export async function countChangedLines(cwd: string, files: string[]): Promise<n
   return total;
 }
 
+/** 当前 HEAD 的提交号；不是 git 仓库或还没有提交时为 undefined。 */
+export async function headSha(cwd: string): Promise<string | undefined> {
+  const r = await git(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  return r.ok ? r.stdout.trim() || undefined : undefined;
+}
+
+/** 两个提交之间变化的文件，相对 cwd、正斜杠；cwd 之外的不列。取不到时为空。 */
+export async function filesBetween(cwd: string, from: string, to: string): Promise<string[]> {
+  const r = await git(cwd, ['diff', '--name-only', '--relative', '-z', from, to]);
+  return r.ok ? r.stdout.split('\0').filter(Boolean).sort() : [];
+}
+
 /** 快照存进任务记录用的形式。 */
 export function stampToRecord(stamp: Stamp): Record<string, string> | null {
   return stamp ? Object.fromEntries(stamp) : null;
@@ -174,7 +181,7 @@ export function outOfScope(changed: string[], writeRoots: string[]): string[] {
 }
 
 /** 访问远端的 git 命令：不弹出要人输入凭据的提示，最多等十分钟（大仓库加 LFS 可能很慢）。 */
-export function gitRemote(cwd: string, args: string[]): Promise<GitResult> {
+function gitRemote(cwd: string, args: string[]): Promise<GitResult> {
   return git(cwd, args, { timeoutMs: 600000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
 }
 
@@ -284,10 +291,6 @@ export class InPlaceWorkspace implements Workspace {
   async finalize(): Promise<{ branch?: string; warnings: string[] }> {
     return { warnings: [] };
   }
-
-  pushTarget(): Promise<PushTarget | string> {
-    return upstreamTarget(this.cwd);
-  }
 }
 
 export interface IsolatedOptions {
@@ -391,15 +394,15 @@ export class IsolatedWorkspace implements Workspace {
       warnings.push(`存在越界改动，没有生成快照。改动原样留在 ${this.cwd}（分支 ${branch}），处理之前这份克隆不会接新任务。`);
       return { branch, warnings };
     }
-    // 收尾在任务分支上留下的提交也是产出；推送出去之后就不必再留分支
-    const ahead = info.pushed ? 0 : ((await countBetween(this.cwd, `origin/${await this.base()}`)) ?? 1);
-    if (!dirty && ahead === 0) {
-      // 没有产出，或者产出已经推送到远端主干：回到远端基线并删掉任务分支，避免堆积
-      await git(this.cwd, ['checkout', '--detach', info.pushed ? 'HEAD' : `origin/${await this.base()}`]);
+    // 版本控制步骤在任务分支上留下的提交也是产出，有提交就保留分支
+    const ahead = Number((await git(this.cwd, ['rev-list', '--count', `origin/${await this.base()}..HEAD`])).stdout.trim() || '1');
+    if (!dirty && ahead > 0) return { branch, warnings };
+    if (!dirty) {
+      // 没有产出：回到远端基线并删掉空分支，避免堆积
+      await git(this.cwd, ['checkout', '--detach', `origin/${await this.base()}`]);
       await git(this.cwd, ['branch', '-D', branch]);
       return { warnings };
     }
-    if (!dirty) return { branch, warnings };
     const add = await git(this.cwd, ['add', '-A']);
     if (!add.ok) {
       warnings.push(`暂存改动失败，没有生成快照：${add.stderr.trim()}`);
@@ -413,13 +416,5 @@ export class IsolatedWorkspace implements Workspace {
       warnings.push(`快照提交失败，改动留在工作区（分支 ${branch}）：${(commit.stderr || commit.stdout).trim().slice(0, 500)}`);
     }
     return { branch, warnings };
-  }
-
-  /** 推送到远端主干。克隆的推送地址保持无效，推送时直接用 origin 的拉取地址。 */
-  async pushTarget(): Promise<PushTarget | string> {
-    const url = (await git(this.cwd, ['remote', 'get-url', 'origin'])).stdout.trim();
-    if (!url) return '隔离克隆没有 origin 的地址';
-    const branch = await this.base();
-    return { remote: 'origin', branch, trackingRef: `refs/remotes/origin/${branch}`, url };
   }
 }

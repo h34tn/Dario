@@ -1,33 +1,9 @@
-import type { PrePushCheck, ProjectConfig } from './config.js';
-import {
-  acceptMismatches,
-  commitsBetween,
-  countBetween,
-  currentBranch,
-  describeFinish,
-  fetchTarget,
-  finishNote,
-  headSha,
-  mismatchDiff,
-  pushBlockEnv,
-  pushHead,
-  PUSH_COMMANDS,
-  runPrePushCheck,
-  recordReviewed,
-  snapshotBlobs,
-  verifyCommits,
-  type Mismatch,
-  type PushTarget,
-} from './finish.js';
+import type { ProjectConfig } from './config.js';
 import { diffText, readRefs } from './handoff.js';
 import { parsePlan, parseVerdict, verdictPasses } from './plan.js';
 import {
   carriedPrompt,
   filesChangedAfter,
-  finishFollowUp,
-  finishPrompt,
-  finishReviewPrompt,
-  type FinishBrief,
   leadStepFollowUp,
   parseBlocked,
   planBrief,
@@ -41,6 +17,7 @@ import {
   reviewPrompt,
   resumeSection,
   type ChangeDiff,
+  type GitMode,
   reworkFollowUp,
   reworkPrompt,
   stepBrief,
@@ -58,9 +35,9 @@ import type { RoleBook } from './roles.js';
 import type { StepRunner } from './runner.js';
 import { inScope, normalizeScopePath, reworkScope } from './scope.js';
 import type { StateStore } from './state.js';
-import type { Access, FallbackQuestion, FinishRecord, Job, JobStatus, Plan, ProgressEvent, StepKind, StepRecord } from './types.js';
+import type { Access, FallbackQuestion, Job, JobStatus, Plan, ProgressEvent, StepKind, StepRecord } from './types.js';
 import { DarioError, ellipsis, nowIso, truncate } from './util.js';
-import { diffStamps, outOfScope, stampFromRecord, stampToRecord, type Workspace } from './workspace.js';
+import { diffStamps, filesBetween, headSha, outOfScope, stampFromRecord, stampToRecord, type Workspace } from './workspace.js';
 
 /** 续接时直接返工要用的审查结论。 */
 type PendingRework = { issues: string[]; reviewText: string };
@@ -71,8 +48,6 @@ export interface OrchestratorDeps {
   runner: StepRunner;
   project: ProjectConfig;
   emit: (event: ProgressEvent) => void;
-  /** 本机为这个项目设的推送前检查，收尾推送之前由 Dario 运行。 */
-  prePush?: PrePushCheck[];
 }
 
 export interface RunOptions {
@@ -99,9 +74,9 @@ function statusForOutcome(outcome: StepRecord['outcome']): JobStatus {
 export function describePlan(plan: Plan, roles: RoleBook): string {
   if (plan.steps.length === 0) return plan.summary || '（无步骤）';
   const lines = plan.steps.map(
-    (s, i) => `${i + 1}. [${roles.label(s.role, 'plan')}${s.writes ? '，改文件' : '，只读'}] ${ellipsis(s.task, 160)}${s.files?.length ? `\n   范围：${s.files.join('、')}` : ''}${s.refs?.length ? `\n   参考：${s.refs.join('、')}` : ''}`,
+    (s, i) => `${i + 1}. [${roles.label(s.role, 'plan')}${s.git ? '，提交推送' : s.writes ? '，改文件' : '，只读'}] ${ellipsis(s.task, 160)}${s.files?.length ? `\n   范围：${s.files.join('、')}` : ''}${s.refs?.length ? `\n   参考：${s.refs.join('、')}` : ''}`,
   );
-  return `${plan.summary ? `${plan.summary}\n` : ''}${lines.join('\n')}${plan.finish ? `\n${plan.finish}` : ''}`;
+  return `${plan.summary ? `${plan.summary}\n` : ''}${lines.join('\n')}`;
 }
 
 /** 推进一个任务：直派，或"计划、确认、执行、审查、返工、汇总"。 */
@@ -131,7 +106,7 @@ export class Orchestrator {
           if (!proceed) {
             // planPhase 会改写 job.status，这里按完整的状态类型重新读取
             const after = job.status as JobStatus;
-            if (after !== 'awaiting_approval') await this.close(job, ws, job.result?.conclusion ?? '');
+            if (after !== 'awaiting_approval') await this.finish(job, ws, job.result?.conclusion ?? '');
             else job.ownerPid = undefined;
             return this.save(job);
           }
@@ -155,7 +130,7 @@ export class Orchestrator {
       }
     }
     this.resumeNotes.delete(job.id);
-    await this.close(job, ws, conclusion);
+    await this.finish(job, ws, conclusion);
     state.audit('job_end', { job: job.id, status: job.status, failure: job.failureCode });
     return this.save(job);
   }
@@ -219,9 +194,7 @@ export class Orchestrator {
       access?: Access;
       prefer?: string;
       scope?: string[];
-      env?: Record<string, string>;
-      blockedCommands?: string[];
-      /** false 表示这一步的改动不按状态快照计入本任务（收尾：提交会让文件变干净，autostash 会动别人的改动）。 */
+      /** false：这一步的改动不按状态快照计入本任务（版本控制步骤：提交会让文件变干净），由调用方填写。 */
       trackChanges?: boolean;
     },
   ): Promise<StepRecord> {
@@ -253,7 +226,8 @@ export class Orchestrator {
     job.activePid = undefined;
 
     const writable = rec.access === 'write';
-    if (req.trackChanges === false) {
+    const track = req.trackChanges !== false;
+    if (!track) {
       // 由调用方按实际情况填写这一步的改动
     } else if (rec.changedFiles.length > 0) {
       job.changedFiles = [...new Set([...job.changedFiles, ...rec.changedFiles])].sort();
@@ -266,7 +240,7 @@ export class Orchestrator {
       job.unknownChanges = true;
       job.reviewedSinceChange = false;
     }
-    if (writable && rec.outcome === 'ok' && rec.agent && (req.kind === 'step' || req.kind === 'rework')) {
+    if (track && writable && rec.outcome === 'ok' && rec.agent && (req.kind === 'step' || req.kind === 'rework')) {
       job.lastWriter = { role: req.roleId, agent: rec.agent, task: req.kind === 'rework' ? (job.lastWriter?.task ?? req.task ?? '') : (req.task ?? '') };
     }
     if (avoid && rec.agent === avoid.agent) {
@@ -463,10 +437,6 @@ export class Orchestrator {
       job.result = { conclusion: `主控两次都没有给出合格的计划，任务没有执行。${feedback ?? ''}`, changedFiles: [], fallbackHappened: false, warnings: [] };
       return false;
     }
-    const finishMode = project.settings.finish.mode;
-    if (finishMode !== 'none' && plan.steps.some((s) => s.writes)) {
-      plan.finish = finishNote(finishMode, await ws.pushTarget(), ws.strategy === 'isolated', this.deps.prePush?.length ?? 0);
-    }
     job.plan = plan;
     job.cursor = 0;
     this.save(job);
@@ -510,10 +480,6 @@ export class Orchestrator {
     if (job.dirtyAtStart === undefined) {
       const stamp = await ws.stamp();
       job.dirtyAtStart = stamp ? [...stamp.keys()].sort() : [];
-      // 收尾时要分清哪些是本任务的改动：记下这些文件此刻的内容
-      if (project.settings.finish.mode !== 'none' && job.dirtyAtStart.length > 0) {
-        job.dirtyAtStartBlobs = await snapshotBlobs(ws.cwd, job.dirtyAtStart);
-      }
       job.stamp = stampToRecord(stamp);
     }
     this.setStatus(job, 'running');
@@ -529,37 +495,57 @@ export class Orchestrator {
         this.setStatus(job, 'running');
         continue;
       }
+      let gitMode: GitMode | undefined;
+      if (step.git) {
+        gitMode = ws.strategy === 'isolated' ? 'commit-only' : 'push';
+        const unreviewed = (job.changedFiles.length > 0 || job.unknownChanges === true) && !job.reviewedSinceChange;
+        if (pending || (unreviewed && roles.has(reviewRole) && !(await this.smallEnoughToSkipReview(job, ws)))) {
+          const carry = pending;
+          pending = undefined;
+          const failure = await this.reviewLoop(job, ws, opts, undefined, carry);
+          if (failure !== undefined) return failure;
+          this.setStatus(job, 'running');
+        }
+      }
       const role = roles.get(step.role);
       const context = priorSteps(job) || job.context;
       const access = leadStep ? 'write' : role.access;
-      const scoped = withScope(step.task, step.writes ? step.files : undefined);
+      const scoped = withScope(step.task, step.writes && !step.git ? step.files : undefined);
       // 主控自己的步骤续接时它刚读过这些代码，不再附；新开会话和其他角色都附上
       const withCode = withRefs(scoped, step.refs?.length ? readRefs(ws.cwd, step.refs, project.settings.handoffMaxChars, job.changedFiles) : undefined);
       // 前面步骤的改动附上 diff；续接的会话只附它上次工作之后别人改过的文件
       const task = withChanges(withCode, await this.changeDiff(job, ws, job.changedFiles));
       const lastStep = job.sessions?.[step.role]?.step ?? -1;
       const sinceDiff = lastStep >= 0 ? await this.changeDiff(job, ws, filesChangedAfter(job, lastStep)) : undefined;
-      const prompt = stepPrompt(project, role, access, task, context, step.acceptance, job.pulled);
+      const prompt = stepPrompt(project, role, access, task, context, step.acceptance, job.pulled, gitMode);
       const brief = leadStep ? undefined : stepBrief(project, role, access);
+      const headBefore = step.git ? await headSha(ws.cwd) : undefined;
       const rec = await this.execStep(job, ws, opts, {
         kind: 'step',
         roleId: step.role,
         access,
         task: step.task,
-        ...(step.writes && step.files?.length && { scope: step.files }),
+        ...(step.writes && !step.git && step.files?.length && { scope: step.files }),
+        ...(step.git && { trackChanges: false }),
         prompt,
         brief,
         followUp: this.followUp(job, step.role, brief, {
-          full: stepPrompt(project, role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
+          full: stepPrompt(project, role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled, gitMode),
           carried: () => stepCarried(role, access, task, priorSteps(job) || this.carriedContext(job, step.role), step.acceptance, job.pulled),
           delta: (after, briefed) => {
             const since = after === lastStep ? sinceDiff : undefined;
             return leadStep
-              ? leadStepFollowUp(project, role, withChanges(scoped, since), job, after, step.acceptance)
+              ? leadStepFollowUp(project, role, withChanges(scoped, since), job, after, step.acceptance, gitMode)
               : stepFollowUp(project, role, access, withChanges(withCode, since), job, after, step.acceptance, briefed);
           },
         }),
       });
+      if (step.git) {
+        // 这一步的改动是它提交进去的文件
+        const headAfter = await headSha(ws.cwd);
+        rec.changedFiles = headBefore && headAfter && headBefore !== headAfter ? await filesBetween(ws.cwd, headBefore, headAfter) : [];
+        this.save(job);
+      }
       if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
     }
 
@@ -569,230 +555,23 @@ export class Orchestrator {
       if (failure !== undefined) return failure;
     }
 
-    const finishFailure = await this.finishPhase(job, ws, opts);
-    if (finishFailure !== undefined) return finishFailure;
-    const finished = job.finish ? describeFinish(job.finish) : undefined;
-
     this.setStatus(job, 'running');
-    const summaryText = summaryPrompt(job, job.steps, finished);
+    const summaryText = summaryPrompt(job, job.steps);
     const summary = await this.execStep(job, ws, opts, {
       kind: 'summary',
       roleId: project.settings.leadRole,
       access: 'read-only',
       prompt: summaryText,
       // 汇总没有固定说明，不带指纹：会话上已有的指纹原样保留
-      followUp: this.followUp(job, project.settings.leadRole, undefined, { full: summaryText, delta: () => summaryFollowUp(job, job.steps, finished) }),
+      followUp: this.followUp(job, project.settings.leadRole, undefined, { full: summaryText, delta: () => summaryFollowUp(job, job.steps) }),
     });
     job.status = 'done';
-    // 提交了什么、推送到哪里由 Dario 照实写上，不依赖主控的转述
-    const tail = finished ? `\n\n${finished}` : '';
-    if (summary.outcome === 'ok' && summary.text.trim()) return summary.text + tail;
+    if (summary.outcome === 'ok' && summary.text.trim()) return summary.text;
     job.warnings.push('主控没能给出汇总，下面是各步结果的拼接。');
     return job.steps
       .filter((s) => s.kind === 'step' || s.kind === 'rework' || s.kind === 'review')
       .map((s) => `第 ${s.index + 1} 步（${s.role}，${s.agent ?? '-'}）：${truncate(s.text, 1500)}`)
-      .join('\n\n') + tail;
-  }
-
-  /**
-   * 收尾：主控提交（push 时还要与远端同步），Dario 核对提交的正是审过的内容，对不上的交给审核者复审，最后由 Dario 推送。
-   * 不需要收尾、跳过或做成时返回 undefined；没做成时返回说明，任务状态已设置。
-   */
-  private async finishPhase(job: Job, ws: Workspace, opts: RunOptions): Promise<string | undefined> {
-    const { project, state, emit } = this.deps;
-    const cfg = project.settings.finish;
-    if (cfg.mode === 'none' || job.changedFiles.length === 0) return undefined;
-    // 只提交、推送审查明确通过的改动：没有明确结论、没有审查过的都不收尾
-    const reviewOk = job.lastReview === 'skipped' || (job.lastReview === 'pass' && job.reviewedSinceChange);
-    const unreviewed = job.lastReview === 'unclear' ? '最后一次审查没有给出明确的"通过 / 不通过"结论' : '改动没有经过审查';
-    const rec: FinishRecord = (job.finish ??= { mode: cfg.mode, outcome: 'running', rounds: 0, commits: [] });
-    // 续接时轮数重新计算
-    if (opts.resume) rec.rounds = 0;
-    rec.outcome = 'running';
-    rec.reason = undefined;
-    const cwd = ws.cwd;
-    const say = (text: string): void => emit({ jobId: job.id, kind: 'phase', text });
-    const skip = (reason: string): undefined => {
-      rec.outcome = 'skipped';
-      rec.reason = reason;
-      job.warnings.push(`没有收尾：${reason}。`);
-      say(`没有收尾：${reason}。`);
-      this.save(job);
-      return undefined;
-    };
-    const fail = (reason: string, code: Job['failureCode'] = 'finish_failed'): string => {
-      rec.outcome = 'failed';
-      rec.reason = reason;
-      if (job.status !== 'timeout') job.status = 'failed';
-      job.failureCode = code;
-      state.audit('finish_failed', { job: job.id, reason });
-      const resumable = ws.strategy === 'in-place' ? '处理之后可以续接，从收尾接着做。' : '';
-      return `收尾没有做成：${reason}\n改动和已有的本地提交都保留在原处，没有回滚。${resumable}`;
-    };
-
-    if (!reviewOk) return skip(unreviewed);
-    if (job.unknownChanges || !(await headSha(cwd))) return skip('目录不是 git 仓库，或者仓库里还没有提交');
-    if (ws.strategy === 'in-place' && !(await currentBranch(cwd))) return skip('HEAD 是游离的，不在任何分支上');
-    if (job.readOnlyViolation || outOfScope(job.changedFiles, project.settings.writeRoots).length > 0) return skip('有越界的改动');
-
-    // 推送的目标。推送不了、或者开工前本地就有没推送的提交，都只提交
-    let mode = cfg.mode;
-    let target: PushTarget | undefined;
-    if (mode === 'push' && rec.startHead !== undefined && rec.mode === 'commit') mode = 'commit';
-    if (mode === 'push') {
-      const got = await ws.pushTarget();
-      if (typeof got === 'string') {
-        mode = 'commit';
-        job.warnings.push(`收尾只提交、不推送：${got}。`);
-      } else if (rec.startHead === undefined && ((await countBetween(cwd, got.trackingRef)) ?? 0) > 0) {
-        mode = 'commit';
-        job.warnings.push(`收尾只提交、不推送：本地已有没推送到 ${got.remote}/${got.branch} 的提交，它们不是本任务审过的。`);
-      } else {
-        target = got;
-      }
-    }
-    rec.mode = mode;
-    rec.startHead ??= await headSha(cwd);
-    // 审过的内容：本任务改动的文件里还没记下的。续接时之前记下的保留，已经提交的文件不会再记一次
-    const reviewed = (rec.reviewed ??= {});
-    Object.assign(reviewed, await recordReviewed(cwd, job.changedFiles.filter((f) => !(f in reviewed))));
-    const files = Object.keys(reviewed).sort();
-    if (files.length === 0) return skip('本任务的改动和 HEAD 没有差别');
-    this.setStatus(job, 'finishing');
-    say(mode === 'push' ? `收尾：主控提交并与 ${target!.remote}/${target!.branch} 同步` : '收尾：主控提交');
-
-    const lead = project.settings.leadRole;
-    const dirtyAtStart = new Set(job.dirtyAtStart ?? []);
-    const external = new Set((job.resumes ?? []).flatMap((r) => r.changed ?? []));
-    const mixed = files
-      .filter((f) => dirtyAtStart.has(f) || external.has(f))
-      .map((f) => ({ file: f, ...(dirtyAtStart.has(f) ? job.dirtyAtStartBlobs && f in job.dirtyAtStartBlobs && { start: job.dirtyAtStartBlobs[f] } : { external: true }) }));
-    let again: string | undefined;
-    let issues: PendingRework | undefined;
-    for (;;) {
-      if (rec.rounds >= cfg.maxRounds) return fail(`已经 ${rec.rounds} 轮，达到 max_rounds（${cfg.maxRounds}）。${again ?? ''}`);
-      rec.rounds++;
-      const stamp = await ws.stamp();
-      const brief: FinishBrief = {
-        mode,
-        ...(target && { target: `${target.remote}/${target.branch}` }),
-        files,
-        others: stamp ? [...stamp.keys()].filter((f) => !(f in reviewed)).sort() : [],
-        ...(mixed.length > 0 && { mixed }),
-        round: rec.rounds,
-        ...(again && { again }),
-        ...(issues && { issues: issues.issues, issuesText: truncate(issues.reviewText, 4000) }),
-      };
-      const run = await this.execStep(job, ws, opts, {
-        kind: 'finish',
-        roleId: lead,
-        access: 'write',
-        task: '收尾：提交与同步',
-        prompt: finishPrompt(project, job, brief),
-        ...(job.sessions?.[lead] && { followUp: finishFollowUp(project, brief) }),
-        env: await pushBlockEnv(cwd),
-        blockedCommands: PUSH_COMMANDS,
-        trackChanges: false,
-      });
-      if (run.outcome !== 'ok') {
-        const why = this.failFromStep(job, run);
-        fail(run.blocked ?? run.reason ?? '主控没有完成提交', run.outcome === 'all_unavailable' ? 'all_unavailable' : 'finish_failed');
-        return why;
-      }
-      again = undefined;
-      issues = undefined;
-
-      // 核对：本任务的提交是否正是审过的内容
-      if (target) {
-        const err = await fetchTarget(cwd, target);
-        if (err) return fail(`核对之前取远端最新失败：${err}`);
-      }
-      const base = target ? target.trackingRef : rec.startHead!;
-      const v = await verifyCommits(cwd, base, reviewed, target?.trackingRef);
-      if (typeof v === 'string') return fail(v);
-      run.changedFiles = v.files;
-      this.save(job);
-      if (v.commits === 0) return fail('主控没有提交任何内容');
-      if (v.behind > 0) {
-        again = `上一轮结束时 HEAD 仍落后 ${target!.remote}/${target!.branch} ${v.behind} 个提交，请先同步到最新再结束。`;
-        continue;
-      }
-      if (v.left.length > 0) job.warnings.push(`收尾时这些审过的文件没有提交，仍留在工作区：${v.left.join('、')}`);
-      if (v.mismatched.length > 0) {
-        say(`收尾核对：${v.mismatched.map((m) => m.file).join('、')} 提交里的改动和审过的不一样，交给审核者复审差别`);
-        const review = await this.finishReview(job, ws, opts, v.mismatched);
-        if (typeof review === 'string') return fail(review);
-        if (review) {
-          issues = review;
-          again = '复审没有通过。按下面的问题修改提交（改提交，照样不推送）。';
-          continue;
-        }
-        acceptMismatches(reviewed, v.mismatched);
-      }
-      rec.commits = await commitsBetween(cwd, base);
-      this.save(job);
-      if (!target) break;
-
-      // 本机设的推送前检查：对这一刻的 HEAD 跑，任何一项不通过都不推送
-      const checks = this.deps.prePush ?? [];
-      if (checks.length > 0) {
-        rec.checks = [];
-        for (const check of checks) {
-          say(`收尾：推送前检查 ${check.command.join(' ')}`);
-          const got = await runPrePushCheck(cwd, check);
-          rec.checks.push(got);
-          state.audit('finish_check', { job: job.id, command: got.command, ok: got.ok, exit_code: got.exitCode });
-          if (!got.ok) {
-            this.save(job);
-            return fail(`推送前检查没有通过，没有推送：${got.command}（退出码 ${got.exitCode ?? '无'}）${got.output ? `\n${got.output}` : ''}`);
-          }
-        }
-        this.save(job);
-      }
-
-      say(`收尾：推送到 ${target.remote}/${target.branch}`);
-      const pushed = await pushHead(cwd, target);
-      state.audit('finish_push', { job: job.id, remote: target.remote, branch: target.branch, ok: pushed.ok, ...(!pushed.ok && { reason: pushed.reason }) });
-      if (pushed.ok) {
-        rec.pushed = { remote: target.remote, branch: target.branch, head: pushed.head };
-        break;
-      }
-      if (!pushed.behind) return fail(`推送失败：${pushed.reason}`);
-      again = `推送被拒绝，远端 ${target.remote}/${target.branch} 有了新的提交（${pushed.reason}）。请再同步一次。`;
-    }
-    rec.outcome = 'done';
-    this.save(job);
-    say(rec.pushed ? `收尾完成：已推送到 ${rec.pushed.remote}/${rec.pushed.branch}` : '收尾完成：已提交');
-    return undefined;
-  }
-
-  /**
-   * 收尾复审：只审提交里和审过的内容对不上的部分。通过返回 undefined；不通过返回要修改的问题；
-   * 复审没能进行或没有明确结论时返回原因（不推送没审过的内容）。
-   */
-  private async finishReview(job: Job, ws: Workspace, opts: RunOptions, items: Mismatch[]): Promise<PendingRework | string | undefined> {
-    const { roles, project } = this.deps;
-    const reviewRole = project.settings.reviewRole;
-    if (!roles.has(reviewRole)) return '提交和审过的内容对不上，又没有审核角色可以复审';
-    const reviewer = roles.get(reviewRole);
-    const diff = await mismatchDiff(ws.cwd, items, project.settings.handoffMaxChars || 20000);
-    const leadReply = [...job.steps].reverse().find((s) => s.kind === 'finish' && s.outcome === 'ok')?.text;
-    const rec = await this.execStep(job, ws, opts, {
-      kind: 'review',
-      roleId: reviewRole,
-      access: 'read-only',
-      task: '收尾复审',
-      prompt: finishReviewPrompt(project, reviewer, job, diff, false, leadReply),
-      ...(job.sessions?.[reviewRole] && { followUp: finishReviewPrompt(project, reviewer, job, diff, true, leadReply) }),
-    });
-    if (rec.outcome !== 'ok') return `复审没有完成：${rec.reason ?? rec.outcome}`;
-    const verdict = parseVerdict(rec.text);
-    if (!verdict) return '复审没有给出明确的"通过 / 不通过"结论，没有推送';
-    if (verdict.suggestions.length > 0) {
-      job.warnings.push(`收尾复审的建议（没有要求返工，由你决定）：\n${verdict.suggestions.map((s, i) => `    ${i + 1}. ${s}`).join('\n')}`);
-    }
-    if (verdictPasses(verdict)) return undefined;
-    return { issues: verdict.issues, reviewText: rec.text };
+      .join('\n\n');
   }
 
   /**
@@ -807,7 +586,6 @@ export class Orchestrator {
     const lines = await ws.changedLines(job.changedFiles);
     if (lines === undefined || lines > limit) return false;
     const text = `改动共 ${lines} 行，不超过 review_skip_max_lines（${limit}），跳过了自动审查。`;
-    job.lastReview = 'skipped';
     job.warnings.push(text);
     this.deps.emit({ jobId: job.id, kind: 'phase', text });
     return true;
@@ -913,7 +691,6 @@ export class Orchestrator {
     job.reviewedSinceChange = true;
     const verdict = parseVerdict(rec.text);
     if (!verdict) {
-      job.lastReview = 'unclear';
       job.warnings.push('审查没有给出明确的"通过 / 不通过"结论，未触发返工。');
       return undefined;
     }
@@ -921,16 +698,12 @@ export class Orchestrator {
     if (verdict.suggestions.length > 0) {
       job.warnings.push(`审查的建议（没有要求返工，由你决定）：\n${verdict.suggestions.map((s, i) => `    ${i + 1}. ${s}`).join('\n')}`);
     }
-    if (verdictPasses(verdict)) {
-      job.lastReview = 'pass';
-      return undefined;
-    }
-    job.lastReview = 'fail';
+    if (verdictPasses(verdict)) return undefined;
     return { issues: verdict.issues, reviewText: rec.text };
   }
 
-  /** 任务结束：范围检查、工作区处理、组装结果。 */
-  private async close(job: Job, ws: Workspace, conclusion: string): Promise<void> {
+  /** 收尾：范围检查、工作区处理、组装结果。 */
+  private async finish(job: Job, ws: Workspace, conclusion: string): Promise<void> {
     const { project } = this.deps;
     job.activePid = undefined;
     job.ownerPid = undefined;
@@ -940,11 +713,11 @@ export class Orchestrator {
 
     let branch = job.branch;
     try {
-      const fin = await ws.finalize(job.id, { changed: job.changedFiles, violation, pushed: job.finish?.pushed !== undefined });
+      const fin = await ws.finalize(job.id, { changed: job.changedFiles, violation });
       branch = fin.branch;
       job.warnings.push(...fin.warnings);
     } catch (e) {
-      job.warnings.push(`整理工作区时出错：${(e as Error).message}`);
+      job.warnings.push(`收尾时出错：${(e as Error).message}`);
     }
     job.branch = branch;
 

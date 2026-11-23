@@ -76,6 +76,7 @@ const planSchema = z.object({
         acceptance: z.string().nullish(),
         files: z.array(z.string()).nullish(),
         refs: z.array(z.string()).nullish(),
+        git: z.boolean().default(false),
       }),
     )
     .default([]),
@@ -103,9 +104,17 @@ export function parsePlan(text: string, ctx: PlanContext): { plan: Plan } | { er
       errors.push(`第 ${n} 步的角色 "${s.role}" 不存在，可用角色：${ctx.roles.ids().join('、')}`);
       return;
     }
+    if (s.git && roleId !== ctx.leadRole) {
+      errors.push(`第 ${n} 步是版本控制步骤（git 为 true），只能交给主控自己（${ctx.leadRole}）`);
+      return;
+    }
     if (roleId === ctx.leadRole) {
       if (!ctx.leadImplements) {
         errors.push(`第 ${n} 步不能交给主控自己（${roleId}）`);
+        return;
+      }
+      if (s.git) {
+        steps.push({ role: roleId, task: s.task, writes: true, acceptance: s.acceptance ?? undefined, git: true });
         return;
       }
       if (!s.writes) {

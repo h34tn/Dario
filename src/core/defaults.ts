@@ -89,18 +89,6 @@ supervise:
   # ask_lead 时：每一步最多纠偏几次（再要纠偏就中止），主控判断一次的时限（分钟）。
   max_interventions: 2
   consult_timeout_minutes: 3
-
-# 收尾：主控分派的任务做完、审查通过后，要不要提交与推送。
-# none：不收尾，改动留在工作区由人处理。
-# commit：主控按 instructions 分组提交，不推送。
-# push：主控提交并与远端同步（落后就 rebase，冲突自己解决）；Dario 核对提交的正是审过的内容
-#       （对不上就交给审核者复审差别），再推送到当前分支的远端分支。不强制推送，不跳过钩子。
-# instructions 是交给主控的文字（怎么分组、提交信息怎么写、推送前要跑哪些检查），Dario 不执行其中的命令。
-# max_rounds：提交与同步最多几轮，复审不通过、推送因远端有新提交被拒都要再来一轮。
-finish:
-  mode: none
-  instructions: ""
-  max_rounds: 3
 `;
 
 export function defaultDispatchRules(leadImplements: boolean): string {

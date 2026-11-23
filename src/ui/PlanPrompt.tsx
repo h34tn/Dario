@@ -45,7 +45,7 @@ export function PlanPrompt({ plan, roleLabel, color, onDecide }: PlanPromptProps
     <Text wrap="truncate-end" {...toneColor('warn', color)}>{clip('这份计划会改动文件：', limit, wide, ellipsis)}</Text>
     {plan.steps.map((step, i) => {
       const role = shortRole(roleLabel(step.role));
-      const mode = step.writes ? '改文件' : '只读';
+      const mode = step.git ? '提交推送' : step.writes ? '改文件' : '只读';
       const prefix = `${i + 1}. ${role}  ${mode}  `;
       const styled = <>{i + 1}. <Text {...toneColor('role', color)}>{role}</Text>  {mode}{'  '}</>;
       return <Box key={i} flexDirection="column">
@@ -53,7 +53,6 @@ export function PlanPrompt({ plan, roleLabel, color, onDecide }: PlanPromptProps
         {details && step.acceptance && lines('验收：', '验收：', step.acceptance)}
       </Box>;
     })}
-    {plan.finish && lines('', '', plan.finish)}
     <Text wrap="truncate-end">{clip('执行吗？  y 执行   n 取消   d 查看每一步的完整任务说明', limit, wide, ellipsis)}</Text>
   </Box>;
 }

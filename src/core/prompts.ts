@@ -17,9 +17,20 @@ export function parseBlocked(text: string): string | undefined {
   return last[1]!.replace(/[`*]+$/, '').trim().replace(/[。．.！!；;，,]+$/, '').trim() || '没有写明原因';
 }
 
-function rules(access: Access, project: ProjectConfig, includePreamble = true): string {
+/** 版本控制步骤怎么做：push 按项目流程提交并推送；commit-only 是隔离执行，推送不出去，只提交。 */
+export type GitMode = 'push' | 'commit-only';
+
+function gitRule(git: GitMode | undefined): string {
+  if (!git) return '- 不要执行 git commit、git push，不要切换或新建分支。';
+  if (git === 'commit-only') {
+    return '- 这一步按项目已有的提交流程提交（项目约定、分派规则里指明的技能或文档），审查、检查、署名照流程做，不要自己另定做法。这里推送不出去：只提交，不要推送。不要切换或新建分支。';
+  }
+  return '- 这一步按项目已有的提交推送流程执行（项目约定、分派规则里指明的技能或文档），审查、检查、同步、署名都照流程做，不要自己另定做法。不要切换或新建分支，不要强制推送。';
+}
+
+function rules(access: Access, project: ProjectConfig, includePreamble = true, git?: GitMode): string {
   const lines = [
-    '- 不要执行 git commit、git push，不要切换或新建分支。',
+    gitRule(git),
     `- 完成任务必需的工具或服务（例如某个 MCP 服务）连不上、用不了时，先多试几次：隔几秒重试，确认服务是否在运行，换同一服务里能达到目的的其他工具。各种办法都试过仍然不行就停下，不要改用别的途径凑出结果，也不要继续做依赖它的工作；说明哪个工具或服务用不了、试过什么，并在回复的最后单独写一行 \`${BLOCKED_MARK}: <一句话原因>\`。任务不依赖它、或者只是多了一个用不上的服务时，不要写这一行。`,
   ];
   if (access === 'write') {
@@ -29,7 +40,11 @@ function rules(access: Access, project: ProjectConfig, includePreamble = true): 
     if (project.settings.writeRoots.length > 0) {
       lines.push(`- 只允许改动这些目录：${project.settings.writeRoots.join('、')}。`);
     }
-    lines.push('- 完成后在回复末尾列出：改动文件清单（没有则写"无"）、存疑点（没有则写"无"）。');
+    lines.push(
+      git
+        ? '- 完成后在回复末尾列出：做了哪些提交（短号和标题）、是否推送及推送到哪里、流程里各项检查和审查的结果。流程里要停下询问人的情况，按上面的规则停下并标记。'
+        : '- 完成后在回复末尾列出：改动文件清单（没有则写"无"）、存疑点（没有则写"无"）。',
+    );
   } else {
     lines.push('- 你处于只读方式：不要创建、修改或删除任何文件。');
   }
@@ -174,10 +189,10 @@ function staleFiles(job: Job, after: number): string | undefined {
   return `${files.map((f) => `- ${f}`).join('\n')}\n这些文件的内容已经和你记得的不一样，用到时请重新读取。`;
 }
 
-export function stepPrompt(project: ProjectConfig, role: RoleDef, access: Access, task: string, context?: string, acceptance?: string, pulled?: PulledUpdate): string {
+export function stepPrompt(project: ProjectConfig, role: RoleDef, access: Access, task: string, context?: string, acceptance?: string, pulled?: PulledUpdate, git?: GitMode): string {
   return (
     `# 你的角色\n${roleHeader(role, access)}` +
-    section('工作规则', rules(access, project)) +
+    section('工作规则', rules(access, project, true, git)) +
     section('上文', context) +
     pulledSection(pulled) +
     section('任务', task) +
@@ -203,10 +218,10 @@ export function stepFollowUp(project: ProjectConfig, role: RoleDef, access: Acce
   );
 }
 
-export function leadStepFollowUp(project: ProjectConfig, role: RoleDef, task: string, job: Job, after: number, acceptance?: string): string {
+export function leadStepFollowUp(project: ProjectConfig, role: RoleDef, task: string, job: Job, after: number, acceptance?: string, git?: GitMode): string {
   return (
     continueHeader(role, 'write', '你仍然是主控，计划已确认，这一步由你自己完成。') +
-    section('工作规则', rules('write', project, false)) +
+    section('工作规则', rules('write', project, false, git)) +
     stepUpdate(job, after, task, acceptance)
   );
 }
@@ -247,8 +262,8 @@ export function planPrompt(project: ProjectConfig, roles: RoleBook, task: string
     leadImplements
       ? '- 分派给其他角色时，role 必须是"可用角色"里的 id；writes 为 true 的步骤只能交给其中可写的角色。'
       : '- role 必须是"可用角色"里的 id；writes 为 true 的步骤只能交给可写的角色。',
-    ...(project.settings.finish.mode !== 'none'
-      ? [`- 审查通过后 Dario 会安排收尾：由你按项目的收尾说明提交${project.settings.finish.mode === 'push' ? '、与远端同步，再由 Dario 核对后推送' : ''}。不要把提交、推送列为步骤。`]
+    ...(leadImplements
+      ? [`- 任务明确要求提交或推送时（例如"提交推送"），把它列成你自己的一步：role 写 ${leadRole}，git 为 true，task 写清按项目的哪个流程或技能做；同一份计划里有改文件的步骤时放在它们之后。这一步由你按项目已有的流程执行，Dario 会在它之前先审查前面的改动。任务没有明确要求时不要安排提交、推送。`]
       : []),
     `- 步骤不超过 ${project.settings.maxPlanSteps} 个${leadImplements ? '。' : '，不要把主控自己列为步骤。'}`,
     `- 每一步的 task 必须自包含：写清背景、要做什么、涉及哪些文件。${leadImplements ? '其他角色' : '执行者'}看不到本次对话，也看不到其他步骤的说明。`,
@@ -501,126 +516,22 @@ function stepResults(steps: StepRecord[]): string {
 
 const SUMMARY_TASK = '给发起人写一段最终结论：任务是否完成、做了什么、有哪些遗留问题或需要人确认的地方。直接写结论，不要复述过程，不要输出 JSON。';
 
-export function summaryPrompt(job: Job, steps: StepRecord[], finish?: string): string {
+export function summaryPrompt(job: Job, steps: StepRecord[]): string {
   return (
     `# 你的角色\n你是主控。下面是你之前安排的各个步骤的执行结果。你处于只读方式，不要修改任何文件。` +
     section('原始任务', job.task) +
     section('各步结果', stepResults(steps)) +
     section('改动的文件', job.changedFiles.map((f) => `- ${f}`).join('\n')) +
-    section('收尾', finish) +
     section('任务', SUMMARY_TASK)
   );
 }
 
 /** 发给出计划的那个会话：原始任务和计划它都记得，只补各步的执行结果。 */
-export function summaryFollowUp(job: Job, steps: StepRecord[], finish?: string): string {
+export function summaryFollowUp(job: Job, steps: StepRecord[]): string {
   return (
     `# 你的角色\n你仍然是主控。你出的计划已经执行结束，下面是各步的执行结果。你处于只读方式，不要修改任何文件，也不要再输出计划。之前的对话仍然有效。` +
     section('各步结果', stepResults(steps)) +
     section('改动的文件', job.changedFiles.map((f) => `- ${f}`).join('\n')) +
-    section('收尾', finish) +
     section('任务', SUMMARY_TASK)
-  );
-}
-
-/** 交给主控收尾（提交与同步）那一轮的说明。 */
-export interface FinishBrief {
-  mode: 'commit' | 'push';
-  /** 推送的目标，例如 origin/main；只提交时为空。 */
-  target?: string;
-  /** 本任务改动、审查过的文件，要提交的就是这些。 */
-  files: string[];
-  /** 工作区里其他有未提交改动的文件，不是本任务的。 */
-  others: string[];
-  /**
-   * 要提交的文件里混有不是本任务改动的：任务开始前就有未提交改动的（start 是那时的内容，null 表示那时已删除，
-   * 没记下时不填），以及任务停下之后、续接之前被改过的（external）。
-   */
-  mixed?: Array<{ file: string; start?: string | null; external?: boolean }>;
-  /** 这是第几轮。 */
-  round: number;
-  /** 又回到主控这里的原因：推送被拒、核对发现 HEAD 落后、复审没通过等。 */
-  again?: string;
-  /** 复审没通过时要修改的问题；issues 为空时用审查的原文。 */
-  issues?: string[];
-  issuesText?: string;
-}
-
-function finishRules(b: FinishBrief): string {
-  const lines = [
-    '- 只提交"要提交的文件"。"其他有未提交改动的文件"不是本任务的：不要提交，不要丢弃，也不要修改。',
-    '- 按"项目的收尾说明"分组提交、写提交信息；说明里没写的，按改动的性质分成合理的几个提交，提交信息写清做了什么。',
-  ];
-  if (b.mode === 'push') {
-    lines.push(
-      `- 提交之后 git fetch，HEAD 落后于 ${b.target} 时 rebase 到它上面（工作区里还有其他未提交改动时加 --autostash）。有冲突由你自己解决，解决之后按收尾说明做必要的验证。`,
-    );
-  }
-  lines.push(
-    `- 不要推送：${b.mode === 'push' ? '推送由 Dario 在核对之后完成，' : ''}这一轮里执行 git push 会被拦截并中断。`,
-    '- 不要改写远端已有的提交，不要强制操作，不要用 --no-verify 之类跳过钩子，不要动已有的 git stash 记录。',
-    '- 要提交的内容已经审查过。除解决冲突外不要再改它们；确实需要改的，在回复里写明改了什么、为什么，Dario 会把差别交给审核者复审。',
-    `- 做不成（例如钩子或检查一直不通过、冲突解决不了）时停下，说明原因，并在回复的最后单独写一行 \`${BLOCKED_MARK}: <一句话原因>\`。`,
-    `- 完成后在回复里说明：分了哪几个提交${b.mode === 'push' ? '、是否同步了远端、冲突怎么解决的' : ''}、按收尾说明跑了哪些检查、结果如何。`,
-  );
-  return lines.join('\n');
-}
-
-function mixedSection(mixed: FinishBrief['mixed']): string {
-  if (!mixed?.length) return '';
-  const items = mixed.map(({ file, start, external }) => {
-    if (start) return `- ${file}：任务开始时的内容是对象 ${start}（用 git cat-file -p ${start} 取出），和工作区现在的内容相比，差别就是本任务的改动`;
-    if (start === null) return `- ${file}：任务开始时这个文件已被删除`;
-    return `- ${file}：${external ? '任务停下之后、续接之前被改过，' : ''}Dario 没有记下之前的内容`;
-  });
-  return section(
-    '混有不是本任务改动的文件',
-    '"要提交的文件"里的下面这些，还有不是本任务的未提交改动；审查看到的是它们相对 HEAD 的整份 diff，其中包含那部分。' +
-      '项目的收尾说明要求只提交本任务的部分时，按下面给出的内容分出本任务的改动；说明里没有要求的，整份提交。\n' +
-      items.join('\n'),
-  );
-}
-
-function finishBody(project: ProjectConfig, b: FinishBrief): string {
-  const what = b.mode === 'push' ? `提交并与 ${b.target} 同步，之后由 Dario 核对、推送` : '提交，不推送';
-  return (
-    section('这一轮要做的事', `计划已经执行完，改动审查通过。现在由你收尾：${what}。这是第 ${b.round} 轮。${b.again ? `\n${b.again}` : ''}`) +
-    section('复审没有通过，需要修改的问题', b.issues?.length ? b.issues.map((s, i) => `${i + 1}. ${s}`).join('\n') : b.issuesText) +
-    section('收尾规则', finishRules(b)) +
-    section('项目约定', project.settings.preamble) +
-    section('项目的收尾说明', project.settings.finish.instructions) +
-    section('要提交的文件', b.files.map((f) => `- ${f}`).join('\n')) +
-    mixedSection(b.mixed) +
-    section('其他有未提交改动的文件（不是本任务的）', b.others.map((f) => `- ${f}`).join('\n'))
-  );
-}
-
-/** 新开会话时的完整说明：带上原始任务和各步结果，据此分组。 */
-export function finishPrompt(project: ProjectConfig, job: Job, b: FinishBrief): string {
-  return `# 你的角色\n你是主控，这一步你可以执行 git 提交。` + section('原始任务', job.task) + section('各步结果', priorSteps(job)) + finishBody(project, b);
-}
-
-/** 续接主控的会话：任务和计划它都记得。 */
-export function finishFollowUp(project: ProjectConfig, b: FinishBrief): string {
-  return `# 你的角色\n你仍然是主控，之前的对话仍然有效。这一步你可以执行 git 提交。${STALE_NOTE}` + finishBody(project, b);
-}
-
-/**
- * 收尾核对发现提交和审过的内容对不上时，交给审核者只审这部分差别。resumed 表示续接审查的会话。
- * leadReply 是主控收尾这一轮的回复：怎么解决的冲突、跑了哪些检查、结果如何。
- */
-export function finishReviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, diff: string, resumed: boolean, leadReply?: string): string {
-  const ask =
-    '本任务的改动已经审查通过。主控收尾时与远端同步、解决冲突，或者在收尾中做了修改，下面这些文件提交里的改动因此和审过的不一样。' +
-    '对比"审过时的改动"和"现在提交里的改动"，只审两者的差别：冲突解决得对不对，有没有丢掉或改坏审过的内容，额外的改动是否必要且正确。没有变化的部分不必重审。';
-  const head = resumed
-    ? continueHeader(role, 'read-only', '这是同一个任务里收尾时的复审，')
-    : `# 你的角色\n${roleHeader(role, 'read-only')}` + section('工作规则', rules('read-only', project)) + section('原始任务', job.task);
-  return (
-    head +
-    section('主控收尾这一轮的回复（它的说明，包括跑过的检查及结果）', leadReply && truncate(leadReply, CONTEXT_CHARS)) +
-    section('对不上的文件', diff) +
-    section('审查要求', ask) +
-    section('输出格式', REVIEW_FORMAT)
   );
 }

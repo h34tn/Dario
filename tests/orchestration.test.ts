@@ -47,7 +47,7 @@ describe('主控分派', () => {
     const first = await sb.runJson(['-p', '新建一个文件']);
     expect(first.code).toBe(4);
     expect(first.json.status).toBe('awaiting_approval');
-    expect(first.json.plan.steps).toEqual([{ role: 'coder', task: '新建 src/x.txt', writes: true, files: null, refs: null }]);
+    expect(first.json.plan.steps).toEqual([{ role: 'coder', task: '新建 src/x.txt', writes: true, files: null, refs: null, git: false }]);
     expect(names()).toEqual(['a1:read-only']);
     expect(fs.existsSync(path.join(sb.project, 'src', 'x.txt'))).toBe(false);
 

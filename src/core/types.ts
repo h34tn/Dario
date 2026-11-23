@@ -9,7 +9,6 @@ export type JobStatus =
   | 'awaiting_approval'
   | 'running'
   | 'reviewing'
-  | 'finishing'
   | 'done'
   | 'failed'
   | 'cancelled'
@@ -18,7 +17,7 @@ export type JobStatus =
   | 'out_of_scope';
 
 /** 有进程正在推进的状态。 */
-export const ACTIVE_STATUSES: readonly JobStatus[] = ['queued', 'planning', 'running', 'reviewing', 'finishing'];
+export const ACTIVE_STATUSES: readonly JobStatus[] = ['queued', 'planning', 'running', 'reviewing'];
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
   queued: '排队',
@@ -26,7 +25,6 @@ export const STATUS_LABEL: Record<JobStatus, string> = {
   awaiting_approval: '等待确认',
   running: '执行中',
   reviewing: '审查中',
-  finishing: '收尾中',
   done: '完成',
   failed: '失败',
   cancelled: '已取消',
@@ -54,7 +52,7 @@ export interface Attempt {
   durationMs?: number;
 }
 
-export type StepKind = 'plan' | 'step' | 'review' | 'rework' | 'finish' | 'summary';
+export type StepKind = 'plan' | 'step' | 'review' | 'rework' | 'summary';
 
 export type StepOutcome = 'ok' | FailureKind | 'all_unavailable';
 
@@ -164,6 +162,8 @@ export interface PlanStep {
   files?: string[];
   /** 主控读过、认为这一步要看的代码位置："文件"、"文件:行"或"文件:起-止"。派活时由 Dario 读出当前内容附上。 */
   refs?: string[];
+  /** 版本控制步骤：发起人明确要求提交或推送时，主控按项目已有的流程执行。只能交给主控自己。 */
+  git?: boolean;
 }
 
 export interface Plan {
@@ -171,43 +171,6 @@ export interface Plan {
   /** 任务只是提问、不需要分派时，主控直接给出的答案。 */
   answer?: string | null;
   steps: PlanStep[];
-  /** 开启收尾时，结束后会做什么（只提交，或提交并推送到哪里）。由 Dario 在出计划后写上，随计划给人确认。 */
-  finish?: string;
-}
-
-/** 审过的一个文件：审查时的基准（HEAD 里的内容）和审过的内容，都是 git 对象号；文件不存在时为 null。 */
-export interface ReviewedFile {
-  base: string | null;
-  blob: string | null;
-}
-
-/** 收尾的记录，见 finish.ts。 */
-export interface FinishRecord {
-  mode: 'commit' | 'push';
-  /** running 进行中（或停在半截）；skipped 没有做（原因在 reason）。 */
-  outcome: 'running' | 'done' | 'failed' | 'skipped';
-  reason?: string;
-  /** 主控的提交与同步运行了几轮。续接时重新计算。 */
-  rounds: number;
-  /** 收尾开始时的 HEAD。 */
-  startHead?: string;
-  /** 审过的内容，键是相对项目根目录的路径。 */
-  reviewed?: Record<string, ReviewedFile>;
-  commits: Array<{ sha: string; subject: string }>;
-  pushed?: { remote: string; branch: string; head: string };
-  /** 最近一次推送前检查的结果，按配置的先后；没有设检查或还没跑到时没有。 */
-  checks?: PrePushResult[];
-}
-
-/** 一项推送前检查的结果。 */
-export interface PrePushResult {
-  /** 命令和参数，用空格连接，给人看。 */
-  command: string;
-  ok: boolean;
-  /** 退出码；没能启动、超时时为 null。 */
-  exitCode: number | null;
-  /** 输出的最后几行。 */
-  output: string;
 }
 
 export type FailureCode =
@@ -216,8 +179,7 @@ export type FailureCode =
   | 'plan_invalid'
   | 'review_rejected'
   | 'workspace'
-  | 'out_of_scope'
-  | 'finish_failed';
+  | 'out_of_scope';
 
 export interface JobResult {
   conclusion: string;
@@ -267,18 +229,8 @@ export interface Job {
   changedFiles: string[];
   /** 进入执行阶段时就有未提交改动的文件（就地执行时可能有）。给审查附 diff 时据此说明哪些改动不全是本任务的。 */
   dirtyAtStart?: string[];
-  /**
-   * 开启收尾时，dirtyAtStart 里各文件在进入执行阶段那一刻的内容（git 对象号，文件已删除为 null）。
-   * 收尾时据此告诉主控哪些是本任务的改动，项目要求只提交本任务的部分时用得上。
-   */
-  dirtyAtStartBlobs?: Record<string, string | null>;
   /** 最近一次改动之后是否已经审查过。 */
   reviewedSinceChange: boolean;
-  /**
-   * 最近一次审查的结论：pass 通过（含只有建议的），fail 不通过，unclear 没有给出明确结论，
-   * skipped 改动不超过 review_skip_max_lines 而跳过了自动审查。收尾只在 pass 或 skipped 时进行。
-   */
-  lastReview?: 'pass' | 'fail' | 'unclear' | 'skipped';
   /** 最近一步结束时工作区的 git 状态快照（有改动的文件及其指纹）。续接前据此找出停下之后被改过的文件；不是 git 仓库时为 null。 */
   stamp?: Record<string, string> | null;
   /** 续接的记录，按先后。 */
@@ -297,8 +249,6 @@ export interface Job {
   /** 隔离执行时的任务分支。 */
   branch?: string;
   failureCode?: FailureCode;
-  /** 收尾；项目没有开启或任务不需要收尾时没有。 */
-  finish?: FinishRecord;
   warnings: string[];
   result?: JobResult;
   /** 正在推进该任务的 Dario 进程。 */

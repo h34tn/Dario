@@ -45,19 +45,6 @@ export interface ProjectSettings {
   syncBeforeTask: SyncMode;
   /** 干活监控的规则，见 watch.ts。 */
   supervise: SuperviseSettings;
-  /** 收尾：做完后是否提交、推送，见 finish.ts。 */
-  finish: FinishSettings;
-}
-
-/** none 不收尾；commit 主控提交；push 主控提交并同步，Dario 核对后推送。 */
-export type FinishMode = 'none' | 'commit' | 'push';
-
-export interface FinishSettings {
-  mode: FinishMode;
-  /** 交给主控的项目收尾说明。只是文字，Dario 不执行其中的命令。 */
-  instructions: string;
-  /** 主控的提交与同步最多运行几轮。 */
-  maxRounds: number;
 }
 
 /**
@@ -140,18 +127,6 @@ export interface AccessEntry {
   admins: string[];
 }
 
-/** 收尾推送前由 Dario 运行的一项检查。只能写在本机配置里。 */
-export interface PrePushCheck {
-  /** 可执行文件和参数，不经过命令行解释器。 */
-  command: string[];
-  timeoutMinutes: number;
-}
-
-/** 本机对某个项目的设置（~/.dario/projects.yaml），键是项目根目录。 */
-export interface LocalProjectConfig {
-  prePush: PrePushCheck[];
-}
-
 export interface UserConfig {
   home: string;
   plugins: string[];
@@ -163,8 +138,6 @@ export interface UserConfig {
   envPass: string[];
   channels: { feishu?: FeishuChannelConfig };
   access: Record<string, AccessEntry>;
-  /** 本机对各项目的设置，键是项目根目录（原样保留配置里的写法）。 */
-  projects: Record<string, LocalProjectConfig>;
 }
 
 // ---------- 结构校验 ----------
@@ -265,14 +238,6 @@ const projectFileSchema = z
     preamble: z.string().default(''),
     sync_before_task: z.enum(['off', 'pull', 'pull-autostash']).default('off'),
     supervise: superviseSchema.default({}),
-    finish: z
-      .object({
-        mode: z.enum(['none', 'commit', 'push']).default('none'),
-        instructions: z.string().default(''),
-        max_rounds: z.number().int().min(1).max(10).default(3),
-      })
-      .strict()
-      .default({}),
   })
   .strict();
 
@@ -324,29 +289,6 @@ const feishuSchema = z
   .strict();
 
 const channelsFileSchema = z.object({ feishu: feishuSchema.optional() }).strict();
-
-const projectsFileSchema = z
-  .object({
-    projects: z
-      .record(
-        z
-          .object({
-            pre_push: z
-              .array(
-                z
-                  .object({
-                    command: z.array(z.string().min(1)).min(1),
-                    timeout_minutes: z.number().positive().default(10),
-                  })
-                  .strict(),
-              )
-              .default([]),
-          })
-          .strict(),
-      )
-      .nullish(),
-  })
-  .strict();
 
 const accessFileSchema = z.record(
   z
@@ -418,7 +360,7 @@ export function findProjectRoot(cwd: string, home: string): string | undefined {
 // ---------- 项目级 ----------
 
 /** 这些文件只允许出现在用户级目录。 */
-const USER_ONLY_ENTRIES = ['agents.yaml', 'agents.yml', 'channels.yaml', 'channels.yml', 'access.yaml', 'access.yml', 'projects.yaml', 'projects.yml', 'plugins'];
+const USER_ONLY_ENTRIES = ['agents.yaml', 'agents.yml', 'channels.yaml', 'channels.yml', 'access.yaml', 'access.yml', 'plugins'];
 
 export function parseRoles(data: unknown, file: string, projectLevel: boolean): RolesConfig {
   const parsed = validate(rolesFileSchema, data, file, projectLevel);
@@ -480,7 +422,6 @@ function parseSettings(data: unknown, file: string, projectLevel: boolean): Proj
       maxInterventions: p.supervise.max_interventions,
       consultTimeoutMinutes: p.supervise.consult_timeout_minutes,
     },
-    finish: { mode: p.finish.mode, instructions: p.finish.instructions, maxRounds: p.finish.max_rounds },
   };
 }
 
@@ -531,13 +472,6 @@ export function loadProjectConfig(cwd: string, home: string, explicitRoot?: stri
 
 // ---------- 用户级 ----------
 
-/** 本机为这个项目设的推送前检查。项目根目录按规范化后的路径比较（Windows 上不区分大小写）。 */
-export function prePushChecksFor(user: Pick<UserConfig, 'projects'>, root: string): PrePushCheck[] {
-  const want = normPath(root);
-  for (const [key, entry] of Object.entries(user.projects)) if (normPath(path.resolve(key)) === want) return entry.prePush;
-  return [];
-}
-
 export function loadUserConfig(home: string): UserConfig {
   const agentsFile = path.join(home, 'agents.yaml');
   const a = validate(agentsFileSchema, loadYaml(agentsFile), agentsFile, false);
@@ -585,16 +519,8 @@ export function loadUserConfig(home: string): UserConfig {
     access[channel] = { members: entry.members ?? [], admins: entry.admins ?? [] };
   }
 
-  const projectsFile = path.join(home, 'projects.yaml');
-  const pj = validate(projectsFileSchema, loadYaml(projectsFile), projectsFile, false);
-  const projects: Record<string, LocalProjectConfig> = {};
-  for (const [root, entry] of Object.entries(pj.projects ?? {})) {
-    projects[root] = { prePush: entry.pre_push.map((c) => ({ command: c.command, timeoutMinutes: c.timeout_minutes })) };
-  }
-
   return {
     home,
-    projects,
     plugins: a.plugins ?? [],
     agents,
     cooldownMinutes: a.cooldown_minutes,
