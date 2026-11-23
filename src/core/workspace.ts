@@ -139,7 +139,16 @@ export async function countChangedLines(cwd: string, files: string[]): Promise<n
   return total;
 }
 
-function diffStamps(before: Stamp, after: Stamp): string[] {
+/** 快照存进任务记录用的形式。 */
+export function stampToRecord(stamp: Stamp): Record<string, string> | null {
+  return stamp ? Object.fromEntries(stamp) : null;
+}
+
+export function stampFromRecord(record: Record<string, string> | null): Stamp {
+  return record ? new Map(Object.entries(record)) : null;
+}
+
+export function diffStamps(before: Stamp, after: Stamp): string[] {
   if (!before || !after) return [];
   const changed = new Set<string>();
   for (const [k, v] of after) if (before.get(k) !== v) changed.add(k);

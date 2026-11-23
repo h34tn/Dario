@@ -310,12 +310,15 @@ export interface ChangeDiff {
   omitted: string[];
   /** 改动的文件里，任务开始前就有未提交改动的。 */
   preexisting: string[];
+  /** 改动的文件里，任务停下之后、续接之前被改过的。 */
+  external?: string[];
 }
 
 function diffSection(diff: ChangeDiff | undefined, title = '改动的 diff', lead?: string): string {
   if (!diff) return '';
   const notes = [...(lead ? [lead] : []), '相对最近一次提交（HEAD）的改动，没被 git 跟踪的新文件按全文列出。'];
   if (diff.preexisting.length) notes.push(`其中 ${diff.preexisting.join('、')} 在任务开始前就有未提交的改动，diff 里也包含那部分，不全是这次任务改的。`);
+  if (diff.external?.length) notes.push(`其中 ${diff.external.join('、')} 在任务停下之后、续接之前被改过（可能是没做完的那一轮留下的，也可能是发起人或别人改的），不全是这次任务改的。`);
   if (diff.omitted.length) notes.push(`超出长度上限，这些文件的 diff 没有附上或没有附全：${diff.omitted.join('、')}。请用 git diff HEAD -- <文件> 查看。`);
   return section(title, `${notes.join('\n')}\n\n${diff.text}`.trim());
 }
@@ -408,6 +411,56 @@ export function correctionPrompt(message: string): string {
   return (
     `# 主控提醒\n你上一轮的运行被 Dario 中断了，原因是主控看了你的进展后要求调整：\n\n${message}\n\n` +
     '先看一下当前改动的状态（被中断时可能有文件只写了一半），再按上面的提醒接着完成原来的任务。'
+  );
+}
+
+/** 续接时附在接手那一步说明后面的一节，见 resumeSection。 */
+export interface ResumeBrief {
+  /** 停下的那一步的记录；Dario 中断时那一轮没来得及记下，为空。 */
+  failed?: StepRecord;
+  /** 任务是因为 Dario 退出而中断的。 */
+  interrupted: boolean;
+  /** 任务是被取消的。 */
+  cancelled: boolean;
+  /** 接着的是停下那一轮的会话：它的输出它自己记得，不再附上。 */
+  sameSession: boolean;
+  /** 审查已经返工到上限，发起人决定再给一轮。 */
+  extraRound: boolean;
+  /** 任务停下之后有变化的文件；不是 git 仓库、无法比对时为 undefined。 */
+  changed?: string[];
+  changedDiff?: ChangeDiff;
+  note?: string;
+}
+
+const LAST_OUTPUT_CHARS = 1500;
+const PARTIAL_WORK = '工作区里可能留着上次改了一半的文件：先检查现状，在此基础上接着做，不要从头重写。';
+
+/** 续接没做完的任务时，告诉接手的角色这一步之前停在了哪里、停下之后发生了什么。 */
+export function resumeSection(b: ResumeBrief): string {
+  const lines = ['这个任务之前停下了，发起人让你从停下的地方接着做。'];
+  const f = b.failed;
+  if (f?.blocked) {
+    lines.push(
+      `上次执行这一步时，必需的工具或服务用不了而停下：${f.blocked}。发起人已经处理了这个问题。先确认它现在能用，再从停下的地方接着做，已经做完的部分不要重做；仍然用不了就照工作规则停下并标记。`,
+    );
+  } else if (f && f.outcome !== 'all_unavailable') {
+    const why = f.outcome === 'timeout' ? '超时' : b.cancelled ? '被取消' : '没有做完';
+    lines.push(`这一步上次${why}${f.reason ? `：${f.reason}` : ''}。${PARTIAL_WORK}`);
+  } else if (!f && b.interrupted) {
+    lines.push(`这一步上次执行到一半时 Dario 退出了，没有做完。${PARTIAL_WORK}`);
+  }
+  if (b.extraRound) lines.push('审查已经返工到上限，发起人决定再给一轮。');
+  if (b.changed === undefined) lines.push('目录不是 git 仓库，无法确认任务停下之后哪些文件被改过，用到时请重新读取。');
+  const last = f && !f.blocked && !b.sameSession && f.text.trim() ? truncate(f.text, LAST_OUTPUT_CHARS) : undefined;
+  const changed = b.changed?.length
+    ? `${b.changed.map((file) => `- ${file}`).join('\n')}\n可能是上次没做完的那一轮留下的，也可能是发起人或别人改的，用到时请重新读取。`
+    : undefined;
+  return (
+    section('接着做', lines.join('\n')) +
+    section('上次停下前的最后输出', last) +
+    section('任务停下之后有变化的文件', changed) +
+    diffSection(b.changedDiff, '这些文件的 diff') +
+    section('发起人的补充说明', b.note)
   );
 }
 

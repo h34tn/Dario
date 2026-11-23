@@ -193,9 +193,12 @@ export class ChannelRouter {
         this.paused = true;
         this.reply(m, '已暂停接收新任务。排队中和运行中的任务不受影响。');
         return;
-      case 'resume':
+      case 'unpause':
         this.paused = false;
         this.reply(m, '已恢复接收新任务。');
+        return;
+      case 'resume':
+        this.reply(m, '远程渠道暂不支持续接没做完的任务，请重新下达任务。');
         return;
       case 'model':
         this.reply(m, await runModel(this.engine, cmd));

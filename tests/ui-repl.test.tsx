@@ -79,10 +79,10 @@ it('行内菜单循环滚动，过滤后回到首条，Tab 补全所选指令', 
   const { key, contains, absent } = await screen();
   key('/');
   await contains('> /to <角色>');
-  await contains('（1/15）');
+  await contains('（1/16）');
   key('\x1b[A');
   await contains('> /exit');
-  await contains('（15/15）');
+  await contains('（16/16）');
   await absent('直接交给指定角色');
   key('\x1b[B');
   await contains('> /to <角色>');

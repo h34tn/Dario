@@ -15,6 +15,7 @@ import {
   reviewCarried,
   reviewFollowUp,
   reviewPrompt,
+  resumeSection,
   type ChangeDiff,
   reworkFollowUp,
   reworkPrompt,
@@ -28,13 +29,17 @@ import {
   summaryFollowUp,
   summaryPrompt,
 } from './prompts.js';
+import { checkResume } from './resume.js';
 import type { RoleBook } from './roles.js';
 import type { StepRunner } from './runner.js';
 import { inScope, normalizeScopePath, reworkScope } from './scope.js';
 import type { StateStore } from './state.js';
 import type { Access, FallbackQuestion, Job, JobStatus, Plan, ProgressEvent, StepKind, StepRecord } from './types.js';
-import { DarioError, ellipsis, truncate } from './util.js';
-import { outOfScope, type Workspace } from './workspace.js';
+import { DarioError, ellipsis, nowIso, truncate } from './util.js';
+import { diffStamps, outOfScope, stampFromRecord, stampToRecord, type Workspace } from './workspace.js';
+
+/** 续接时直接返工要用的审查结论。 */
+type PendingRework = { issues: string[]; reviewText: string };
 
 export interface OrchestratorDeps {
   state: StateStore;
@@ -54,6 +59,8 @@ export interface RunOptions {
    * 加了 --yes 的调用方传一个直接返回 true 的函数。
    */
   confirmFallback?: (question: FallbackQuestion) => Promise<boolean>;
+  /** 续接没做完的任务：从停下的地方接着做。note 是发起人给接手角色的补充说明。调用方已经确认任务可以续接。 */
+  resume?: { note?: string };
 }
 
 class Cancelled extends Error {}
@@ -73,17 +80,23 @@ export function describePlan(plan: Plan, roles: RoleBook): string {
 
 /** 推进一个任务：直派，或"计划、确认、执行、审查、返工、汇总"。 */
 export class Orchestrator {
+  /** 续接时要附给接手那一步的说明，键是任务号。下一次执行一步时取走。 */
+  private readonly resumeNotes = new Map<string, string>();
+
   constructor(private readonly deps: OrchestratorDeps) {}
 
   /**
    * 推进任务直到结束或停在"等待确认"。
-   * 传入"排队"状态的任务从头开始；传入"等待确认"状态的任务表示已获批准，从执行阶段继续。
+   * 传入"排队"状态的任务从头开始；传入"等待确认"状态的任务表示已获批准，从执行阶段继续；
+   * 带 resume 时是续接没做完的任务，从停下的地方接着做。
    */
   async run(job: Job, ws: Workspace, opts: RunOptions): Promise<Job> {
     const { state } = this.deps;
     let conclusion = '';
     try {
-      if (job.status === 'queued') {
+      if (opts.resume) {
+        conclusion = await this.resumePhase(job, ws, opts, opts.resume.note);
+      } else if (job.status === 'queued') {
         await this.syncPhase(job, ws);
         if (job.mode === 'direct') {
           conclusion = await this.runDirect(job, ws, opts);
@@ -115,6 +128,7 @@ export class Orchestrator {
         throw e;
       }
     }
+    this.resumeNotes.delete(job.id);
     await this.finish(job, ws, conclusion);
     state.audit('job_end', { job: job.id, status: job.status, failure: job.failureCode });
     return this.save(job);
@@ -172,17 +186,27 @@ export class Orchestrator {
     req: { kind: StepKind; roleId: string; prompt: string; followUp?: string; brief?: string; task?: string; access?: Access; prefer?: string; scope?: string[] },
   ): Promise<StepRecord> {
     this.checkCancel(job);
+    // 续接时接手的这一步带上停在了哪里、停下之后发生了什么
+    const note = this.resumeNotes.get(job.id);
+    if (note !== undefined) {
+      this.resumeNotes.delete(job.id);
+      req = { ...req, prompt: req.prompt + note, ...(req.followUp !== undefined && { followUp: req.followUp + note }) };
+    }
     const before = await ws.stamp();
     const avoid = this.avoidFor(job, req.roleId, req.kind);
     const rec = await this.deps.runner.run({ job, cwd: ws.cwd, avoid: avoid?.agent, confirmFallback: opts.confirmFallback, ...req });
-    rec.changedFiles = await ws.changedSince(before);
+    const after = await ws.stamp();
+    rec.changedFiles = diffStamps(before, after);
+    // 记下这一步结束时的工作区：任务停下之后再续接，据此找出其间被改过的文件
+    job.stamp = stampToRecord(after);
     if (req.scope) this.checkOffPlan(job, rec, req.scope);
     // 角色报告必需的工具或服务用不了：这一步算没做成，任务就此停下并告知发起人。
-    // 会话仍然留着，问题解决后再下达任务可以接着做。
+    // 会话仍然留着，问题解决后续接这个任务，接着这个会话做。
     const blocked = rec.outcome === 'ok' ? parseBlocked(rec.text) : undefined;
     if (blocked) {
       rec.outcome = 'task_failed';
-      rec.reason = `必需的工具或服务用不了，已停下：${blocked}。恢复之后再下达一次任务（或让它继续），各角色会接着原来的会话做。`;
+      rec.blocked = blocked;
+      rec.reason = `必需的工具或服务用不了，已停下：${blocked}。问题解决后可以续接这个任务，从这一步接着做。`;
       this.deps.emit({ jobId: job.id, kind: 'phase', text: `第 ${rec.index + 1} 步受阻，任务停下：${blocked}` });
     }
     job.steps.push(rec);
@@ -292,16 +316,69 @@ export class Orchestrator {
       task: job.task,
       prompt,
       brief,
-      // 直派只有一步，能续接的只有上一个任务带过来的会话
+      // 直派只有一步：能续接的是上一个任务带过来的会话，或者续接这个任务时受阻停下的那一轮
       followUp: this.followUp(job, roleId, brief, {
         full: stepPrompt(project, role, role.access, job.task, this.carriedContext(job, roleId), undefined, job.pulled),
         carried: () => stepCarried(role, role.access, job.task, this.carriedContext(job, roleId), undefined, job.pulled),
-        delta: () => undefined,
+        delta: (after, briefed) => stepFollowUp(project, role, role.access, job.task, job, after, undefined, briefed),
       }),
     });
     if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
     job.status = 'done';
     return rec.text;
+  }
+
+  /**
+   * 续接没做完的任务：比对停下之后的改动，找出从哪里接，把停在哪里、停下之后发生了什么交代给接手的那一步，
+   * 然后照常往下走。原计划、做成的步骤和各角色的会话都沿用任务记录里的。
+   */
+  private async resumePhase(job: Job, ws: Workspace, opts: RunOptions, note: string | undefined): Promise<string> {
+    const { roles, project, state, emit } = this.deps;
+    const interrupted = job.status === 'interrupted';
+    const cancelled = job.status === 'cancelled';
+
+    // 停下之后有变化的文件：可能是没做完的那一轮留下的，也可能是发起人或别人改的。计入本任务的改动，之后照常审查
+    const current = await ws.stamp();
+    let changed: string[] | undefined;
+    if (current) {
+      if (job.stamp) changed = diffStamps(stampFromRecord(job.stamp), current);
+      else {
+        // 没有快照的旧任务记录：当前有改动、又不在本任务改动和开工前改动里的文件
+        const known = new Set([...job.changedFiles, ...(job.dirtyAtStart ?? [])]);
+        changed = [...current.keys()].filter((f) => !known.has(f)).sort();
+      }
+    }
+    job.stamp = stampToRecord(current);
+    if (changed?.length) {
+      job.changedFiles = [...new Set([...job.changedFiles, ...changed])].sort();
+      job.reviewedSinceChange = false;
+    }
+
+    const check = checkResume(job, roles, project.settings);
+    if (!check.ok) throw new DarioError(`任务 ${job.id} 不能续接：${check.reason}`);
+    const { point, where } = check;
+    job.failureCode = undefined;
+    job.result = undefined;
+    job.cancelRequested = undefined;
+    state.clearCancel(job.id);
+    // 中断时那一轮的会话状态不明，可能已经往前走了半截，按"没做成的一轮之后不再续接"作废
+    if (interrupted && job.sessions) delete job.sessions[point.role];
+    const extraRound = point.kind === 'rework' && point.extraRound;
+    if (extraRound) job.extraReworkRounds = (job.extraReworkRounds ?? 0) + 1;
+    (job.resumes ??= []).push({ at: nowIso(), from: where, ...(note && { note }), ...(changed?.length && { changed }) });
+
+    const failed = point.failed;
+    const sameSession = !!failed?.blocked && job.sessions?.[point.role]?.step === failed.index;
+    const changedDiff = changed?.length ? await this.changeDiff(job, ws, changed) : undefined;
+    this.resumeNotes.set(job.id, resumeSection({ failed, interrupted, cancelled, sameSession, extraRound, changed, changedDiff, note }));
+    state.audit('job_resume', { job: job.id, from: where, changed: changed?.length ?? null });
+    emit({ jobId: job.id, kind: 'phase', text: `续接：从${where}接着做` });
+    if (changed?.length) emit({ jobId: job.id, kind: 'phase', text: `任务停下之后有变化的文件（已告诉接手的角色，计入本任务的改动）：${changed.join('、')}` });
+    else if (!current) emit({ jobId: job.id, kind: 'phase', text: '目录不是 git 仓库，无法确认任务停下之后哪些文件被改过。' });
+    this.save(job);
+
+    if (job.mode === 'direct') return this.runDirect(job, ws, opts);
+    return this.execPhase(job, ws, opts, point.kind === 'rework' ? { issues: point.issues, reviewText: point.reviewText } : undefined);
   }
 
   /** 返回 true 表示可以进入执行阶段。 */
@@ -372,7 +449,8 @@ export class Orchestrator {
     return true;
   }
 
-  private async execPhase(job: Job, ws: Workspace, opts: RunOptions): Promise<string> {
+  /** pending 是续接时要直接返工的审查结论：停在计划里的审查步骤就在那一步用，否则用在最后的审查。 */
+  private async execPhase(job: Job, ws: Workspace, opts: RunOptions, pending?: PendingRework): Promise<string> {
     const { roles, project } = this.deps;
     const plan = job.plan;
     if (!plan) throw new DarioError(`任务 ${job.id} 没有计划，无法执行。`);
@@ -386,6 +464,7 @@ export class Orchestrator {
     if (job.dirtyAtStart === undefined) {
       const stamp = await ws.stamp();
       job.dirtyAtStart = stamp ? [...stamp.keys()].sort() : [];
+      job.stamp = stampToRecord(stamp);
     }
     this.setStatus(job, 'running');
 
@@ -393,7 +472,9 @@ export class Orchestrator {
       const step = plan.steps[job.cursor]!;
       const leadStep = step.role === project.settings.leadRole && step.writes;
       if (!leadStep && step.role === reviewRole) {
-        const failure = await this.reviewLoop(job, ws, opts, step.task);
+        const carry = pending;
+        pending = undefined;
+        const failure = await this.reviewLoop(job, ws, opts, step.task, carry);
         if (failure !== undefined) return failure;
         this.setStatus(job, 'running');
         continue;
@@ -433,8 +514,8 @@ export class Orchestrator {
     }
 
     const changed = job.changedFiles.length > 0 || job.unknownChanges === true;
-    if (changed && !job.reviewedSinceChange && roles.has(reviewRole) && !(await this.smallEnoughToSkipReview(job, ws))) {
-      const failure = await this.reviewLoop(job, ws, opts, undefined);
+    if (pending || (changed && !job.reviewedSinceChange && roles.has(reviewRole) && !(await this.smallEnoughToSkipReview(job, ws)))) {
+      const failure = await this.reviewLoop(job, ws, opts, undefined, pending);
       if (failure !== undefined) return failure;
     }
 
@@ -479,54 +560,40 @@ export class Orchestrator {
     const got = await diffText(ws.cwd, files, this.deps.project.settings.handoffMaxChars);
     if (!got) return undefined;
     const before = new Set(job.dirtyAtStart ?? []);
-    return { text: got.text, omitted: got.omitted, preexisting: files.filter((f) => before.has(f)) };
+    const external = new Set((job.resumes ?? []).flatMap((r) => r.changed ?? []));
+    return {
+      text: got.text,
+      omitted: got.omitted,
+      preexisting: files.filter((f) => before.has(f)),
+      ...(external.size > 0 && { external: files.filter((f) => external.has(f)) }),
+    };
   }
 
-  /** 审查并在不通过时返工。通过返回 undefined；失败时返回说明，任务状态已设置。 */
-  private async reviewLoop(job: Job, ws: Workspace, opts: RunOptions, extraTask: string | undefined): Promise<string | undefined> {
+  /**
+   * 审查并在不通过时返工。通过返回 undefined；失败时返回说明，任务状态已设置。
+   * pending 是续接时带来的审查结论：先按它返工，不重审。
+   */
+  private async reviewLoop(job: Job, ws: Workspace, opts: RunOptions, extraTask: string | undefined, pending?: PendingRework): Promise<string | undefined> {
     const { roles, project } = this.deps;
-    const reviewRole = project.settings.reviewRole;
+    let carry = pending;
     for (;;) {
-      this.setStatus(job, 'reviewing');
-      const reviewer = roles.get(reviewRole);
-      const diff = await this.changeDiff(job, ws, job.changedFiles);
-      const lastReview = job.sessions?.[reviewRole]?.step ?? -1;
-      const sinceDiff = lastReview >= 0 ? await this.changeDiff(job, ws, filesChangedAfter(job, lastReview)) : undefined;
-      const reviewText = reviewPrompt(project, reviewer, job, extraTask, diff);
-      const brief = reviewBrief(project, reviewer);
-      const rec = await this.execStep(job, ws, opts, {
-        kind: 'review',
-        roleId: reviewRole,
-        access: 'read-only',
-        task: extraTask,
-        prompt: reviewText,
-        brief,
-        followUp: this.followUp(job, reviewRole, brief, {
-          full: reviewText,
-          carried: () => reviewCarried(reviewer, job, extraTask, diff),
-          delta: (after, briefed) => reviewFollowUp(project, reviewer, job, after, extraTask, briefed, after === lastReview ? sinceDiff : undefined),
-        }),
-      });
-      if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
-      job.reviewedSinceChange = true;
-      const verdict = parseVerdict(rec.text);
-      if (!verdict) {
-        job.warnings.push('审查没有给出明确的"通过 / 不通过"结论，未触发返工。');
-        return undefined;
+      let found: PendingRework;
+      if (carry) {
+        found = carry;
+        carry = undefined;
+      } else {
+        const got = await this.reviewOnce(job, ws, opts, extraTask);
+        if (typeof got === 'string' || got === undefined) return got;
+        found = got;
       }
-      // 建议不要求返工，交给发起人决定；只有建议、没有必须修改的问题时按通过处理
-      if (verdict.suggestions.length > 0) {
-        job.warnings.push(`审查的建议（没有要求返工，由你决定）：\n${verdict.suggestions.map((s, i) => `    ${i + 1}. ${s}`).join('\n')}`);
-      }
-      if (verdict.verdict === 'pass' || (verdict.issues.length === 0 && verdict.suggestions.length > 0)) return undefined;
-
-      const issues = verdict.issues.length ? verdict.issues.map((s, i) => `${i + 1}. ${s}`).join('\n') : truncate(rec.text, 2000);
+      const issues = found.issues.length ? found.issues.map((s, i) => `${i + 1}. ${s}`).join('\n') : truncate(found.reviewText, 2000);
       if (!job.lastWriter) {
         job.status = 'failed';
         job.failureCode = 'review_rejected';
         return `审查没有通过，且没有可以返工的执行者。\n${issues}`;
       }
-      if (job.reworkRounds >= project.settings.maxReworkRounds) {
+      // 审查达到返工上限后续接，每次多给一轮
+      if (job.reworkRounds >= project.settings.maxReworkRounds + (job.extraReworkRounds ?? 0)) {
         job.status = 'failed';
         job.failureCode = 'review_rejected';
         return `审查没有通过，已返工 ${job.reworkRounds} 轮，达到上限。仍存在的问题：\n${issues}`;
@@ -535,7 +602,7 @@ export class Orchestrator {
       this.setStatus(job, 'running');
       const writer = job.lastWriter;
       const writerRole = roles.get(writer.role);
-      const reworkText = reworkPrompt(project, writerRole, writer.task, verdict.issues, rec.text);
+      const reworkText = reworkPrompt(project, writerRole, writer.task, found.issues, found.reviewText);
       // 主控保留计划的指纹；其他角色与执行步骤共用可写工作规则的指纹。
       const leadRework = writer.role === project.settings.leadRole;
       const reworkBrief = leadRework ? undefined : stepBrief(project, writerRole, 'write');
@@ -550,11 +617,53 @@ export class Orchestrator {
         brief: reworkBrief,
         followUp: this.followUp(job, writer.role, reworkBrief, {
           full: reworkText,
-          delta: (after, briefed) => reworkFollowUp(project, writerRole, job, after, verdict.issues, rec.text, briefed || leadRework),
+          delta: (after, briefed) => reworkFollowUp(project, writerRole, job, after, found.issues, found.reviewText, briefed || leadRework),
         }),
       });
       if (rework.outcome !== 'ok') return this.failFromStep(job, rework);
     }
+  }
+
+  /**
+   * 审查一轮。通过（或没有明确结论）返回 undefined，审查这一步失败返回说明（任务状态已设置），
+   * 不通过返回要返工的问题。
+   */
+  private async reviewOnce(job: Job, ws: Workspace, opts: RunOptions, extraTask: string | undefined): Promise<PendingRework | string | undefined> {
+    const { roles, project } = this.deps;
+    const reviewRole = project.settings.reviewRole;
+    this.setStatus(job, 'reviewing');
+    const reviewer = roles.get(reviewRole);
+    const diff = await this.changeDiff(job, ws, job.changedFiles);
+    const lastReview = job.sessions?.[reviewRole]?.step ?? -1;
+    const sinceDiff = lastReview >= 0 ? await this.changeDiff(job, ws, filesChangedAfter(job, lastReview)) : undefined;
+    const reviewText = reviewPrompt(project, reviewer, job, extraTask, diff);
+    const brief = reviewBrief(project, reviewer);
+    const rec = await this.execStep(job, ws, opts, {
+      kind: 'review',
+      roleId: reviewRole,
+      access: 'read-only',
+      task: extraTask,
+      prompt: reviewText,
+      brief,
+      followUp: this.followUp(job, reviewRole, brief, {
+        full: reviewText,
+        carried: () => reviewCarried(reviewer, job, extraTask, diff),
+        delta: (after, briefed) => reviewFollowUp(project, reviewer, job, after, extraTask, briefed, after === lastReview ? sinceDiff : undefined),
+      }),
+    });
+    if (rec.outcome !== 'ok') return this.failFromStep(job, rec);
+    job.reviewedSinceChange = true;
+    const verdict = parseVerdict(rec.text);
+    if (!verdict) {
+      job.warnings.push('审查没有给出明确的"通过 / 不通过"结论，未触发返工。');
+      return undefined;
+    }
+    // 建议不要求返工，交给发起人决定；只有建议、没有必须修改的问题时按通过处理
+    if (verdict.suggestions.length > 0) {
+      job.warnings.push(`审查的建议（没有要求返工，由你决定）：\n${verdict.suggestions.map((s, i) => `    ${i + 1}. ${s}`).join('\n')}`);
+    }
+    if (verdict.verdict === 'pass' || (verdict.issues.length === 0 && verdict.suggestions.length > 0)) return undefined;
+    return { issues: verdict.issues, reviewText: rec.text };
   }
 
   /** 收尾：范围检查、工作区处理、组装结果。 */

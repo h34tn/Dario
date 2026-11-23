@@ -171,7 +171,7 @@ it('全屏矮窗口的菜单跟随高亮，关闭后恢复历史和多行光标�
   await ui.contains('上文 J0001');
   await ui.key('/');
   await ui.key('\x1b[A');
-  await ui.contains('（15/15）');
+  await ui.contains('（16/16）');
   expect(ui.lines()).toContain('> /');
   expect(ui.lines().some(line => line.startsWith('> /exit '))).toBe(true);
   expect(ui.lines()).toHaveLength(8);
@@ -182,7 +182,7 @@ it('全屏矮窗口的菜单跟随高亮，关闭后恢复历史和多行光标�
   await ui.key('\x1b[A');
   await ui.key('甲');
   await ui.contains('> /甲');
-  expect(ui.lines().join('\n')).not.toContain('（1/15）');
+  expect(ui.lines().join('\n')).not.toContain('（1/16）');
   await ui.key('\x1b');
   await ui.check(lines => expect(lines.at(-4)).toBe('>'));
   await ui.key('\x1b[A');

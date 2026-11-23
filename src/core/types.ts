@@ -84,6 +84,19 @@ export interface StepRecord {
   alerts?: Alert[];
   /** 这一步运行中请主控判断的记录；没有时为空。 */
   consults?: ConsultRecord[];
+  /** 角色报告必需的工具或服务用不了而停下（回复里的 DARIO_BLOCKED）时的原因。这一轮是正常结束的，会话保留。 */
+  blocked?: string;
+}
+
+/** 一次续接：从停下的地方接着做没做完的任务。 */
+export interface ResumeRecord {
+  at: string;
+  /** 从哪里接，给人看的说明，例如"计划第 2 步（实现）"。 */
+  from: string;
+  /** 发起人给接手角色的补充说明。 */
+  note?: string;
+  /** 任务停下之后有变化的文件。 */
+  changed?: string[];
 }
 
 /** 主控对一次监控告警的判断。 */
@@ -216,6 +229,12 @@ export interface Job {
   dirtyAtStart?: string[];
   /** 最近一次改动之后是否已经审查过。 */
   reviewedSinceChange: boolean;
+  /** 最近一步结束时工作区的 git 状态快照（有改动的文件及其指纹）。续接前据此找出停下之后被改过的文件；不是 git 仓库时为 null。 */
+  stamp?: Record<string, string> | null;
+  /** 续接的记录，按先后。 */
+  resumes?: ResumeRecord[];
+  /** 审查达到返工上限后续接时追加的返工轮数。 */
+  extraReworkRounds?: number;
   lastWriter?: { role: string; agent: string; task: string };
   /** 本任务里已经同意过的换人，写成 "原来的 AI>备选的 AI"。同一对不再重复询问。 */
   fallbackApproved?: string[];

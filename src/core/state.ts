@@ -133,6 +133,11 @@ export class StateStore {
     return fs.existsSync(this.file('jobs', id.toUpperCase(), 'cancel'));
   }
 
+  /** 续接被取消的任务之前清掉上一次的取消请求。 */
+  clearCancel(id: string): void {
+    fs.rmSync(this.file('jobs', id.toUpperCase(), 'cancel'), { force: true });
+  }
+
   // ----- 临时指定的担当者（按项目区分） -----
 
   private overridesFile(projectRoot: string): string {

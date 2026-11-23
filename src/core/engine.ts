@@ -7,6 +7,7 @@ import { Orchestrator, type RunOptions } from './orchestrator.js';
 import type { AgentCatalog } from './ports.js';
 import { killProcessTree } from './proc.js';
 import { formatModel } from './report.js';
+import { checkResume, type ResumeCheck } from './resume.js';
 import { RoleBook, type ModelTarget, type RoleView } from './roles.js';
 import { StepRunner } from './runner.js';
 import type { StateStore } from './state.js';
@@ -164,6 +165,8 @@ export class Engine {
     const release = state.acquireDirLock(project.root, job.id);
     if (!release) {
       const holder = state.dirLockHolder(project.root);
+      // 续接的任务原样保留停下时的记录，下次还能接着做
+      if (opts.resume) throw new ConfigError(`这个目录已经有任务${holder ? ` ${holder} ` : ''}在运行，同一目录同一时间只能跑一个，等它结束后再续接。`);
       job.status = 'failed';
       job.failureCode = 'workspace';
       job.ownerPid = undefined;
@@ -200,6 +203,34 @@ export class Engine {
     }
     this.deps.state.audit('job_approved', { job: job.id });
     return this.advance(job, { autoApprove: true, confirmFallback: opts.confirmFallback });
+  }
+
+  /** 本项目最近的一个任务。 */
+  latestJob(): Job | undefined {
+    const root = normPath(this.deps.project.root);
+    return this.jobs(50).find((job) => normPath(job.projectRoot) === root);
+  }
+
+  /** 任务能否续接；能的话给出从哪里接。 */
+  resumable(job: Job): ResumeCheck {
+    return checkResume(job, this.roles, this.deps.project.settings);
+  }
+
+  /**
+   * 续接没做完的任务，从停下的地方接着做。不写任务号时取本项目最近的一个任务。
+   * note 是发起人给接手角色的补充说明。
+   */
+  async resume(jobId?: string, opts: { note?: string } & Pick<RunOptions, 'confirmFallback'> = {}): Promise<Job> {
+    const job = jobId ? this.job(jobId) : this.latestJob();
+    if (!job) throw new ConfigError('这个项目还没有任务，没有可以续接的。');
+    if (normPath(job.projectRoot) !== normPath(this.deps.project.root)) {
+      throw new ConfigError(`任务 ${job.id} 属于另一个项目：${job.projectRoot}。请在那个目录里续接。`);
+    }
+    const check = this.resumable(job);
+    if (!check.ok) throw new ConfigError(`${jobId ? '' : '最近的'}任务 ${job.id} 不能续接：${check.reason}。`);
+    const note = opts.note?.trim();
+    this.deps.state.audit('job_resume_requested', { job: job.id, from: check.where });
+    return this.advance(job, { autoApprove: true, confirmFallback: opts.confirmFallback, resume: { ...(note && { note }) } });
   }
 
   /** 取消任务。正在运行时终止 AI 进程树，由推进它的进程收尾。 */

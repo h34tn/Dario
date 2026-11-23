@@ -58,6 +58,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
   dario jobs                       最近的任务
   dario job <任务号>               任务详情
   dario approve <任务号>           批准等待确认的计划
+  dario resume [任务号] [补充说明]  从停下的地方接着做没做完的任务（不写任务号取本项目最近的）
   dario cancel <任务号>            取消任务
   dario init                       在当前目录生成 .dario/ 配置
   dario check                      校验配置，确认各家命令存在
@@ -71,7 +72,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
   --verbose                在纯文本输出里逐条显示 AI 的活动
   --plain                  不使用动态界面，按纯文本输出
   --inline                 交互方式使用行内界面，不占满整个终端
-  -c, --continue [任务号]  交互方式启动时接上这个项目上一次的会话；给出任务号则从那个任务接着做
+  -c, --continue [任务号]  交互方式启动时接上这个项目上一次的会话；给出任务号则还原到那个任务结束时的会话
   -y, --yes                含改文件步骤的计划免确认
   --project <目录>         指定项目根目录
   -h, --help               显示本帮助
@@ -79,7 +80,7 @@ const USAGE = `Dario ${VERSION} — 按角色调用各家 AI 编码工具
 
 退出码：0 完成 · 1 任务失败 · 2 用法或配置错误 · 3 没有可用的 AI · 4 计划等待确认 · 5 取消或超时`;
 
-const SUBCOMMANDS = new Set(['roles', 'role', 'model', 'agents', 'health', 'jobs', 'job', 'approve', 'cancel', 'init', 'check', 'serve', 'input-test', 'help']);
+const SUBCOMMANDS = new Set(['roles', 'role', 'model', 'agents', 'health', 'jobs', 'job', 'approve', 'resume', 'cancel', 'init', 'check', 'serve', 'input-test', 'help']);
 
 interface Parsed {
   plain: boolean;
@@ -277,10 +278,22 @@ async function runTask(io: CliIO, p: Parsed): Promise<number> {
   }
 
   const created = engine.create({ task, role: p.to, origin: { channel: 'terminal', senderId: os.userInfo().username } });
-  return executeJob(engine, created, p, io, false);
+  return executeJob(engine, created, p, io, { kind: 'new' });
 }
 
-async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, resume: boolean): Promise<number> {
+/** new 新任务；approve 批准后从执行阶段继续；resume 续接没做完的任务。 */
+type Continuation = { kind: 'new' } | { kind: 'approve' } | { kind: 'resume'; note?: string };
+
+/** 任务没做完、可以续接时，提示怎么接。 */
+function resumeHint(engine: Engine, job: Job): string | undefined {
+  if (job.status === 'done' || job.status === 'awaiting_approval') return undefined;
+  const check = engine.resumable(job);
+  return check.ok ? `运行 dario resume ${job.id} 从${check.where}接着做（可以在后面写一句补充说明）。` : undefined;
+}
+
+async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, how: Continuation): Promise<number> {
+  const resume = how.kind !== 'new';
+  const resumeJob = how.kind === 'resume' ? { ...(how.note && { note: how.note }) } : undefined;
   const { colorEnabled, pickOutputMode } = await import('../ui/mode.js');
   const mode = pickOutputMode({ plainFlag: p.plain, format: p.format, stderrIsTTY: !!io.stderrIsTTY,
     hasStreams: !!io.streams, columns: io.columns, env: io.env });
@@ -308,7 +321,7 @@ async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, re
       if (ui) {
         try {
           let displayFailed = false;
-          job = await ui.runLive({ engine, job: created, resume, autoApprove: p.yes, env: io.env,
+          job = await ui.runLive({ engine, job: created, resume, ...(resumeJob && { resumeJob }), autoApprove: p.yes, env: io.env,
             ...io.streams, printPlain: progress, askPlain: ask, notice: line => {
               displayFailed = true;
               io.stderr(line);
@@ -322,6 +335,8 @@ async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, re
               io.stdout(conclusion);
             }
             io.stderr(ui.formatLiveSummary(job, colorEnabled({ stderrIsTTY: !!io.stderrIsTTY, env: io.env })));
+            const hint = resumeHint(engine, job);
+            if (hint) io.stderr(hint);
             return exitCodeForJob(job);
           }
         } catch (error) {
@@ -339,7 +354,8 @@ async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, re
         : io.isTTY && !p.print && ask
           ? async (q: FallbackQuestion) => agreed(await ask(`[${q.jobId}] ${formatFallbackQuestion(q).join('')}(y/N) `))
           : undefined;
-      job = resume ? await engine.approve(created.id, { confirmFallback }) : await engine.advance(created, {
+      job = resumeJob ? await engine.resume(created.id, { ...resumeJob, confirmFallback })
+        : resume ? await engine.approve(created.id, { confirmFallback }) : await engine.advance(created, {
         autoApprove: p.yes,
         confirmFallback,
         confirm: io.isTTY && !p.print && ask
@@ -370,6 +386,8 @@ async function executeJob(engine: Engine, created: Job, p: Parsed, io: CliIO, re
     if (r?.warnings.length) notes.push(`注意：\n${r.warnings.map((w) => `  - ${w}`).join('\n')}`);
     io.stderr(notes.join('\n'));
   }
+  const hint = p.format === 'json' ? undefined : resumeHint(engine, job);
+  if (hint) io.stderr(hint);
   return exitCodeForJob(job);
 }
 
@@ -476,7 +494,25 @@ async function dispatch(argv: string[], io: CliIO): Promise<number> {
       }
       // 任务属于哪个项目，就在哪个项目的配置下继续
       const target = await createApp({ cwd: pending.projectRoot, env: io.env, projectRoot: pending.projectRoot });
-      return executeJob(target.engine, pending, p, io, true);
+      return executeJob(target.engine, pending, p, io, { kind: 'approve' });
+    }
+    case 'resume': {
+      const depth = Number(io.env.DARIO_DEPTH ?? '0') || 0;
+      if (depth >= 1 && io.env.DARIO_ALLOW_NESTED !== '1') {
+        io.stderr('当前进程是被 Dario 启动的 AI，不能续接任务。');
+        return 2;
+      }
+      // 紧跟的词形如 J 加数字时才是任务号，其余都是给接手角色的补充说明
+      const id = args[0] && /^J\d+$/i.test(args[0]) ? args[0].toUpperCase() : undefined;
+      const note = (id ? args.slice(1) : args).join(' ').trim();
+      const stopped = id ? engine.job(id) : engine.latestJob();
+      if (!stopped) throw new ConfigError('这个项目还没有任务，没有可以续接的。');
+      // 任务属于哪个项目，就在哪个项目的配置下继续
+      const target = await createApp({ cwd: stopped.projectRoot, env: io.env, projectRoot: stopped.projectRoot });
+      const check = target.engine.resumable(stopped);
+      if (!check.ok) throw new ConfigError(`${id ? '' : '最近的'}任务 ${stopped.id} 不能续接：${check.reason}。`);
+      io.stderr(`[${stopped.id}] 续接：从${check.where}接着做`);
+      return executeJob(target.engine, stopped, p, io, { kind: 'resume', ...(note && { note }) });
     }
     case 'cancel': {
       if (!args[0]) throw new ConfigError('用法：dario cancel <任务号>');

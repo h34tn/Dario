@@ -93,8 +93,11 @@ export async function runRepl(
             if (!cmd.jobId) out('用法：/approve <任务号>');
             else out(formatJob(await engine.approve(cmd.jobId, { confirmFallback })));
             break;
-          case 'pause':
           case 'resume':
+            out(formatJob(await engine.resume(cmd.jobId, { ...(cmd.note && { note: cmd.note }), confirmFallback })));
+            break;
+          case 'pause':
+          case 'unpause':
             out('这个指令只在常驻运行的渠道里有意义。');
             break;
           case 'task': {

@@ -13,7 +13,10 @@ import { RunApp } from './RunApp.js';
 export interface LiveRunOptions {
   engine: Engine;
   job: Job;
+  /** 任务已获批准，从执行阶段继续（dario approve）。 */
   resume: boolean;
+  /** 续接没做完的任务（dario resume），note 是补充说明。 */
+  resumeJob?: { note?: string };
   autoApprove: boolean;
   env: NodeJS.ProcessEnv;
   stdin: NodeJS.ReadStream;
@@ -152,7 +155,8 @@ export async function runLive(opts: LiveRunOptions): Promise<Job> {
   try {
     // --yes 视为事先同意换人；标准输入没有连着终端时没法询问
     const fallback = opts.autoApprove ? async () => true : stdin.isTTY ? confirmFallback : undefined;
-    const result = opts.resume ? await engine.approve(job.id, { confirmFallback: fallback }) : await engine.advance(job, {
+    const result = opts.resumeJob ? await engine.resume(job.id, { ...opts.resumeJob, confirmFallback: fallback })
+      : opts.resume ? await engine.approve(job.id, { confirmFallback: fallback }) : await engine.advance(job, {
       autoApprove: opts.autoApprove, confirm: stdin.isTTY ? confirm : undefined, confirmFallback: fallback,
     });
     if (!displayError) {

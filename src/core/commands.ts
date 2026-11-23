@@ -22,7 +22,8 @@ export type Command =
   | { kind: 'agents' }
   | { kind: 'help' }
   | { kind: 'pause' }
-  | { kind: 'resume' }
+  | { kind: 'unpause' }
+  | { kind: 'resume'; jobId?: string; note?: string }
   | { kind: 'role'; role: string; agent?: string; reset: boolean; save: boolean }
   | { kind: 'health'; agent?: string }
   | { kind: 'status'; jobId?: string }
@@ -41,8 +42,9 @@ export const HELP_TEXT = [
   '/health [AI]           实际调用一次，确认可用',
   '/status [任务号]       查看任务',
   '/approve [任务号]      批准等待确认的计划',
+  '/resume [任务号] [补充说明]  从停下的地方接着做没做完的任务',
   '/cancel [任务号]       取消任务',
-  '/pause、/resume        暂停、恢复接收新任务',
+  '/pause、/unpause       暂停、恢复接收新任务（常驻运行的渠道）',
 ].join('\n');
 
 export function parseCommand(input: string): Command {
@@ -72,8 +74,14 @@ export function parseCommand(input: string): Command {
       return { kind: 'help' };
     case 'pause':
       return { kind: 'pause' };
-    case 'resume':
-      return { kind: 'resume' };
+    case 'unpause':
+      return { kind: 'unpause' };
+    case 'resume': {
+      // 紧跟的词形如 J 加数字时才是任务号，其余都是给接手角色的补充说明
+      const id = words[0] && /^J\d+$/i.test(words[0]) ? words[0].toUpperCase() : undefined;
+      const note = (id ? rest.slice(words[0]!.length) : rest).trim();
+      return { kind: 'resume', ...(id && { jobId: id }), ...(note && { note }) };
+    }
     case 'role': {
       const save = words.includes('--save');
       const args = words.filter((w) => w !== '--save');
@@ -156,5 +164,5 @@ export async function runModel(engine: Engine, cmd: ModelCommand): Promise<strin
 
 /** 管理员才能执行的指令。 */
 export function requiresAdmin(cmd: Command): boolean {
-  return (cmd.kind === 'model' && !!(cmd.value || cmd.effort || cmd.reset)) || cmd.kind === 'role' || cmd.kind === 'health' || cmd.kind === 'pause' || cmd.kind === 'resume';
+  return (cmd.kind === 'model' && !!(cmd.value || cmd.effort || cmd.reset)) || cmd.kind === 'role' || cmd.kind === 'health' || cmd.kind === 'pause' || cmd.kind === 'unpause';
 }

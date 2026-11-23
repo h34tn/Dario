@@ -75,9 +75,9 @@ export interface SessionOptions {
 export const MAX_IMAGES = 10;
 export const IMAGE_LIMIT_NOTICE = `一次输入最多带 ${MAX_IMAGES} 张图片`;
 
-type Work = (Extract<Command, { kind: 'task' }> & { images?: Job['images'] }) | { kind: 'approve'; jobId: string };
+type Work = (Extract<Command, { kind: 'task' }> & { images?: Job['images'] }) | { kind: 'approve'; jobId: string } | Extract<Command, { kind: 'resume' }>;
 
-function resultCard(job: Job, color: boolean) {
+function resultCard(job: Job, color: boolean, hint?: string) {
   const tone = job.status === 'done' ? 'done' : job.status === 'awaiting_approval' ? 'warn' : 'fail';
   const lines = [paint(tone, `[${job.id}] ${STATUS_LABEL[job.status]}`, color)];
   const result = job.result;
@@ -88,6 +88,7 @@ function resultCard(job: Job, color: boolean) {
   if (branch) lines.push(`产出所在分支：${branch}`);
   const warnings = result?.warnings ?? job.warnings;
   if (warnings.length) lines.push(paint('warn', ['注意：', ...warnings.map(w => '  - ' + w)].join('\n'), color));
+  if (hint) lines.push(paint('warn', hint, color));
   return lines.join('\n') + '\n';
 }
 
@@ -198,9 +199,28 @@ export class Session {
     const saved = this.loadSaved();
     if (typeof this.opts.continueLast === 'string') this.continueFrom(this.opts.continueLast);
     else if (saved && this.opts.continueLast) this.restore(saved);
-    else if (saved) this.append('notice', `上一次会话停在 ${saved.jobId}（${formatLocalTime(saved.savedAt)}）：${ellipsis(saved.task, 50)}。输入 /continue 接着做。`);
+    else if (saved) {
+      const where = this.resumeWhere(saved.jobId);
+      this.append('notice', where
+        ? `上一次会话停在 ${saved.jobId}（${formatLocalTime(saved.savedAt)}）：${ellipsis(saved.task, 50)}，没有做完。输入 /resume 从${where}接着做，或 /continue 带着之前的会话下达新任务。`
+        : `上一次会话停在 ${saved.jobId}（${formatLocalTime(saved.savedAt)}）：${ellipsis(saved.task, 50)}。输入 /continue 接着做。`);
+    }
     else if (this.opts.continueLast) this.append('notice', '这个项目没有可以接着做的会话，从头开始。');
     await this.refreshStatus(true);
+  }
+
+  /** 任务没做完、可以续接时，从哪里接（给人看的说明）；不能续接或读不到任务时为 undefined。 */
+  private resumeWhere(jobOrId: Job | string): string | undefined {
+    try {
+      const job = typeof jobOrId === 'string' ? this.engine.job(jobOrId) : jobOrId;
+      const check = this.engine.resumable(job);
+      return check.ok ? check.where : undefined;
+    } catch { return undefined; }
+  }
+
+  private resumeHint(job: Job): string | undefined {
+    const where = this.resumeWhere(job);
+    return where && `输入 /resume 从${where}接着做（可以在后面写一句补充说明）。`;
   }
 
   /** 存档读写失败不影响干活：读不到当作没有，写不了就不存。 */
@@ -256,7 +276,7 @@ export class Session {
     try {
       const last = this.engine.job(saved.jobId);
       this.append('title', `${last.id} · ${last.task.split(/\r?\n/, 1)[0]}`);
-      this.append('text', resultCard(last, this.opts.color));
+      this.append('text', resultCard(last, this.opts.color, this.resumeHint(last)));
     } catch { /* 任务记录不在了，只是少一段回顾 */ }
     const roles = Object.keys(saved.sessions ?? {}).map(id => shortRole(this.roleLabel(id)));
     this.append('notice', `已接上 ${formatLocalTime(saved.savedAt)} 的会话（${saved.jobId}）${roles.length ? `，${roles.join('、')}的 AI 会话接着用` : ''}。/new 从头开始。`);
@@ -370,7 +390,7 @@ export class Session {
     switch (cmd.kind) {
       case 'invalid': return this.append('error', cmd.message);
       case 'help': return this.append('text', [HELP_TEXT, 'Alt+V                  粘贴剪贴板里的图片', '/diff                  查看上一个任务的改动',
-        '/continue [任务号]     接上这个项目上一次的会话；给出任务号则从那个任务接着做',
+        '/continue [任务号]     接上上一次的会话，或还原到指定任务结束时的会话',
         '/new                   清空会话上文，各角色的 AI 会话重新开始', '/plain                 切换到逐行交互', '/exit                  退出'].join('\n'));
       case 'roles': return this.append('text', formatRoles(await engine.rolesView(), engine.roles.fallback, engine.roles.modelLabel));
       case 'agents':
@@ -400,13 +420,14 @@ export class Session {
         else this.append('notice', '当前没有正在运行的任务。');
         return;
       case 'approve': return cmd.jobId ? this.enqueue({ kind: 'approve', jobId: cmd.jobId }) : this.append('error', '用法：/approve <任务号>');
+      case 'resume': return this.enqueue(cmd);
       case 'task': {
         const images = this.imagesIn(cmd.text);
         if (images.length > MAX_IMAGES) return this.notice(IMAGE_LIMIT_NOTICE);
         return this.enqueue({ ...cmd, ...(images.length && { images }) });
       }
       case 'pause':
-      case 'resume': return this.append('notice', '这个指令只在常驻运行的渠道里有意义。');
+      case 'unpause': return this.append('notice', '这个指令只在常驻运行的渠道里有意义。');
     }
   }
 
@@ -539,6 +560,15 @@ export class Session {
       this.update({ runningJobId: work.jobId });
       this.append('title', `${work.jobId} · 继续执行已批准的计划`);
       done = await this.engine.approve(work.jobId, { confirmFallback: this.confirmFallback });
+    } else if (work.kind === 'resume') {
+      // 先确定是哪个任务：进度事件按任务号过滤
+      const target = work.jobId ? this.engine.job(work.jobId) : this.engine.latestJob();
+      if (!target) throw new DarioError('这个项目还没有任务，没有可以续接的。');
+      const check = this.engine.resumable(target);
+      if (!check.ok) throw new DarioError(`${work.jobId ? '' : '最近的'}任务 ${target.id} 不能续接：${check.reason}。`);
+      this.update({ runningJobId: target.id });
+      this.append('title', `${target.id} · 续接：从${check.where}接着做 · ${target.task.split(/\r?\n/, 1)[0]}`);
+      done = await this.engine.resume(target.id, { ...(work.note && { note: work.note }), confirmFallback: this.confirmFallback });
     } else {
       const job = this.engine.create({ task: work.text, role: work.role,
         ...(work.images && { images: work.images }),
@@ -558,7 +588,7 @@ export class Session {
       } });
     }
     this.files = done.result?.changedFiles ?? done.changedFiles;
-    this.append('text', resultCard(done, this.opts.color));
+    this.append('text', resultCard(done, this.opts.color, this.resumeHint(done)));
     const conclusion = done.result?.conclusion;
     // 会话不看任务成败：做成的那几轮仍然有效，没做成的那一轮执行时已经作废
     if (version === this.contextVersion && done.sessions) this.roleSessions = done.sessions;
