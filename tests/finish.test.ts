@@ -212,6 +212,25 @@ describe('收尾', () => {
     expect(sh(sb.project, 'git', ['status', '--porcelain']).trim()).toBe('M README.md');
   });
 
+  it('要提交的文件里混着任务开始前别人的改动：告诉主控那时的内容，据此分得出本任务的改动', async () => {
+    sb = new Sandbox({ git: true, projectYaml: 'finish: { mode: commit }\n' });
+    const readme = path.join(sb.project, 'README.md');
+    fs.appendFileSync(readme, '别人的笔记\n');
+    const atStart = fs.readFileSync(readme, 'utf8');
+    sb.setScenario({
+      a1: [{ text: plan([{ role: 'coder', task: '改 README', writes: true }]) }, { text: '提交了', commands: [['git', 'commit', '-q', '-am', 'docs: 改 README']] }, { text: '汇总' }],
+      a2: [{ text: '改好了', files: [{ path: 'README.md', content: `${atStart}本任务加的一行\n` }] }],
+      a3: [{ text: verdict(true) }],
+    });
+    const r = await sb.runJson(['-p', '--yes', '任务']);
+    expect(r.code).toBe(0);
+    const prompt = sb.calls().filter((c) => c.name === 'a1')[1]!.prompt;
+    const m = /# 混有不是本任务改动的文件\n[^\n]*\n- README\.md：任务开始时的内容是对象 ([0-9a-f]{40})/.exec(prompt);
+    expect(m).not.toBeNull();
+    expect(sh(sb.project, 'git', ['cat-file', '-p', m![1]!])).toBe(atStart);
+    expect(prompt).not.toContain('# 其他有未提交改动的文件');
+  });
+
   it('没有开启收尾：照旧，不提交', async () => {
     sb = new Sandbox({ git: true });
     sb.setScenario({ a1: [planA, { text: '汇总' }], a2: [writeA], a3: [{ text: verdict(true) }] });

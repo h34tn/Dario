@@ -254,6 +254,11 @@ export interface Job {
   changedFiles: string[];
   /** 进入执行阶段时就有未提交改动的文件（就地执行时可能有）。给审查附 diff 时据此说明哪些改动不全是本任务的。 */
   dirtyAtStart?: string[];
+  /**
+   * 开启收尾时，dirtyAtStart 里各文件在进入执行阶段那一刻的内容（git 对象号，文件已删除为 null）。
+   * 收尾时据此告诉主控哪些是本任务的改动，项目要求只提交本任务的部分时用得上。
+   */
+  dirtyAtStartBlobs?: Record<string, string | null>;
   /** 最近一次改动之后是否已经审查过。 */
   reviewedSinceChange: boolean;
   /** 最近一步结束时工作区的 git 状态快照（有改动的文件及其指纹）。续接前据此找出停下之后被改过的文件；不是 git 仓库时为 null。 */

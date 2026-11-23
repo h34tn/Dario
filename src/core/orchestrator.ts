@@ -13,6 +13,7 @@ import {
   pushHead,
   PUSH_COMMANDS,
   recordReviewed,
+  snapshotBlobs,
   verifyCommits,
   type Mismatch,
   type PushTarget,
@@ -506,6 +507,10 @@ export class Orchestrator {
     if (job.dirtyAtStart === undefined) {
       const stamp = await ws.stamp();
       job.dirtyAtStart = stamp ? [...stamp.keys()].sort() : [];
+      // 收尾时要分清哪些是本任务的改动：记下这些文件此刻的内容
+      if (project.settings.finish.mode !== 'none' && job.dirtyAtStart.length > 0) {
+        job.dirtyAtStartBlobs = await snapshotBlobs(ws.cwd, job.dirtyAtStart);
+      }
       job.stamp = stampToRecord(stamp);
     }
     this.setStatus(job, 'running');
@@ -650,6 +655,11 @@ export class Orchestrator {
     say(mode === 'push' ? `收尾：主控提交并与 ${target!.remote}/${target!.branch} 同步` : '收尾：主控提交');
 
     const lead = project.settings.leadRole;
+    const dirtyAtStart = new Set(job.dirtyAtStart ?? []);
+    const external = new Set((job.resumes ?? []).flatMap((r) => r.changed ?? []));
+    const mixed = files
+      .filter((f) => dirtyAtStart.has(f) || external.has(f))
+      .map((f) => ({ file: f, ...(dirtyAtStart.has(f) ? job.dirtyAtStartBlobs && f in job.dirtyAtStartBlobs && { start: job.dirtyAtStartBlobs[f] } : { external: true }) }));
     let again: string | undefined;
     let issues: PendingRework | undefined;
     for (;;) {
@@ -661,6 +671,7 @@ export class Orchestrator {
         ...(target && { target: `${target.remote}/${target.branch}` }),
         files,
         others: stamp ? [...stamp.keys()].filter((f) => !(f in reviewed)).sort() : [],
+        ...(mixed.length > 0 && { mixed }),
         round: rec.rounds,
         ...(again && { again }),
         ...(issues && { issues: issues.issues, issuesText: truncate(issues.reviewText, 4000) }),

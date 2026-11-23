@@ -532,6 +532,11 @@ export interface FinishBrief {
   files: string[];
   /** 工作区里其他有未提交改动的文件，不是本任务的。 */
   others: string[];
+  /**
+   * 要提交的文件里混有不是本任务改动的：任务开始前就有未提交改动的（start 是那时的内容，null 表示那时已删除，
+   * 没记下时不填），以及任务停下之后、续接之前被改过的（external）。
+   */
+  mixed?: Array<{ file: string; start?: string | null; external?: boolean }>;
   /** 这是第几轮。 */
   round: number;
   /** 又回到主控这里的原因：推送被拒、核对发现 HEAD 落后、复审没通过等。 */
@@ -561,6 +566,21 @@ function finishRules(b: FinishBrief): string {
   return lines.join('\n');
 }
 
+function mixedSection(mixed: FinishBrief['mixed']): string {
+  if (!mixed?.length) return '';
+  const items = mixed.map(({ file, start, external }) => {
+    if (start) return `- ${file}：任务开始时的内容是对象 ${start}（用 git cat-file -p ${start} 取出），和工作区现在的内容相比，差别就是本任务的改动`;
+    if (start === null) return `- ${file}：任务开始时这个文件已被删除`;
+    return `- ${file}：${external ? '任务停下之后、续接之前被改过，' : ''}Dario 没有记下之前的内容`;
+  });
+  return section(
+    '混有不是本任务改动的文件',
+    '"要提交的文件"里的下面这些，还有不是本任务的未提交改动；审查看到的是它们相对 HEAD 的整份 diff，其中包含那部分。' +
+      '项目的收尾说明要求只提交本任务的部分时，按下面给出的内容分出本任务的改动；说明里没有要求的，整份提交。\n' +
+      items.join('\n'),
+  );
+}
+
 function finishBody(project: ProjectConfig, b: FinishBrief): string {
   const what = b.mode === 'push' ? `提交并与 ${b.target} 同步，之后由 Dario 核对、推送` : '提交，不推送';
   return (
@@ -570,6 +590,7 @@ function finishBody(project: ProjectConfig, b: FinishBrief): string {
     section('项目约定', project.settings.preamble) +
     section('项目的收尾说明', project.settings.finish.instructions) +
     section('要提交的文件', b.files.map((f) => `- ${f}`).join('\n')) +
+    mixedSection(b.mixed) +
     section('其他有未提交改动的文件（不是本任务的）', b.others.map((f) => `- ${f}`).join('\n'))
   );
 }

@@ -5,6 +5,7 @@
  * 核对时取本任务提交前后的同样两个对象号：两边相同就是一致；不同时（远端在同一个文件上也有改动、
  * 解决过冲突）比较两边改动的正文，去掉文件头和行号、空白不计，与 git patch-id 的口径相同。
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import type { FinishRecord, ReviewedFile } from './types.js';
 import { realPath } from './util.js';
@@ -75,6 +76,29 @@ async function blobAt(cwd: string, rev: string, file: string): Promise<string | 
 async function worktreeBlob(cwd: string, file: string): Promise<string | null> {
   const r = await git(cwd, ['hash-object', '-w', '--', file]);
   return r.ok ? r.stdout.trim() || null : null;
+}
+
+/** 工作区里这些文件此刻的内容写进 git 对象库，返回各自的对象号；文件不存在时为 null。 */
+export async function snapshotBlobs(cwd: string, files: string[]): Promise<Record<string, string | null>> {
+  const out: Record<string, string | null> = {};
+  const present = files.filter((f) => {
+    try {
+      return fs.statSync(path.resolve(cwd, f)).isFile();
+    } catch {
+      out[f] = null;
+      return false;
+    }
+  });
+  // 分批传，避免命令行过长
+  for (let i = 0; i < present.length; i += 100) {
+    const batch = present.slice(i, i + 100);
+    const r = await git(cwd, ['hash-object', '-w', '--', ...batch]);
+    const ids = r.ok ? lines(r.stdout) : [];
+    batch.forEach((f, j) => {
+      if (ids[j]) out[f] = ids[j]!;
+    });
+  }
+  return out;
 }
 
 /** 记下这些文件审过的内容：此刻 HEAD 里的内容和工作区里的内容。内容与 HEAD 相同（改了又改回去）的不算。 */
