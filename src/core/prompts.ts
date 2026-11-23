@@ -605,13 +605,22 @@ export function finishFollowUp(project: ProjectConfig, b: FinishBrief): string {
   return `# 你的角色\n你仍然是主控，之前的对话仍然有效。这一步你可以执行 git 提交。${STALE_NOTE}` + finishBody(project, b);
 }
 
-/** 收尾核对发现提交和审过的内容对不上时，交给审核者只审这部分差别。resumed 表示续接审查的会话。 */
-export function finishReviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, diff: string, resumed: boolean): string {
+/**
+ * 收尾核对发现提交和审过的内容对不上时，交给审核者只审这部分差别。resumed 表示续接审查的会话。
+ * leadReply 是主控收尾这一轮的回复：怎么解决的冲突、跑了哪些检查、结果如何。
+ */
+export function finishReviewPrompt(project: ProjectConfig, role: RoleDef, job: Job, diff: string, resumed: boolean, leadReply?: string): string {
   const ask =
     '本任务的改动已经审查通过。主控收尾时与远端同步、解决冲突，或者在收尾中做了修改，下面这些文件提交里的改动因此和审过的不一样。' +
     '对比"审过时的改动"和"现在提交里的改动"，只审两者的差别：冲突解决得对不对，有没有丢掉或改坏审过的内容，额外的改动是否必要且正确。没有变化的部分不必重审。';
   const head = resumed
     ? continueHeader(role, 'read-only', '这是同一个任务里收尾时的复审，')
     : `# 你的角色\n${roleHeader(role, 'read-only')}` + section('工作规则', rules('read-only', project)) + section('原始任务', job.task);
-  return head + section('对不上的文件', diff) + section('审查要求', ask) + section('输出格式', REVIEW_FORMAT);
+  return (
+    head +
+    section('主控收尾这一轮的回复（它的说明，包括跑过的检查及结果）', leadReply && truncate(leadReply, CONTEXT_CHARS)) +
+    section('对不上的文件', diff) +
+    section('审查要求', ask) +
+    section('输出格式', REVIEW_FORMAT)
+  );
 }

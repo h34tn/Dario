@@ -602,6 +602,9 @@ export class Orchestrator {
     const { project, state, emit } = this.deps;
     const cfg = project.settings.finish;
     if (cfg.mode === 'none' || job.changedFiles.length === 0) return undefined;
+    // 只提交、推送审查明确通过的改动：没有明确结论、没有审查过的都不收尾
+    const reviewOk = job.lastReview === 'skipped' || (job.lastReview === 'pass' && job.reviewedSinceChange);
+    const unreviewed = job.lastReview === 'unclear' ? '最后一次审查没有给出明确的"通过 / 不通过"结论' : '改动没有经过审查';
     const rec: FinishRecord = (job.finish ??= { mode: cfg.mode, outcome: 'running', rounds: 0, commits: [] });
     // 续接时轮数重新计算
     if (opts.resume) rec.rounds = 0;
@@ -627,6 +630,7 @@ export class Orchestrator {
       return `收尾没有做成：${reason}\n改动和已有的本地提交都保留在原处，没有回滚。${resumable}`;
     };
 
+    if (!reviewOk) return skip(unreviewed);
     if (job.unknownChanges || !(await headSha(cwd))) return skip('目录不是 git 仓库，或者仓库里还没有提交');
     if (ws.strategy === 'in-place' && !(await currentBranch(cwd))) return skip('HEAD 是游离的，不在任何分支上');
     if (job.readOnlyViolation || outOfScope(job.changedFiles, project.settings.writeRoots).length > 0) return skip('有越界的改动');
@@ -772,13 +776,14 @@ export class Orchestrator {
     if (!roles.has(reviewRole)) return '提交和审过的内容对不上，又没有审核角色可以复审';
     const reviewer = roles.get(reviewRole);
     const diff = await mismatchDiff(ws.cwd, items, project.settings.handoffMaxChars || 20000);
+    const leadReply = [...job.steps].reverse().find((s) => s.kind === 'finish' && s.outcome === 'ok')?.text;
     const rec = await this.execStep(job, ws, opts, {
       kind: 'review',
       roleId: reviewRole,
       access: 'read-only',
       task: '收尾复审',
-      prompt: finishReviewPrompt(project, reviewer, job, diff, false),
-      ...(job.sessions?.[reviewRole] && { followUp: finishReviewPrompt(project, reviewer, job, diff, true) }),
+      prompt: finishReviewPrompt(project, reviewer, job, diff, false, leadReply),
+      ...(job.sessions?.[reviewRole] && { followUp: finishReviewPrompt(project, reviewer, job, diff, true, leadReply) }),
     });
     if (rec.outcome !== 'ok') return `复审没有完成：${rec.reason ?? rec.outcome}`;
     const verdict = parseVerdict(rec.text);
@@ -802,6 +807,7 @@ export class Orchestrator {
     const lines = await ws.changedLines(job.changedFiles);
     if (lines === undefined || lines > limit) return false;
     const text = `改动共 ${lines} 行，不超过 review_skip_max_lines（${limit}），跳过了自动审查。`;
+    job.lastReview = 'skipped';
     job.warnings.push(text);
     this.deps.emit({ jobId: job.id, kind: 'phase', text });
     return true;
@@ -907,6 +913,7 @@ export class Orchestrator {
     job.reviewedSinceChange = true;
     const verdict = parseVerdict(rec.text);
     if (!verdict) {
+      job.lastReview = 'unclear';
       job.warnings.push('审查没有给出明确的"通过 / 不通过"结论，未触发返工。');
       return undefined;
     }
@@ -914,7 +921,11 @@ export class Orchestrator {
     if (verdict.suggestions.length > 0) {
       job.warnings.push(`审查的建议（没有要求返工，由你决定）：\n${verdict.suggestions.map((s, i) => `    ${i + 1}. ${s}`).join('\n')}`);
     }
-    if (verdict.verdict === 'pass' || (verdict.issues.length === 0 && verdict.suggestions.length > 0)) return undefined;
+    if (verdict.verdict === 'pass' || (verdict.issues.length === 0 && verdict.suggestions.length > 0)) {
+      job.lastReview = 'pass';
+      return undefined;
+    }
+    job.lastReview = 'fail';
     return { issues: verdict.issues, reviewText: rec.text };
   }
 

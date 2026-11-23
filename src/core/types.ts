@@ -274,6 +274,11 @@ export interface Job {
   dirtyAtStartBlobs?: Record<string, string | null>;
   /** 最近一次改动之后是否已经审查过。 */
   reviewedSinceChange: boolean;
+  /**
+   * 最近一次审查的结论：pass 通过（含只有建议的），fail 不通过，unclear 没有给出明确结论，
+   * skipped 改动不超过 review_skip_max_lines 而跳过了自动审查。收尾只在 pass 或 skipped 时进行。
+   */
+  lastReview?: 'pass' | 'fail' | 'unclear' | 'skipped';
   /** 最近一步结束时工作区的 git 状态快照（有改动的文件及其指纹）。续接前据此找出停下之后被改过的文件；不是 git 仓库时为 null。 */
   stamp?: Record<string, string> | null;
   /** 续接的记录，按先后。 */

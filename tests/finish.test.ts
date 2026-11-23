@@ -192,6 +192,8 @@ describe('收尾', () => {
       expect(recheck.access).toBe('read-only');
       expect(recheck.prompt).toContain('## c.txt');
       expect(recheck.prompt).toContain('### 审过时的改动');
+      // 复审拿得到主控这一轮的说明（怎么解决的冲突、跑过哪些检查）
+      expect(recheck.prompt).toContain('# 主控收尾这一轮的回复（它的说明，包括跑过的检查及结果）\n提交并同步');
       expect(fs.readFileSync(path.join(sb.project, 'c.txt'), 'utf8').replace(/\r/g, '')).toBe('one\n2\nthree\n4\n5\n');
       expect(remoteHead(sb, remote)).toBe(head(sb.project));
     });
@@ -276,6 +278,41 @@ describe('收尾', () => {
     expect(m).not.toBeNull();
     expect(sh(sb.project, 'git', ['cat-file', '-p', m![1]!])).toBe(atStart);
     expect(prompt).not.toContain('# 其他有未提交改动的文件');
+  });
+
+  describe('只收尾审查明确通过的改动', () => {
+    it('审查没有给出明确结论：不收尾，任务照常完成，改动留在工作区', async () => {
+      sb = new Sandbox({ git: true, projectYaml: 'finish: { mode: commit }\n' });
+      sb.setScenario({ a1: [planA, { text: '汇总' }], a2: [writeA], a3: [{ text: '看起来还行。\n结论：PASS' }] });
+      const r = await sb.runJson(['-p', '--yes', '任务']);
+      expect(r.code).toBe(0);
+      expect(r.json.finish).toMatchObject({ outcome: 'skipped', commits: [] });
+      expect(r.json.finish.reason).toContain('没有给出明确的');
+      expect(r.json.steps.map((s: any) => s.kind)).toEqual(['plan', 'step', 'review', 'summary']);
+      expect(sh(sb.project, 'git', ['status', '--porcelain'])).toContain('a.txt');
+    });
+
+    it('没有审查角色、改动没审过：不收尾', async () => {
+      sb = new Sandbox({
+        git: true,
+        projectYaml: 'finish: { mode: commit }\n',
+        roles: 'roles:\n  lead: { candidates: [a1], access: read-only }\n  coder: { candidates: [a2], access: write }\n',
+      });
+      sb.setScenario({ a1: [planA, { text: '汇总' }], a2: [writeA] });
+      const r = await sb.runJson(['-p', '--yes', '任务']);
+      expect(r.code).toBe(0);
+      expect(r.json.finish).toMatchObject({ outcome: 'skipped', reason: '改动没有经过审查' });
+      expect(sh(sb.project, 'git', ['status', '--porcelain'])).toContain('a.txt');
+    });
+
+    it('改动小到按 review_skip_max_lines 跳过审查：照常收尾', async () => {
+      sb = new Sandbox({ git: true, projectYaml: 'review_skip_max_lines: 5\nfinish: { mode: commit }\n' });
+      sb.setScenario({ a1: [planA, { text: '提交了', commands: commitA }, { text: '汇总' }], a2: [writeA] });
+      const r = await sb.runJson(['-p', '--yes', '任务']);
+      expect(r.code).toBe(0);
+      expect(r.json.steps.map((s: any) => s.kind)).toEqual(['plan', 'step', 'finish', 'summary']);
+      expect(r.json.finish).toMatchObject({ outcome: 'done' });
+    });
   });
 
   it('没有开启收尾：照旧，不提交', async () => {
