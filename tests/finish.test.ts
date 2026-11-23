@@ -71,6 +71,53 @@ describe('收尾', () => {
     expect(sb.calls()[0]!.prompt).toContain('不要把提交、推送列为步骤');
   });
 
+  describe('本机设的推送前检查', () => {
+    function withChecks(commands: string[][]): void {
+      fs.writeFileSync(
+        path.join(sb.home, 'projects.yaml'),
+        `projects:\n  ${JSON.stringify(sb.project)}:\n    pre_push:\n${commands.map((c) => `      - command: ${JSON.stringify(c)}\n`).join('')}`,
+      );
+    }
+
+    it('都通过才推送；结果记在 finish.checks 里，计划确认时写明有几项', async () => {
+      sb = new Sandbox({ git: true, projectYaml: PUSH });
+      const { remote } = withRemote(sb);
+      // 第二项确认检查跑在已经提交的最终 HEAD 上：a.txt 已进提交、工作区干净
+      withChecks([[process.execPath, '-e', 'console.log("检查通过")'], ['git', 'diff', '--quiet', 'HEAD', '--', 'a.txt']]);
+      sb.setScenario({ a1: [planA, { text: '提交了', commands: commitA }, { text: '汇总' }], a2: [writeA], a3: [{ text: verdict(true) }] });
+      const r = await sb.runJson(['-p', '--yes', '任务']);
+      expect(r.code).toBe(0);
+      expect(r.json.finish.checks).toEqual([
+        { command: `${process.execPath} -e console.log("检查通过")`, ok: true, exit_code: 0, output: '检查通过' },
+        { command: 'git diff --quiet HEAD -- a.txt', ok: true, exit_code: 0, output: '' },
+      ]);
+      expect(r.err).toContain('跑过本机设的 2 项推送前检查');
+      expect(r.json.conclusion).toContain('推送前检查 2 项都通过');
+      expect(remoteHead(sb, remote)).toBe(head(sb.project));
+    });
+
+    it('有一项不通过：不推送，收尾失败，附上退出码和输出', async () => {
+      sb = new Sandbox({ git: true, projectYaml: PUSH });
+      const { remote } = withRemote(sb);
+      const before = remoteHead(sb, remote);
+      withChecks([[process.execPath, '-e', 'console.log("资源键有 2 个错误"); process.exit(3)']]);
+      sb.setScenario({ a1: [planA, { text: '提交了', commands: commitA }], a2: [writeA], a3: [{ text: verdict(true) }] });
+      const r = await sb.runJson(['-p', '--yes', '任务']);
+      expect(r.code).toBe(1);
+      expect(r.json.finish).toMatchObject({ outcome: 'failed', pushed: null });
+      expect(r.json.finish.reason).toContain('退出码 3');
+      expect(r.json.finish.reason).toContain('资源键有 2 个错误');
+      expect(r.json.finish.checks[0]).toMatchObject({ ok: false, exit_code: 3 });
+      expect(remoteHead(sb, remote)).toBe(before);
+    });
+
+    it('只能写在本机：项目的 .dario/ 里出现 projects.yaml 时拒绝加载', () => {
+      sb = new Sandbox();
+      fs.writeFileSync(path.join(sb.project, '.dario', 'projects.yaml'), 'projects: {}\n');
+      expect(() => loadProjectConfig(sb.project, sb.home)).toThrow(/projects\.yaml/);
+    });
+  });
+
   it('收尾那一轮里 AI 自己推送推不出去，最终由 Dario 推送', async () => {
     sb = new Sandbox({ git: true, projectYaml: PUSH });
     const { remote } = withRemote(sb);

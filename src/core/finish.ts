@@ -7,7 +7,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import type { FinishRecord, ReviewedFile } from './types.js';
+import { execFile } from 'node:child_process';
+import type { PrePushCheck } from './config.js';
+import type { FinishRecord, PrePushResult, ReviewedFile } from './types.js';
 import { realPath } from './util.js';
 import { git, gitRemote, gitTopLevel, PUSH_DISABLED_URL } from './workspace.js';
 
@@ -263,12 +265,37 @@ export async function pushBlockEnv(cwd: string): Promise<Record<string, string>>
   return env;
 }
 
-/** 计划确认时写在计划下面的一句：结束后会做什么。 */
-export function finishNote(mode: 'commit' | 'push', target: PushTarget | string, isolated: boolean): string {
+/** 计划确认时写在计划下面的一句：结束后会做什么。checks 是本机设的推送前检查有几项。 */
+export function finishNote(mode: 'commit' | 'push', target: PushTarget | string, isolated: boolean, checks = 0): string {
   if (mode === 'commit') return `结束后：审查通过后由主控提交到${isolated ? '任务分支' : '当前分支'}，不推送。`;
   if (typeof target === 'string') return `结束后：审查通过后由主控提交，不推送（${target}）。`;
   const where = `${target.remote}/${target.branch}`;
-  return `结束后：审查通过后由主控提交、与 ${where} 同步，Dario 核对提交的正是审过的内容后推送到 ${where}。`;
+  const run = checks > 0 ? `，跑过本机设的 ${checks} 项推送前检查` : '';
+  return `结束后：审查通过后由主控提交、与 ${where} 同步，Dario 核对提交的正是审过的内容${run}后推送到 ${where}。`;
+}
+
+/**
+ * 运行一项推送前检查：在项目根目录里直接启动，不经过命令行解释器，不弹出凭据提示。
+ * 退出码为 0 才算通过；没能启动、超时都算不通过。
+ */
+export function runPrePushCheck(cwd: string, check: PrePushCheck): Promise<PrePushResult> {
+  const [command, ...args] = check.command;
+  const shown = check.command.join(' ');
+  return new Promise((resolve) => {
+    execFile(
+      command!,
+      args,
+      { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: check.timeoutMinutes * 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      (error, stdout, stderr) => {
+        const output = `${stdout ?? ''}\n${stderr ?? ''}`.trim().split(/\r?\n/).filter(Boolean).slice(-8).join('\n').slice(0, 2000);
+        if (!error) return resolve({ command: shown, ok: true, exitCode: 0, output });
+        const e = error as NodeJS.ErrnoException & { code?: string | number; killed?: boolean };
+        const exitCode = typeof e.code === 'number' ? e.code : null;
+        const why = e.killed ? `超过 ${check.timeoutMinutes} 分钟，已终止` : exitCode === null ? `没能启动：${e.message}` : '';
+        resolve({ command: shown, ok: false, exitCode, output: [why, output].filter(Boolean).join('\n') });
+      },
+    );
+  });
 }
 
 /** 收尾的结果，接在结论后面给人看。 */
@@ -276,6 +303,7 @@ export function describeFinish(rec: FinishRecord): string {
   const list = rec.commits.map((c) => `- ${c.sha} ${c.subject}`).join('\n');
   if (rec.outcome === 'skipped') return `没有收尾：${rec.reason ?? '原因不明'}。`;
   if (rec.outcome !== 'done') return `收尾没有做成：${rec.reason ?? '原因不明'}。`;
-  if (rec.pushed) return `已提交并推送到 ${rec.pushed.remote}/${rec.pushed.branch}（${rec.pushed.head.slice(0, 7)}）：\n${list}`;
+  const checks = rec.checks?.length ? `\n推送前检查 ${rec.checks.length} 项都通过：${rec.checks.map((c) => c.command).join('；')}` : '';
+  if (rec.pushed) return `已提交并推送到 ${rec.pushed.remote}/${rec.pushed.branch}（${rec.pushed.head.slice(0, 7)}）：\n${list}${checks}`;
   return `已提交，没有推送：\n${list}`;
 }

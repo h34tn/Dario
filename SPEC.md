@@ -116,7 +116,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 | 交互 | 在终端里不带任务直接运行 `dario` | 默认全屏，按下节条件选择行内界面或逐行交互 |
 
 - **单次命令判断标准错误是否连着终端**，与 `-p` 无关：`-p` 只表示执行完就退出。`dario "任务" > 结果.txt` 在终端里仍有动态进度，文件里只有结论。
-- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`、`phases`、`finish`。`plan` 为 `{ summary, steps }`，`steps` 的每一项为 `role`、`task`、`writes`、`files`（预计改动的范围，没写时为 `null`）、`refs`（主控标出、派活时附上的代码位置，没写时为 `null`），没有计划时 `plan` 为 `null`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`cost_usd`、`startup_ms`、`prompt_chars`、`alerts`、`consults`、`attempts`。`alerts` 是这一步运行中干活监控发现的问题，每项为 `rule`、`action`、`at_ms`（从这次运行开始算）、`detail`、`decision`（`ask_lead` 时主控的判断 `{ action, message }`，没有时为 `null`），没有时为空数组。`consults` 是这一步请主控判断的记录，每项为 `rule`、`agent`、`outcome`（`ok`、`failed`、`unparsed`、`cancelled`）、`reason`、`duration_ms`、`tokens`、`cost_usd`、`decision`，没有时为空数组。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output, requests, first_input }`，`input` 含命中缓存的 `cached_input`，`requests` 和 `first_input` 工具不报时为 `null`；工具不报用量时 `tokens` 为 `null`。`cost_usd`、`startup_ms` 不可知时为 `null`，口径见第 8 节。`phases` 按流程先后列出出现过的步骤种类，每项为 `kind`、`steps`、`duration_ms`、`startup_ms`、`input`、`cached_input`、`output`、`requests`、`cost_usd`；这一阶段都不报用量时 token 各项为 `null`。请主控判断的开销单列一项 `supervise`，`steps` 是判断的次数；判断和干活的一方同时进行，文字报告的合计里只算它的用量和费用，不算次数和耗时。`finish` 是收尾的结果 `{ mode, outcome, reason, rounds, commits, pushed }`：`mode` 为 `commit` 或 `push`；`outcome` 为 `done`、`failed` 或 `skipped`，`reason` 是没做成或跳过的原因，做成时为 `null`；`rounds` 是用掉的轮数；`commits` 的每一项为 `sha`、`subject`；`pushed` 为 `{ remote, branch, head }`，没有推送时为 `null`。项目没有开启收尾、或任务不需要收尾（见第 7 节）时 `finish` 为 `null`。
+- **JSON**：标准输出是一个对象，字段固定为 `job_id`、`status`、`exit_code`、`mode`、`conclusion`、`changed_files`、`fallback_happened`、`warnings`、`branch`、`unfinished`、`plan`、`steps`、`phases`、`finish`。`plan` 为 `{ summary, steps }`，`steps` 的每一项为 `role`、`task`、`writes`、`files`（预计改动的范围，没写时为 `null`）、`refs`（主控标出、派活时附上的代码位置，没写时为 `null`），没有计划时 `plan` 为 `null`。`steps` 的每一项为 `index`、`kind`、`role`、`agent`、`outcome`、`reason`、`duration_ms`、`changed_files`、`resumed`、`tokens`、`cost_usd`、`startup_ms`、`prompt_chars`、`alerts`、`consults`、`attempts`。`alerts` 是这一步运行中干活监控发现的问题，每项为 `rule`、`action`、`at_ms`（从这次运行开始算）、`detail`、`decision`（`ask_lead` 时主控的判断 `{ action, message }`，没有时为 `null`），没有时为空数组。`consults` 是这一步请主控判断的记录，每项为 `rule`、`agent`、`outcome`（`ok`、`failed`、`unparsed`、`cancelled`）、`reason`、`duration_ms`、`tokens`、`cost_usd`、`decision`，没有时为空数组。`resumed` 表示这一步是否续接了已有会话。`tokens` 是这一步的 token 用量 `{ input, cached_input, output, requests, first_input }`，`input` 含命中缓存的 `cached_input`，`requests` 和 `first_input` 工具不报时为 `null`；工具不报用量时 `tokens` 为 `null`。`cost_usd`、`startup_ms` 不可知时为 `null`，口径见第 8 节。`phases` 按流程先后列出出现过的步骤种类，每项为 `kind`、`steps`、`duration_ms`、`startup_ms`、`input`、`cached_input`、`output`、`requests`、`cost_usd`；这一阶段都不报用量时 token 各项为 `null`。请主控判断的开销单列一项 `supervise`，`steps` 是判断的次数；判断和干活的一方同时进行，文字报告的合计里只算它的用量和费用，不算次数和耗时。`finish` 是收尾的结果 `{ mode, outcome, reason, rounds, commits, pushed, checks }`：`mode` 为 `commit` 或 `push`；`outcome` 为 `done`、`failed` 或 `skipped`，`reason` 是没做成或跳过的原因，做成时为 `null`；`rounds` 是用掉的轮数；`commits` 的每一项为 `sha`、`subject`；`pushed` 为 `{ remote, branch, head }`，没有推送时为 `null`；`checks` 是最近一次推送前检查的结果，每项为 `command`、`ok`、`exit_code`（没能启动、超时时为 `null`）、`output`（输出的最后几行），没有设检查或还没跑到时为空数组。项目没有开启收尾、或任务不需要收尾（见第 7 节）时 `finish` 为 `null`。
 - **`--verbose`**：纯文本方式下，AI 的每条活动（读文件、执行命令等）打印一行。
 - 纯文本与 JSON 两种输出不含任何控制字符，是给脚本和其他 AI 调用的稳定接口。
 
@@ -137,7 +137,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 - **动态与交互方式**：计划显示后当场按键确认。
 - **纯文本方式**：纯只读的计划直接执行。含改文件步骤的计划需要 `--yes` 才执行；标准输入连着终端且没有 `-p` 时逐行询问，否则打印计划、以退出码 4 结束，之后用 `dario approve <任务号>` 继续。
 - **远程渠道**：在渠道内回复确认，见第 9 节。
-- 开启收尾时，计划下方写明结束后会做什么：只提交，或提交并推送到哪个远端分支。批准计划即同意这一安排，收尾时不再询问。
+- 开启收尾时，计划下方写明结束后会做什么：只提交，或提交并推送到哪个远端分支、推送前跑几项本机设的检查。批准计划即同意这一安排，收尾时不再询问。
 
 ### 退出码
 
@@ -176,6 +176,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 | `agents.yaml` | 要加载的插件；各家 AI 的命令路径、默认型号与强度（`model`、`effort`）、按角色的设置（`roles.<角色>`）、放行的工具清单、额外传递的环境变量、时限、是否停用、是否免费（`free: true` 表示额度固定按 0% 显示，不采集）；不可用后的冷却时间；启动无输出的判定时间；"没动静"阈值的倍数（`idle_factor`） |
 | `channels.yaml` | 渠道设置 |
 | `access.yaml` | 各渠道里谁是成员、谁是管理员 |
+| `projects.yaml` | 本机对各项目的设置，键是项目根目录：收尾推送前由 Dario 运行的检查（`pre_push`，见第 7 节"收尾"） |
 | `roles.yaml`、`project.yaml`、`dispatch-rules.md` | 可选。项目没有自己的配置时作为默认值 |
 | `state/images/` | 终端粘贴的本机图片，以时间和随机串命名。交互启动时按修改时间清理超过 7 天的图片，清理失败仍可启动。 |
 | `state/` | 任务记录与各步原始输出、临时指定的担当者、可用状态、型号显示名对照 `models.json`、额度存档 `quota.json`（按 AI 标识保存观测时间和窗口）、去重记录、审计日志 |
@@ -187,7 +188,7 @@ dario input-test                      检查终端输入（中文输入法、粘
 **项目级配置按名字引用 AI，可以给出型号和强度的值。可执行命令、参数的拼法和插件由本机决定。** 具体规则：
 
 - 角色表里 `models.<AI>` 只接受 `model`、`effort`。型号须符合 `^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,99}$`，强度须符合 `^[a-z]{2,16}$`。用户角色表和本机 AI 配置里的型号与强度使用相同的校验。
-- 项目的 `.dario/` 里出现 `agents.yaml`、`channels.yaml`、`access.yaml` 或 `plugins` 时拒绝加载。
+- 项目的 `.dario/` 里出现 `agents.yaml`、`channels.yaml`、`access.yaml`、`projects.yaml` 或 `plugins` 时拒绝加载。
 - 项目级的 `roles.yaml` 与 `project.yaml` 里出现约定之外的键（如 `command`、`args`、`plugin`）时拒绝加载。
 
 可执行命令只来自内置插件和用户级配置。这样克隆一个带 `.dario/` 的陌生仓库并运行 Dario，不会执行该仓库指定的程序。
@@ -287,7 +288,7 @@ finish:
   max_rounds: 3       # 同步、复审不通过、推送被拒合计的轮数上限，1 到 10
 ```
 
-`instructions` 只是附给主控的文字，与固定前言一样，Dario 不执行其中的任何命令（见第 5 节"安全边界"）。推送前的检查由主控在收尾里执行，结果写在它的回复里。`mode` 不是这三个值、`max_rounds` 超出范围时按配置错误处理。
+`instructions` 只是附给主控的文字，与固定前言一样，Dario 不执行其中的任何命令（见第 5 节"安全边界"）。说明里要求的检查由主控在收尾里执行，结果写在它的回复里；要 Dario 独立运行、不靠主控转述的检查，写在本机的 `projects.yaml` 里（见下面"推送前检查"）。`mode` 不是这三个值、`max_rounds` 超出范围时按配置错误处理。
 
 **什么时候收尾**：主控分派的任务，计划各步都完成，最后一次审查通过或按 `review_skip_max_lines` 跳过，并且有本任务的改动。直派、纯只读、没有改动的任务不收尾，`finish` 为 `null`。下列情况跳过收尾（`outcome` 为 `skipped`），任务照常完成，在注意事项里写明原因：目录不是 git 仓库；HEAD 是游离的；有越界的改动（改了 `write_roots` 之外的文件，或只读角色改了文件）；本任务的改动最终与 HEAD 没有差别。下列情况 `push` 降为只提交，同样写明原因：当前分支没有远端分支；收尾开始时本地已有没推送的提交（它们不是本任务审过的，Dario 不替它们担保）。
 
@@ -301,10 +302,21 @@ finish:
    - 审过的文件没有进提交、仍留在工作区：记为注意事项，不算不一致。
    - 提交里有审过范围之外的文件，或改动对不上：不一致，交给复审。比较与行号无关，但远端在附近改过、上下文行变了时也对不上，这种情况同样复审。
 3. **复审**（审查角色，只读，续接审查的会话）：只在有不一致时进行。附上不一致的文件审过时的 diff 和现在提交里的 diff，说明两者的差别来自解决冲突或收尾中的修改，只审这部分差别。通过后把这些文件现在的内容记为审过的内容，进入推送；不通过时把问题交回主控，在收尾的会话里修改提交（照样不推送），再核对。复审没有给出明确结论、或者没能进行时不推送，收尾失败。
-4. **推送**（Dario，只在 `push` 时）：执行 `git push <远端> HEAD:<分支>`，不强制推送，不跳过钩子；访问远端时不弹出凭据提示，最多等十分钟。因为远端有了新提交而被拒绝时回到第 1 步，由主控再同步；其他原因（鉴权、钩子拒绝、连不上远端）收尾失败。推送后再取一次远端分支，确认它指向推送的提交。
+4. **推送**（Dario，只在 `push` 时）：先运行本机设的推送前检查（见下面），都通过才执行 `git push <远端> HEAD:<分支>`，不强制推送，不跳过钩子；访问远端时不弹出凭据提示，最多等十分钟。因为远端有了新提交而被拒绝时回到第 1 步，由主控再同步；其他原因（鉴权、钩子拒绝、连不上远端）收尾失败。推送后再取一次远端分支，确认它指向推送的提交。
 
 第 1 步每运行一次算一轮，第一次也算：复审不通过、推送被拒之后回到主控那里，就是新的一轮。要开始的一轮超过 `max_rounds` 时停下，收尾失败。
 
+- **推送前检查**：本机的 `~/.dario/projects.yaml` 可以给某个项目设几项检查，在核对（和复审）之后、推送之前由 Dario 按先后对这一刻的 HEAD 运行：
+
+  ```yaml
+  projects:
+    "D:/Projects/myrepo":            # 项目根目录，按规范化后的路径比较，Windows 上不区分大小写
+      pre_push:
+        - command: [python, tools/check.py, --revision, HEAD]   # 可执行文件和参数，不经过命令行解释器
+          timeout_minutes: 10                                    # 默认 10
+  ```
+
+  在项目根目录里直接启动，不弹出凭据提示；退出码为 0 才算通过，没能启动、超时都算不通过。任何一项不通过就不推送，收尾失败，结论里附上命令、退出码和输出的最后几行。推送被拒回到第 1 步后，下一次推送前重新运行。它和项目的 `.dario/` 无关：项目配置不能定义命令（第 5 节），这份设置只在本机。只提交时不运行。
 - **目标分支**：就地执行时是当前分支的远端分支（`@{u}`）；隔离执行见第 10 节。
 - **记录**：收尾的每次运行在 `steps` 里记为 `finish`（主控）和 `review`（复审），推送不是 AI 的运行，不单列一步，结果记在 `finish` 里。这一步的改动文件取本任务提交涉及的文件，不按状态快照算。
 - **结果**：做成时结论里列出各个提交（短号和标题）和推送到的远端分支。没做成时任务失败，结论写明停在哪一步、为什么；已有的改动和本地提交都保留，不回滚；就地执行的可以续接。
@@ -594,7 +606,7 @@ Dario 边收 AI 的标准输出边按行交给插件的 `progress(line)`，得�
 - **权限划分**：计划、汇总和审查（含收尾的复审）始终只读。可写步骤（包括主控获准执行的小改动及其返工、收尾的提交与同步）按本机权限设置运行，默认全部放行，见第 8 节"可写角色的权限"。全部放行意味着可写角色在这台机器上不受 Dario 限制，约束来自各家 AI 自身、任务说明里的工作规则，以及事后的改动检测与审核；远程渠道下达的任务同样如此，所以名单只放可信成员。要收紧就把 `permissions` 设为 `listed`。只读角色用各家的只读方式启动；`claude` 与 `codebuddy` 的只读方式不加载 MCP 服务，用户自己设置里放行过的 MCP 工具对只读角色无效；`codex` 的沙箱不管 MCP 调用，它自己配置里预先批准过的 MCP 工具在只读方式下仍能调用，需要在本机 `agents.yaml` 用 `read_only_args` 把那个服务关掉（`-c mcp_servers.<服务名>.enabled=false`）；按清单放行时可写角色只能用清单里的工具。续接会话时权限按这一次的请求重新给。
 - **环境变量名单**：见第 8 节。
 - **不监听端口**：飞书渠道只有一条出站连接。
-- **推送**：AI 不推送。只有收尾里的 Dario 推送，而且只推送核对过、与审过的内容一致的提交，不强制推送，不跳过钩子。收尾的提交与同步那一轮临时把推送地址设成无效值，并按禁用命令拦截 `git push`。
+- **推送**：AI 不推送。只有收尾里的 Dario 推送，而且只推送核对过、与审过的内容一致、通过了本机推送前检查的提交，不强制推送，不跳过钩子。推送前检查的命令只来自本机的 `projects.yaml`。收尾的提交与同步那一轮临时把推送地址设成无效值，并按禁用命令拦截 `git push`。
 - **远程渠道**：名单、隔离执行、AI 不能推送（开启 `push` 收尾时由 Dario 核对后推送）、改文件前确认。
 - **审计**：收到的消息及鉴权结果、每次启动 AI 的完整命令与结果、角色变更、任务的建立与结束，追加写入 `state/audit.log`。
 

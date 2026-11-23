@@ -251,6 +251,18 @@ finish:
 - 收尾没做成时任务失败，改动和本地提交都留着，处理后用 `/resume` 或 `dario resume` 从收尾接着做。
 - `instructions` 只是给主控看的文字，Dario 不执行里面的命令；要跑的检查由主控执行，结果写在它的回复里。
 
+要 Dario 自己在推送前跑、不靠主控转述的检查，写在本机的 `~/.dario/projects.yaml`（不放进仓库，项目的 `.dario/` 里不能有这个文件）：
+
+```yaml
+projects:
+  "D:/Projects/myrepo":
+    pre_push:
+      - command: [python, tools/check.py, --revision, HEAD]   # 不经过命令行解释器，参数逐个写
+        timeout_minutes: 10
+```
+
+核对通过后、推送之前，Dario 在项目根目录里按先后运行这些命令，退出码都为 0 才推送；有一项不通过就不推送，结论里附上退出码和输出。
+
 ### 按角色设置型号和强度、停用某家
 
 本机的 `~/.dario/agents.yaml` 可以给同一家 AI 设置默认值，再单独调整某个角色：

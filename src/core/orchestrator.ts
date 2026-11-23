@@ -1,4 +1,4 @@
-import type { ProjectConfig } from './config.js';
+import type { PrePushCheck, ProjectConfig } from './config.js';
 import {
   acceptMismatches,
   commitsBetween,
@@ -12,6 +12,7 @@ import {
   pushBlockEnv,
   pushHead,
   PUSH_COMMANDS,
+  runPrePushCheck,
   recordReviewed,
   snapshotBlobs,
   verifyCommits,
@@ -70,6 +71,8 @@ export interface OrchestratorDeps {
   runner: StepRunner;
   project: ProjectConfig;
   emit: (event: ProgressEvent) => void;
+  /** 本机为这个项目设的推送前检查，收尾推送之前由 Dario 运行。 */
+  prePush?: PrePushCheck[];
 }
 
 export interface RunOptions {
@@ -462,7 +465,7 @@ export class Orchestrator {
     }
     const finishMode = project.settings.finish.mode;
     if (finishMode !== 'none' && plan.steps.some((s) => s.writes)) {
-      plan.finish = finishNote(finishMode, await ws.pushTarget(), ws.strategy === 'isolated');
+      plan.finish = finishNote(finishMode, await ws.pushTarget(), ws.strategy === 'isolated', this.deps.prePush?.length ?? 0);
     }
     job.plan = plan;
     job.cursor = 0;
@@ -725,6 +728,23 @@ export class Orchestrator {
       rec.commits = await commitsBetween(cwd, base);
       this.save(job);
       if (!target) break;
+
+      // 本机设的推送前检查：对这一刻的 HEAD 跑，任何一项不通过都不推送
+      const checks = this.deps.prePush ?? [];
+      if (checks.length > 0) {
+        rec.checks = [];
+        for (const check of checks) {
+          say(`收尾：推送前检查 ${check.command.join(' ')}`);
+          const got = await runPrePushCheck(cwd, check);
+          rec.checks.push(got);
+          state.audit('finish_check', { job: job.id, command: got.command, ok: got.ok, exit_code: got.exitCode });
+          if (!got.ok) {
+            this.save(job);
+            return fail(`推送前检查没有通过，没有推送：${got.command}（退出码 ${got.exitCode ?? '无'}）${got.output ? `\n${got.output}` : ''}`);
+          }
+        }
+        this.save(job);
+      }
 
       say(`收尾：推送到 ${target.remote}/${target.branch}`);
       const pushed = await pushHead(cwd, target);

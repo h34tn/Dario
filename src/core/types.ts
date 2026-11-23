@@ -195,6 +195,19 @@ export interface FinishRecord {
   reviewed?: Record<string, ReviewedFile>;
   commits: Array<{ sha: string; subject: string }>;
   pushed?: { remote: string; branch: string; head: string };
+  /** 最近一次推送前检查的结果，按配置的先后；没有设检查或还没跑到时没有。 */
+  checks?: PrePushResult[];
+}
+
+/** 一项推送前检查的结果。 */
+export interface PrePushResult {
+  /** 命令和参数，用空格连接，给人看。 */
+  command: string;
+  ok: boolean;
+  /** 退出码；没能启动、超时时为 null。 */
+  exitCode: number | null;
+  /** 输出的最后几行。 */
+  output: string;
 }
 
 export type FailureCode =

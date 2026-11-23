@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { QuotaWindow } from '../plugin.js';
-import type { ModelUpdate, ProjectConfig, UserConfig } from './config.js';
+import { prePushChecksFor, type ModelUpdate, type ProjectConfig, type UserConfig } from './config.js';
 import { HEALTH_PROMPT } from './defaults.js';
 import { Orchestrator, type RunOptions } from './orchestrator.js';
 import type { AgentCatalog } from './ports.js';
@@ -82,7 +82,14 @@ export class Engine {
       cooldownMinutes: deps.user.cooldownMinutes,
       emit,
     });
-    this.orchestrator = new Orchestrator({ state: deps.state, roles: this.roles, runner, project: deps.project, emit });
+    this.orchestrator = new Orchestrator({
+      state: deps.state,
+      roles: this.roles,
+      runner,
+      project: deps.project,
+      emit,
+      prePush: prePushChecksFor(deps.user, deps.project.root),
+    });
   }
 
   get project(): ProjectConfig {

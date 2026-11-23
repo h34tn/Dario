@@ -185,6 +185,8 @@ export interface JobJson {
     rounds: number;
     commits: Array<{ sha: string; subject: string }>;
     pushed: { remote: string; branch: string; head: string } | null;
+    /** 最近一次推送前检查的结果；没有设检查或还没跑到时为空数组。 */
+    checks: Array<{ command: string; ok: boolean; exit_code: number | null; output: string }>;
   } | null;
 }
 
@@ -351,6 +353,7 @@ export function jobToJson(job: Job): JobJson {
       ? {
         mode: job.finish.mode, outcome: job.finish.outcome, reason: job.finish.reason ?? null, rounds: job.finish.rounds,
         commits: job.finish.commits, pushed: job.finish.pushed ?? null,
+        checks: (job.finish.checks ?? []).map((c) => ({ command: c.command, ok: c.ok, exit_code: c.exitCode, output: c.output })),
       }
       : null,
   };
